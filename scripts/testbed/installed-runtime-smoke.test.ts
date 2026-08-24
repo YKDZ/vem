@@ -256,8 +256,11 @@ describe("installed production runtime smoke", () => {
     );
     assert.match(
       guest,
-      /Get-TestbedInstalledRuntimeOwnerState[\s\S]*\$visionReadiness = Get-TestbedVisionReadinessEvidence[\s\S]*Convert-TestbedStartupProbeToReadiness[^\r\n]*\$visionReadiness/,
+      /Get-TestbedInstalledRuntimeOwnerState[\s\S]*\$visionReadiness = Get-TestbedVisionReadinessEvidence[\s\S]*Invoke-TestbedInteractiveOwnerReentry[\s\S]*Convert-TestbedStartupProbeToReadiness/,
     );
+    assert.match(guest, /function Wait-TestbedOwnerLaunchResult/);
+    assert.match(guest, /source = "installed_scheduled_task_reentry"/);
+    assert.match(guest, /requestsPerRole = 2/);
     assert.match(
       guest,
       /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", \$null, \$scope\)/,

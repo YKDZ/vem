@@ -135,6 +135,8 @@ function Get-TaskOwnerDefinition($Task, $TaskInfo, $Owner, [string]$KioskUser) {
   }).Count -gt 0
   if (-not $hasLogonTrigger) { $issues.Add("task does not have a $KioskUser AtLogon trigger") | Out-Null }
   if (-not (Test-NoTaskRestartPolicy $Task.Settings)) { $issues.Add("task has a restart policy") | Out-Null }
+  $multipleInstances = [string]$Task.Settings.MultipleInstances
+  if ($multipleInstances -ne "IgnoreNew") { $issues.Add("task does not ignore concurrent reentry") | Out-Null }
 
   $expectedPowerShell = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
   $hasExpectedAction = @($Task.Actions | Where-Object {
@@ -152,6 +154,7 @@ function Get-TaskOwnerDefinition($Task, $TaskInfo, $Owner, [string]$KioskUser) {
     user = [string]$Task.Principal.UserId
     hasKioskAtLogonTrigger = $hasLogonTrigger
     hasRestartPolicy = -not (Test-NoTaskRestartPolicy $Task.Settings)
+    multipleInstances = $multipleInstances
     hasExpectedAction = $hasExpectedAction
     lastRunTime = if ($null -eq $TaskInfo -or $TaskInfo.LastRunTime.Year -le 1900) { $null } else { (Convert-WindowsTimeToCanonicalUtc $($TaskInfo.LastRunTime)) }
     lastTaskResult = if ($null -eq $TaskInfo) { $null } else { Convert-TaskResultToUnsignedLong $($TaskInfo.LastTaskResult) }

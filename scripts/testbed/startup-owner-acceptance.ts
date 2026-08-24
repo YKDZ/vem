@@ -372,6 +372,140 @@ function taskHasStartedState(taskState: unknown): boolean {
   return taskState === "Ready" || taskState === "Running";
 }
 
+function validateOwnerLaunchResult(
+  value: unknown,
+  {
+    role,
+    processId,
+    failedStage,
+  }: { role: string; processId: number; failedStage: string },
+): JsonRecord {
+  const result = recordValue(value);
+  if (
+    result.schemaVersion !== "vem-runtime-owner-launch-result/v1" ||
+    result.role !== role ||
+    result.adapter !== "scheduled_task"
+  ) {
+    failStartup(
+      failedStage,
+      "owner_launch_result_invalid",
+      `${role} launcher result identity is invalid`,
+    );
+  }
+  if (result.status !== "ready") {
+    failStartup(
+      failedStage,
+      "owner_launch_failed",
+      `${role} launcher failed at ${String(result.failedStage ?? "unknown")} with ${String(result.reasonCode ?? "unknown")}`,
+    );
+  }
+  if (
+    !["owner_started", "owner_already_ready"].includes(
+      String(result.reasonCode),
+    ) ||
+    result.failedStage !== null ||
+    Number(result.processId) !== processId ||
+    recordValue(result.readiness).processStable !== true
+  ) {
+    failStartup(
+      failedStage,
+      "owner_launch_result_invalid",
+      `${role} launcher did not terminate on the observed ready owner`,
+    );
+  }
+  const invocationId = required(result.invocationId, `${role} invocation ID`);
+  if (!/^[a-f0-9]{32}$/i.test(invocationId)) {
+    failStartup(
+      failedStage,
+      "owner_launch_result_invalid",
+      `${role} launcher invocation ID is invalid`,
+    );
+  }
+  let startedAt: string;
+  let finishedAt: string;
+  try {
+    startedAt = canonicalTimestamp(result.startedAt, `${role} launch start`);
+    finishedAt = canonicalTimestamp(result.finishedAt, `${role} launch finish`);
+  } catch {
+    failStartup(
+      failedStage,
+      "owner_launch_result_invalid",
+      `${role} launcher timestamps are invalid`,
+    );
+  }
+  if (Date.parse(finishedAt) < Date.parse(startedAt)) {
+    failStartup(
+      failedStage,
+      "owner_launch_result_invalid",
+      `${role} launcher finished before it started`,
+    );
+  }
+  return {
+    role,
+    invocationId,
+    startedAt,
+    finishedAt,
+    reasonCode: result.reasonCode,
+    processId,
+  };
+}
+
+function validateOwnerReentry(
+  value: unknown,
+  machineUiProcessId: number,
+  visionProcessId: number,
+): JsonRecord {
+  const reentry = recordValue(value);
+  if (
+    reentry.source !== "installed_scheduled_task_reentry" ||
+    reentry.requestsPerRole !== 2
+  ) {
+    failStartup(
+      "owner_reentry",
+      "owner_reentry_evidence_invalid",
+      "fast startup owner reentry evidence is invalid",
+    );
+  }
+  const checks: Array<{
+    key: string;
+    processId: number;
+    failedStage: string;
+  }> = [
+    {
+      key: "machineUi",
+      processId: machineUiProcessId,
+      failedStage: "machine_ui_owner",
+    },
+    { key: "vision", processId: visionProcessId, failedStage: "vision_owner" },
+  ];
+  for (const check of checks) {
+    const observed = recordValue(reentry[check.key]);
+    if (
+      Number(observed.beforeProcessId) !== check.processId ||
+      Number(observed.afterProcessId) !== check.processId
+    ) {
+      failStartup(
+        check.failedStage,
+        "owner_reentry_replaced_process",
+        `${check.key} task reentry replaced or duplicated the canonical process`,
+      );
+    }
+    if (observed.invocationChanged !== true) {
+      failStartup(
+        check.failedStage,
+        "owner_reentry_not_observed",
+        `${check.key} task reentry did not produce a new launcher result`,
+      );
+    }
+  }
+  return {
+    source: reentry.source,
+    requestsPerRole: 2,
+    machineUiProcessId,
+    visionProcessId,
+  };
+}
+
 export function validateStartupOwnerReadinessEvidence(
   evidence: JsonRecord,
   mode = "fast",
@@ -433,6 +567,10 @@ export function validateStartupOwnerReadinessEvidence(
     observationKioskSession?.sessionId,
     "VEMKiosk sessionId",
   );
+  const machineUiProcessId = positiveInteger(
+    observationMachineUi?.processId,
+    "Machine UI processId",
+  );
   if (
     !taskHasStartedState(observationMachineUi?.taskState) ||
     Number(observationMachineUi?.processCount) !== 1 ||
@@ -451,6 +589,10 @@ export function validateStartupOwnerReadinessEvidence(
     throw new Error("Vision must run in the active VEMKiosk session");
   }
   const visionWorkerCount = observationVision?.workerCount;
+  const visionProcessId = positiveInteger(
+    observationVision?.processId,
+    "Vision processId",
+  );
   if (
     visionWorkerCount !== undefined &&
     (!Number.isSafeInteger(Number(visionWorkerCount)) ||
@@ -459,6 +601,54 @@ export function validateStartupOwnerReadinessEvidence(
     throw new Error("Vision worker count must be a non-negative integer");
   }
   const visionReadiness = validateVisionReadiness(observationVision.readiness);
+  const ownerLaunch = recordValue(observation.ownerLaunch);
+  const machineUiLaunch = validateOwnerLaunchResult(ownerLaunch.machineUi, {
+    role: "machine-ui",
+    processId: machineUiProcessId,
+    failedStage: "machine_ui_owner",
+  });
+  const visionLaunch = validateOwnerLaunchResult(ownerLaunch.vision, {
+    role: "vision",
+    processId: visionProcessId,
+    failedStage: "vision_owner",
+  });
+  const validatedModeEvidence = validateModeEvidence(
+    evidence,
+    manifest,
+    mode,
+    sessionId,
+  );
+  if (mode === "full") {
+    const bootStartedAt = String(validatedModeEvidence.bootStartedAt);
+    for (const launch of [machineUiLaunch, visionLaunch]) {
+      if (Date.parse(String(launch.startedAt)) < Date.parse(bootStartedAt)) {
+        failStartup(
+          launch.role === "vision" ? "vision_owner" : "machine_ui_owner",
+          "owner_launch_before_reboot",
+          `${String(launch.role)} launcher result predates the accepted reboot`,
+        );
+      }
+    }
+  }
+  const ownerReentry =
+    mode === "fast"
+      ? validateOwnerReentry(
+          observation.ownerReentry,
+          machineUiProcessId,
+          visionProcessId,
+        )
+      : undefined;
+  if (
+    mode === "fast" &&
+    (machineUiLaunch.reasonCode !== "owner_already_ready" ||
+      visionLaunch.reasonCode !== "owner_already_ready")
+  ) {
+    failStartup(
+      "owner_reentry",
+      "owner_reentry_result_invalid",
+      "fast startup did not finish on reused canonical owner results",
+    );
+  }
   return {
     daemonService: daemonOwner.name,
     machineUiTask: machineUiOwner.name,
@@ -468,7 +658,9 @@ export function validateStartupOwnerReadinessEvidence(
     ownerInstalledAt,
     ownerConfigurationSha256: ownerConfigurationSha256(manifest),
     visionReadiness,
-    modeEvidence: validateModeEvidence(evidence, manifest, mode, sessionId),
+    ownerLaunch: { machineUi: machineUiLaunch, vision: visionLaunch },
+    ...(ownerReentry ? { ownerReentry } : {}),
+    modeEvidence: validatedModeEvidence,
   };
 }
 

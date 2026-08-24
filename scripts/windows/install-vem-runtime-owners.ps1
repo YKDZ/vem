@@ -145,15 +145,24 @@ function Grant-OwnerAccess([string]$Path, [string]$Rights) {
 
 function Write-InteractiveLauncher(
   [string]$LauncherPath,
+  [string]$Role,
   [string]$ProcessName,
   [string]$ExecutablePath,
   [string[]]$ArgumentList,
+  [string]$ResultPath,
+  [int]$ReadinessPort = 0,
+  [ValidateSet("process", "direct_listener", "descendant_listener")][string]$ReadinessBinding = "process",
   [string[]]$InheritedEnvironmentVariableNames = @(),
   [hashtable]$ExplicitEnvironmentVariables = @{}
 ) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherPath) | Out-Null
   $argumentString = ($ArgumentList | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join " "
   $argumentStringLiteral = "'" + $argumentString.Replace("'", "''") + "'"
+  $expectedArgumentsLiteral = if ($ArgumentList.Count -eq 0) {
+    "@()"
+  } else {
+    "@(" + (($ArgumentList | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
+  }
   $environmentNamesLiteral = if ($InheritedEnvironmentVariableNames.Count -eq 0) {
     "@()"
   } else {
@@ -167,34 +176,233 @@ function Write-InteractiveLauncher(
     }) -join "; ") + "}"
   }
   $content = @"
+[CmdletBinding()]
+param(
+  [ValidateSet("scheduled_task", "manual")][string]`$Adapter = "scheduled_task"
+)
+
 `$ErrorActionPreference = "Stop"
-`$startInfo = [Diagnostics.ProcessStartInfo]::new()
-`$startInfo.FileName = '$ExecutablePath'
-`$startInfo.WorkingDirectory = '$(Split-Path -Parent $ExecutablePath)'
-`$startInfo.UseShellExecute = `$false
-`$startInfo.Arguments = $argumentStringLiteral
-foreach (`$name in $environmentNamesLiteral) {
-  `$userValue = [Environment]::GetEnvironmentVariable(`$name, "User")
-  `$machineValue = [Environment]::GetEnvironmentVariable(`$name, "Machine")
-  `$value = if (-not [string]::IsNullOrWhiteSpace(`$userValue)) { `$userValue } else { `$machineValue }
-	  if (-not [string]::IsNullOrWhiteSpace(`$value)) {
-	    Set-Item -LiteralPath "Env:`$name" -Value `$value
-	    `$startInfo.EnvironmentVariables[`$name] = `$value
-	  }
-	}
-`$explicitEnvironment = $explicitEnvironmentLiteral
-foreach (`$entry in `$explicitEnvironment.GetEnumerator()) {
-  `$value = [string]`$entry.Value
-  if (-not [string]::IsNullOrWhiteSpace(`$value)) {
-    Set-Item -LiteralPath "Env:`$(`$entry.Key)" -Value `$value
-    `$startInfo.EnvironmentVariables[[string]`$entry.Key] = `$value
+`$role = '$Role'
+`$processName = '$ProcessName'
+`$executablePath = '$ExecutablePath'
+`$expectedArguments = $expectedArgumentsLiteral
+`$resultPath = '$ResultPath'
+`$readinessPort = $ReadinessPort
+`$readinessBinding = '$ReadinessBinding'
+`$invocationId = [Guid]::NewGuid().ToString("N")
+`$startedAt = [DateTime]::UtcNow
+`$ownerMutex = [Threading.Mutex]::new(`$false, "Local\VEM.RuntimeOwner.`$role")
+`$ownsMutex = `$false
+`$terminalResult = `$null
+`$failureMessage = `$null
+
+function New-OwnerLaunchResult(
+  [string]`$Status,
+  [string]`$FailedStage,
+  [string]`$ReasonCode,
+  [Nullable[int]]`$ProcessId,
+  [bool]`$ProcessStable
+) {
+  return [ordered]@{
+    schemaVersion = "vem-runtime-owner-launch-result/v1"
+    role = `$role
+    invocationId = `$invocationId
+    adapter = `$Adapter
+    startedAt = `$startedAt.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    finishedAt = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    status = `$Status
+    failedStage = if ([string]::IsNullOrWhiteSpace(`$FailedStage)) { `$null } else { `$FailedStage }
+    reasonCode = `$ReasonCode
+    processId = `$ProcessId
+    readiness = [ordered]@{
+      processStable = `$ProcessStable
+      listenerPort = if (`$readinessPort -gt 0) { `$readinessPort } else { `$null }
+    }
   }
 }
-`$staleProcesses = @(Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue)
-foreach (`$staleProcess in `$staleProcesses) {
-  Stop-Process -Id ([int]`$staleProcess.ProcessId) -Force -ErrorAction SilentlyContinue
+
+function Write-OwnerLaunchResult([object]`$Result) {
+  `$resultDirectory = Split-Path -Parent `$resultPath
+  New-Item -ItemType Directory -Force -Path `$resultDirectory | Out-Null
+  `$temporaryResultPath = "`$resultPath.`$invocationId.tmp"
+  try {
+    [IO.File]::WriteAllText(
+      `$temporaryResultPath,
+      ((`$Result | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+      [Text.UTF8Encoding]::new(`$false)
+    )
+    Move-Item -LiteralPath `$temporaryResultPath -Destination `$resultPath -Force -ErrorAction Stop
+  } finally {
+    Remove-Item -LiteralPath `$temporaryResultPath -Force -ErrorAction SilentlyContinue
+  }
 }
-[Diagnostics.Process]::Start(`$startInfo) | Out-Null
+
+function Stop-OwnerLaunch(
+  [string]`$FailedStage,
+  [string]`$ReasonCode,
+  [string]`$Message
+) {
+  `$exception = [InvalidOperationException]::new(`$Message)
+  `$exception.Data["failedStage"] = `$FailedStage
+  `$exception.Data["reasonCode"] = `$ReasonCode
+  throw `$exception
+}
+
+function Get-ObservedOwnerProcesses {
+  return @(
+    Get-CimInstance Win32_Process -Filter "Name = '`$processName'" -ErrorAction SilentlyContinue
+  )
+}
+
+function Test-ExpectedExecutable([object]`$Process) {
+  if ([string]::IsNullOrWhiteSpace([string]`$Process.ExecutablePath)) { return `$false }
+  try {
+    return [IO.Path]::GetFullPath([string]`$Process.ExecutablePath) -ieq [IO.Path]::GetFullPath(`$executablePath)
+  } catch {
+    return `$false
+  }
+}
+
+function Test-ExpectedArguments([object]`$Process) {
+  `$commandLine = [string]`$Process.CommandLine
+  foreach (`$argument in `$expectedArguments) {
+    if (`$commandLine -notmatch [regex]::Escape([string]`$argument)) { return `$false }
+  }
+  return `$true
+}
+
+function Test-ListenerOwnership([int]`$ListenerProcessId, [int]`$OwnerProcessId) {
+  if (`$ListenerProcessId -eq `$OwnerProcessId) { return `$true }
+  if (`$readinessBinding -ne "descendant_listener") { return `$false }
+  `$cursorId = `$ListenerProcessId
+  for (`$depth = 0; `$depth -lt 32 -and `$cursorId -gt 0; `$depth += 1) {
+    `$cursor = Get-CimInstance Win32_Process -Filter "ProcessId = `$cursorId" -ErrorAction SilentlyContinue
+    if (`$null -eq `$cursor) { return `$false }
+    `$parentId = [int]`$cursor.ParentProcessId
+    if (`$parentId -eq `$OwnerProcessId) { return `$true }
+    if (`$parentId -le 0 -or `$parentId -eq `$cursorId) { return `$false }
+    `$cursorId = `$parentId
+  }
+  return `$false
+}
+
+function Get-ReadyOwnerProcess([object[]]`$Processes) {
+  `$currentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+  `$canonical = @(`$Processes | Where-Object {
+    (Test-ExpectedExecutable `$_) -and [int]`$_.SessionId -eq `$currentSessionId -and (Test-ExpectedArguments `$_)
+  })
+  if (`$readinessPort -gt 0) {
+    `$listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort `$readinessPort -State Listen -ErrorAction SilentlyContinue)
+    if (`$listeners.Count -ne 1) { return `$null }
+    `$listenerProcessId = [int]`$listeners[0].OwningProcess
+    `$listenerOwner = @(`$canonical | Where-Object { Test-ListenerOwnership `$listenerProcessId ([int]`$_.ProcessId) })
+    if (`$listenerOwner.Count -ne 1) { return `$null }
+    return `$listenerOwner[0]
+  }
+  if (`$canonical.Count -ne 1 -or `$Processes.Count -ne 1) { return `$null }
+  return `$canonical[0]
+}
+
+try {
+  try {
+    `$ownsMutex = `$ownerMutex.WaitOne([TimeSpan]::FromSeconds(90))
+  } catch [Threading.AbandonedMutexException] {
+    `$ownsMutex = `$true
+  }
+  if (-not `$ownsMutex) {
+    Stop-OwnerLaunch "serialize_reentry" "reentry_timeout" "timed out waiting for the canonical owner launch lease"
+  }
+  if (-not (Test-Path -LiteralPath `$executablePath -PathType Leaf)) {
+    Stop-OwnerLaunch "validate_artifact" "artifact_missing" "canonical owner executable is missing"
+  }
+
+  `$observed = @(Get-ObservedOwnerProcesses)
+  `$unexpected = @(`$observed | Where-Object { -not (Test-ExpectedExecutable `$_) })
+  if (`$unexpected.Count -gt 0) {
+    Stop-OwnerLaunch "validate_owner" "owner_identity_conflict" "a competing same-name process does not use the canonical executable"
+  }
+  `$readyOwner = Get-ReadyOwnerProcess `$observed
+  if (`$null -ne `$readyOwner) {
+    `$terminalResult = New-OwnerLaunchResult "ready" `$null "owner_already_ready" ([int]`$readyOwner.ProcessId) `$true
+  } else {
+    if (`$readinessPort -eq 0 -and `$observed.Count -gt 0) {
+      Stop-OwnerLaunch "validate_owner" "owner_process_conflict" "the canonical owner process set is not unique"
+    }
+    `$startedProcess = `$null
+    if (`$observed.Count -eq 0) {
+      `$startInfo = [Diagnostics.ProcessStartInfo]::new()
+      `$startInfo.FileName = `$executablePath
+      `$startInfo.WorkingDirectory = '$(Split-Path -Parent $ExecutablePath)'
+      `$startInfo.UseShellExecute = `$false
+      `$startInfo.Arguments = $argumentStringLiteral
+      foreach (`$name in $environmentNamesLiteral) {
+        `$userValue = [Environment]::GetEnvironmentVariable(`$name, "User")
+        `$machineValue = [Environment]::GetEnvironmentVariable(`$name, "Machine")
+        `$value = if (-not [string]::IsNullOrWhiteSpace(`$userValue)) { `$userValue } else { `$machineValue }
+        if (-not [string]::IsNullOrWhiteSpace(`$value)) {
+          Set-Item -LiteralPath "Env:`$name" -Value `$value
+          `$startInfo.EnvironmentVariables[`$name] = `$value
+        }
+      }
+      `$explicitEnvironment = $explicitEnvironmentLiteral
+      foreach (`$entry in `$explicitEnvironment.GetEnumerator()) {
+        `$value = [string]`$entry.Value
+        if (-not [string]::IsNullOrWhiteSpace(`$value)) {
+          Set-Item -LiteralPath "Env:`$(`$entry.Key)" -Value `$value
+          `$startInfo.EnvironmentVariables[[string]`$entry.Key] = `$value
+        }
+      }
+      `$startedProcess = [Diagnostics.Process]::Start(`$startInfo)
+      if (`$null -eq `$startedProcess) {
+        Stop-OwnerLaunch "start_process" "process_start_failed" "canonical owner process start returned no process"
+      }
+    }
+
+    `$deadline = [DateTime]::UtcNow.AddSeconds(90)
+    `$stableSince = `$null
+    do {
+      if (`$null -ne `$startedProcess) { `$startedProcess.Refresh() }
+      if (`$null -ne `$startedProcess -and `$startedProcess.HasExited) {
+        Stop-OwnerLaunch "wait_process" "process_exited_early" "canonical owner process exited before readiness"
+      }
+      `$observed = @(Get-ObservedOwnerProcesses)
+      if (`$null -eq `$startedProcess -and `$observed.Count -eq 0) {
+        Stop-OwnerLaunch "wait_process" "process_exited_early" "existing canonical owner process exited before readiness"
+      }
+      `$unexpected = @(`$observed | Where-Object { -not (Test-ExpectedExecutable `$_) })
+      if (`$unexpected.Count -gt 0) {
+        Stop-OwnerLaunch "wait_process" "owner_identity_conflict" "a competing same-name process appeared during startup"
+      }
+      `$readyOwner = Get-ReadyOwnerProcess `$observed
+      if (`$null -ne `$readyOwner) {
+        if (`$null -eq `$stableSince) { `$stableSince = [DateTime]::UtcNow }
+        if (([DateTime]::UtcNow - `$stableSince).TotalSeconds -ge 2) { break }
+      } else {
+        `$stableSince = `$null
+      }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt `$deadline)
+    if (`$null -eq `$readyOwner -or `$null -eq `$stableSince -or ([DateTime]::UtcNow - `$stableSince).TotalSeconds -lt 2) {
+      Stop-OwnerLaunch "wait_readiness" "readiness_timeout" "canonical owner did not reach stable process readiness within the launch deadline"
+    }
+    `$terminalResult = New-OwnerLaunchResult "ready" `$null "owner_started" ([int]`$readyOwner.ProcessId) `$true
+  }
+} catch {
+  `$failedStage = if (`$_.Exception.Data.Contains("failedStage")) { [string]`$_.Exception.Data["failedStage"] } else { "unexpected" }
+  `$reasonCode = if (`$_.Exception.Data.Contains("reasonCode")) { [string]`$_.Exception.Data["reasonCode"] } else { "unexpected_error" }
+  `$failureMessage = `$_.Exception.Message
+  `$terminalResult = New-OwnerLaunchResult "failed" `$failedStage `$reasonCode `$null `$false
+} finally {
+  if (`$null -ne `$terminalResult) { Write-OwnerLaunchResult `$terminalResult }
+  if (`$ownsMutex) { `$ownerMutex.ReleaseMutex() }
+  `$ownerMutex.Dispose()
+}
+
+if (`$terminalResult.status -ne "ready") {
+  [Console]::Error.WriteLine(`$failureMessage)
+  exit 1
+}
+`$terminalResult | ConvertTo-Json -Compress -Depth 8 | Write-Output
 "@
   $temporaryLauncher = "$LauncherPath.$PID.tmp"
   $backupLauncher = "$LauncherPath.$PID.backup"
@@ -227,7 +435,7 @@ function Register-InteractiveOwnerTask(
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -MultipleInstances Parallel `
+    -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
   Register-ScheduledTask `
     -TaskName $TaskName `
@@ -264,6 +472,7 @@ function Write-OwnerManifest(
     executablePath = $VisionExecutable
     arguments = @("--config", (Join-Path $VisionDataDirectory "site.json"))
     launcherPath = $VisionLauncher
+    launchResultPath = Join-Path $ownerResultDirectory "vision.json"
     workingDirectory = $VisionAppDirectory
   }
   $acl = [Collections.Generic.List[object]]::new()
@@ -271,7 +480,8 @@ function Write-OwnerManifest(
     [ordered]@{ path = $RuntimeDirectory; user = $KioskUser; rights = "RX" },
     [ordered]@{ path = $DaemonDataDirectory; user = $KioskUser; rights = "M" },
     [ordered]@{ path = $VisionAppDirectory; user = $KioskUser; rights = "RX" },
-    [ordered]@{ path = $VisionDataDirectory; user = $KioskUser; rights = "M" }
+    [ordered]@{ path = $VisionDataDirectory; user = $KioskUser; rights = "M" },
+    [ordered]@{ path = $ownerResultDirectory; user = $KioskUser; rights = "M" }
   ) | ForEach-Object { $acl.Add($_) }
   $manifest = [ordered]@{
     schemaVersion = "vem-runtime-owners/v1"
@@ -302,6 +512,7 @@ function Write-OwnerManifest(
         user = $KioskUser
         executablePath = $MachineExecutable
         launcherPath = $MachineLauncher
+        launchResultPath = Join-Path $ownerResultDirectory "machine-ui.json"
         workingDirectory = $RuntimeDirectory
       }
       vision = $visionOwner
@@ -324,6 +535,7 @@ $machineExecutable = Join-Path $RuntimeDirectory "machine.exe"
 $visionExecutable = Join-Path $VisionAppDirectory "vending-vision.exe"
 $machineLauncher = Join-Path $RuntimeDirectory "launch-vem-machine-ui.ps1"
 $visionLauncher = Join-Path $RuntimeDirectory "launch-vem-vision.ps1"
+$ownerResultDirectory = Join-Path (Split-Path -Parent $OwnerManifestPath) "results"
 
 Assert-OwnerPath $daemonExecutable "daemon executable"
 Assert-OwnerPath $machineExecutable "Machine UI executable"
@@ -362,15 +574,44 @@ Grant-OwnerAccess $RuntimeDirectory "(RX)"
 Grant-OwnerAccess $DaemonDataDirectory "(M)"
 Grant-OwnerAccess $VisionAppDirectory "(RX)"
 Grant-OwnerAccess $VisionDataDirectory "(M)"
+Grant-OwnerAccess $ownerResultDirectory "(M)"
+foreach ($launchResultPath in @(
+  (Join-Path $ownerResultDirectory "machine-ui.json"),
+  (Join-Path $ownerResultDirectory "vision.json")
+)) {
+  if (Test-Path -LiteralPath $launchResultPath -PathType Leaf) {
+    Remove-Item -LiteralPath $launchResultPath -Force -ErrorAction Stop
+  }
+}
 
 Assert-OwnerDirectoryLeases
 $machineUiEnvironment = @{}
 if ($MachineUiWebViewDebugPort -gt 0) {
   $machineUiEnvironment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--remote-debugging-port=$MachineUiWebViewDebugPort"
 }
-Write-InteractiveLauncher $machineLauncher "machine.exe" $machineExecutable @() @() $machineUiEnvironment
+Write-InteractiveLauncher `
+  -LauncherPath $machineLauncher `
+  -Role "machine-ui" `
+  -ProcessName "machine.exe" `
+  -ExecutablePath $machineExecutable `
+  -ArgumentList @() `
+  -ResultPath (Join-Path $ownerResultDirectory "machine-ui.json") `
+  -ReadinessPort $MachineUiWebViewDebugPort `
+  -ReadinessBinding $(if ($MachineUiWebViewDebugPort -gt 0) { "descendant_listener" } else { "process" }) `
+  -InheritedEnvironmentVariableNames @() `
+  -ExplicitEnvironmentVariables $machineUiEnvironment
 $visionEnvironment = @{}
-Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json")) @() $visionEnvironment
+Write-InteractiveLauncher `
+  -LauncherPath $visionLauncher `
+  -Role "vision" `
+  -ProcessName "vending-vision.exe" `
+  -ExecutablePath $visionExecutable `
+  -ArgumentList @("--config", (Join-Path $VisionDataDirectory "site.json")) `
+  -ResultPath (Join-Path $ownerResultDirectory "vision.json") `
+  -ReadinessPort 7892 `
+  -ReadinessBinding "direct_listener" `
+  -InheritedEnvironmentVariableNames @() `
+  -ExplicitEnvironmentVariables $visionEnvironment
 Assert-OwnerDirectoryLeases
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory

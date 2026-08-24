@@ -30,6 +30,7 @@ $global:ProbeHarnessLegacyTask = $false
 $global:ProbeHarnessInvalidTrigger = $false
 $global:ProbeHarnessInvalidAction = $false
 $global:ProbeHarnessRestartPolicy = $false
+$global:ProbeHarnessParallelReentry = $false
 $global:ProbeHarnessLegacyRuntimeTask = $false
 $global:ProbeHarnessLegacyRuntimeService = $false
 $global:ProbeHarnessServiceAccount = "LocalSystem"
@@ -123,6 +124,7 @@ try {
     param($Name, $Launcher, $WorkingDirectory)
     $triggerClass = if ($global:ProbeHarnessInvalidTrigger -and $Name -eq "VEMVisionRuntime") { "MSFT_TaskBootTrigger" } else { "MSFT_TaskLogonTrigger" }
     $restartCount = if ($global:ProbeHarnessRestartPolicy -and $Name -eq "VEMVisionRuntime") { 1 } else { 0 }
+    $multipleInstances = if ($global:ProbeHarnessParallelReentry -and $Name -eq "VEMVisionRuntime") { "Parallel" } else { "IgnoreNew" }
     $actionExecutable = if ($global:ProbeHarnessInvalidAction -and $Name -eq "VEMVisionRuntime") { "C:\Windows\System32\cmd.exe" } else { "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" }
     [pscustomobject]@{
       TaskName = $Name
@@ -130,7 +132,7 @@ try {
       State = "Ready"
       Principal = [pscustomobject]@{ UserId = "VEMKiosk" }
       Triggers = @([pscustomobject]@{ CimClass = [pscustomobject]@{ CimClassName = $triggerClass }; UserId = "VEMKiosk" })
-      Settings = [pscustomobject]@{ RestartCount = $restartCount; RestartInterval = "PT0S" }
+      Settings = [pscustomobject]@{ RestartCount = $restartCount; RestartInterval = "PT0S"; MultipleInstances = $multipleInstances }
       Actions = @([pscustomobject]@{ Execute = $actionExecutable; Arguments = ('-NoProfile -File "' + $Launcher + '"'); WorkingDirectory = $WorkingDirectory })
     }
   }
@@ -178,6 +180,11 @@ try {
   & $resetTasks
   Assert-RequireHealthyFailure "task has a restart policy" "Vision restart policy"
   $global:ProbeHarnessRestartPolicy = $false
+  & $resetTasks
+  $global:ProbeHarnessParallelReentry = $true
+  & $resetTasks
+  Assert-RequireHealthyFailure "task does not ignore concurrent reentry" "parallel task reentry"
+  $global:ProbeHarnessParallelReentry = $false
   & $resetTasks
 
   $global:ProbeHarnessLegacyTask = $true
@@ -254,7 +261,7 @@ try {
   $global:ProbeHarnessProcesses = @($baselineFixture.processes)
   $global:ProbeHarnessListeners = @($baselineFixture.listeners)
 
-  [ordered]@{ schemaVersion = "vem-runtime-probe-harness/v1"; bootedAt = (Get-HarnessCanonicalTimestamp $($baseline.host.bootedAt)); taskObservations = @($baseline.tasks | ForEach-Object { [ordered]@{ name = [string]$_.name; state = [string]$_.state; lastRunTime = (Get-HarnessCanonicalTimestamp $($_.lastRunTime)); lastTaskResult = [long]$_.lastTaskResult } }); visionMainCount = @($baseline.processes.vision).Count; visionWorkerCount = @($baseline.visionWorkers).Count; topologyCases = $topologyCaseResults; baselineFixtureUnchanged = $true; reversedTopologyCases = $orderedTopologyCaseResults; requireHealthyFailures = @("non-localsystem-service", "unexpected-service-path", "missing-password", "missing-logon-trigger", "unexpected-task-action", "task-restart-policy", "legacy-vision-owner", "legacy-runtime-task-owner", "legacy-runtime-service-owner", "non-interactive-session", "unexpected-process-user", "invalid-vision-topology") } | ConvertTo-Json -Compress -Depth 6
+  [ordered]@{ schemaVersion = "vem-runtime-probe-harness/v1"; bootedAt = (Get-HarnessCanonicalTimestamp $($baseline.host.bootedAt)); taskObservations = @($baseline.tasks | ForEach-Object { [ordered]@{ name = [string]$_.name; state = [string]$_.state; lastRunTime = (Get-HarnessCanonicalTimestamp $($_.lastRunTime)); lastTaskResult = [long]$_.lastTaskResult; multipleInstances = [string]$_.multipleInstances } }); visionMainCount = @($baseline.processes.vision).Count; visionWorkerCount = @($baseline.visionWorkers).Count; topologyCases = $topologyCaseResults; baselineFixtureUnchanged = $true; reversedTopologyCases = $orderedTopologyCaseResults; requireHealthyFailures = @("non-localsystem-service", "unexpected-service-path", "missing-password", "missing-logon-trigger", "unexpected-task-action", "task-restart-policy", "parallel-task-reentry", "legacy-vision-owner", "legacy-runtime-task-owner", "legacy-runtime-service-owner", "non-interactive-session", "unexpected-process-user", "invalid-vision-topology") } | ConvertTo-Json -Compress -Depth 6
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

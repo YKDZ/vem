@@ -51,12 +51,14 @@ function fullEvidence() {
       machineUi: {
         taskState: "Ready",
         processCount: 1,
+        processId: 201,
         sessionId: 3,
         route: "#/catalog",
       },
       vision: {
         taskState: "Ready",
         processCount: 1,
+        processId: 202,
         workerCount: 2,
         sessionId: 3,
         readiness: {
@@ -87,6 +89,34 @@ function fullEvidence() {
               "try_on",
             ],
           },
+        },
+      },
+      ownerLaunch: {
+        machineUi: {
+          schemaVersion: "vem-runtime-owner-launch-result/v1",
+          role: "machine-ui",
+          invocationId: "1".repeat(32),
+          adapter: "scheduled_task",
+          startedAt: "2026-08-24T12:05:08.000Z",
+          finishedAt: "2026-08-24T12:05:10.000Z",
+          status: "ready",
+          failedStage: null,
+          reasonCode: "owner_started",
+          processId: 201,
+          readiness: { processStable: true, listenerPort: 9222 },
+        },
+        vision: {
+          schemaVersion: "vem-runtime-owner-launch-result/v1",
+          role: "vision",
+          invocationId: "2".repeat(32),
+          adapter: "scheduled_task",
+          startedAt: "2026-08-24T12:05:09.000Z",
+          finishedAt: "2026-08-24T12:05:13.000Z",
+          status: "ready",
+          failedStage: null,
+          reasonCode: "owner_started",
+          processId: 202,
+          readiness: { processStable: true, listenerPort: 7892 },
         },
       },
     },
@@ -256,6 +286,69 @@ describe("installed runtime startup lifecycle evidence", () => {
     assert.equal(report.failedStage, "machine_ui_owner");
     assert.equal(report.reasonCode, "task_action_failed");
     assert.match(String(report.diagnostics), /0xC000013A/);
+  });
+
+  it("rejects a failed flat launcher result even when a process happens to be present", () => {
+    const evidence = fullEvidence();
+    const visionLaunch = evidence.observation.ownerLaunch
+      .vision as unknown as JsonRecord;
+    visionLaunch.status = "failed";
+    visionLaunch.failedStage = "wait_process";
+    visionLaunch.reasonCode = "process_exited_early";
+
+    const report = run(evidence);
+
+    assert.equal(report.ok, false);
+    assert.equal(report.failedStage, "vision_owner");
+    assert.equal(report.reasonCode, "owner_launch_failed");
+  });
+
+  it("accepts warm task reentry only when both canonical PIDs remain unchanged", () => {
+    const evidence = fullEvidence();
+    (evidence as unknown as JsonRecord).modeEvidence = {
+      mode: "fast",
+      source: "installed_owner_stop_start",
+      ownerRestartMarker: "owner-restart:" + commit + ":1787573120000",
+    };
+    evidence.observation.ownerLaunch.machineUi.reasonCode =
+      "owner_already_ready";
+    evidence.observation.ownerLaunch.vision.reasonCode = "owner_already_ready";
+    (evidence.observation as unknown as JsonRecord).ownerReentry = {
+      source: "installed_scheduled_task_reentry",
+      requestsPerRole: 2,
+      machineUi: {
+        beforeProcessId: 201,
+        afterProcessId: 201,
+        invocationChanged: true,
+      },
+      vision: {
+        beforeProcessId: 202,
+        afterProcessId: 202,
+        invocationChanged: true,
+      },
+    };
+
+    const accepted = runStartupOwnerAcceptance({
+      mode: "fast",
+      fixtureKey: "startup",
+      handoff: { startupOwnerReadiness: evidence },
+      commit,
+    });
+    assert.equal(accepted.ok, true);
+
+    const reentry = recordValue(
+      (evidence.observation as unknown as JsonRecord).ownerReentry,
+    );
+    recordValue(reentry.vision).afterProcessId = 203;
+    const rejected = runStartupOwnerAcceptance({
+      mode: "fast",
+      fixtureKey: "startup",
+      handoff: { startupOwnerReadiness: evidence },
+      commit,
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.failedStage, "vision_owner");
+    assert.equal(rejected.reasonCode, "owner_reentry_replaced_process");
   });
 
   it("requires camera, try-on, and complete generated V2 handshake readiness", () => {

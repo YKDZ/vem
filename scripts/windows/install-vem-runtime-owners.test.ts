@@ -21,11 +21,19 @@ interface OwnerHarnessOutput {
   registeredTasks: Array<{
     trigger: { kind: string };
     principal: { UserId: string };
+    settings: { MultipleInstances: string };
   }>;
   missingPasswordRejected: boolean;
   aclCalls: string[];
   scCalls: string[];
   registryWrites: Array<{ name: string }>;
+  reentryResults: Array<{
+    adapter: string;
+    status: string;
+    reasonCode: string;
+    processId: number;
+    invocationId: string;
+  }>;
 }
 
 function source(path: string): string {
@@ -57,24 +65,32 @@ test("installs the production runtime owners and emits their shared manifest", (
   assert.match(installer, /owner-manifest\.json/);
 });
 
-test("interactive owner launchers replace stale component processes without watchdogs", () => {
+test("interactive owner launchers converge reentry without replacing a healthy owner", () => {
   const installer = source(installerPath);
   assert.match(installer, /launch-vem-machine-ui\.ps1/);
   assert.match(installer, /launch-vem-vision\.ps1/);
   assert.match(installer, /Get-CimInstance Win32_Process/);
-  assert.match(installer, /Stop-Process/);
   assert.match(installer, /Diagnostics\.ProcessStartInfo/);
   assert.match(installer, /Diagnostics\.Process\]::Start/);
+  assert.match(installer, /Threading\.Mutex/);
+  assert.match(installer, /WaitOne/);
+  assert.match(installer, /vem-runtime-owner-launch-result\/v1/);
+  assert.match(installer, /owner_already_ready/);
   assert.match(installer, /InheritedEnvironmentVariableNames/);
   assert.match(installer, /ExplicitEnvironmentVariables/);
-  assert.match(installer, /-MultipleInstances Parallel/);
+  assert.match(installer, /-MultipleInstances IgnoreNew/);
+  assert.doesNotMatch(installer, /-MultipleInstances Parallel/);
   assert.doesNotMatch(installer, /-MultipleInstances StopExisting/);
+  assert.doesNotMatch(installer, /Stop-Process/);
   assert.match(installer, /MachineUiWebViewDebugPort/);
   assert.match(installer, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
-  assert.match(
-    installer,
-    /Write-InteractiveLauncher \$machineLauncher "machine\.exe" \$machineExecutable @\(\) @\(\) \$machineUiEnvironment/,
-  );
+  assert.match(installer, /-Role "machine-ui"/);
+  assert.match(installer, /-Role "vision"/);
+  assert.match(installer, /-ReadinessPort \$MachineUiWebViewDebugPort/);
+  assert.match(installer, /-ReadinessPort 7892/);
+  assert.match(installer, /"descendant_listener"/);
+  assert.match(installer, /"direct_listener"/);
+  assert.match(installer, /Test-ListenerOwnership/);
   assert.match(installer, /Set-Item -LiteralPath "Env:`\$name"/);
   assert.match(installer, /EnvironmentVariables\[`\$name\]/);
   assert.doesNotMatch(installer, /Register-ObjectEvent/);
@@ -122,6 +138,16 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.match(output.machineLauncher, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
   assert.match(output.machineLauncher, /--remote-debugging-port=9222/);
   assert.match(output.machineLauncher, /Diagnostics\.ProcessStartInfo/);
+  assert.match(output.machineLauncher, /Threading\.Mutex/);
+  assert.match(
+    output.machineLauncher,
+    /schemaVersion = "vem-runtime-owner-launch-result\/v1"/,
+  );
+  assert.match(
+    output.machineLauncher,
+    /New-OwnerLaunchResult "ready" \$null "owner_already_ready"/,
+  );
+  assert.doesNotMatch(output.machineLauncher, /Stop-Process/);
   assert.match(
     output.machineLauncher,
     /EnvironmentVariables\[\[string\]\$entry\.Key\]/,
@@ -136,10 +162,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.match(source(installerPath), /GetFinalPathNameByHandleW/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
-  assert.equal(output.manifest.acl.length, 4);
+  assert.equal(output.manifest.acl.length, 5);
   assert.equal(output.registeredTasks.length, 2);
   assert.equal(output.missingPasswordRejected, true);
-  assert.equal(output.aclCalls.length, 4);
+  assert.equal(output.aclCalls.length, 5);
   assert.deepEqual(
     output.registeredTasks.map((task) => task.trigger.kind),
     ["AtLogon", "AtLogon"],
@@ -147,6 +173,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.deepEqual(
     output.registeredTasks.map((task) => task.principal.UserId),
     ["VEMKiosk", "VEMKiosk"],
+  );
+  assert.deepEqual(
+    output.registeredTasks.map((task) => task.settings.MultipleInstances),
+    ["IgnoreNew", "IgnoreNew"],
   );
   assert.ok(
     output.scCalls.some(
@@ -159,6 +189,32 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   );
   assert.ok(
     output.registryWrites.some((write) => write.name === "DefaultPassword"),
+  );
+  assert.deepEqual(
+    output.reentryResults.map((result) => ({
+      adapter: result.adapter,
+      status: result.status,
+      reasonCode: result.reasonCode,
+      processId: result.processId,
+    })),
+    [
+      {
+        adapter: "manual",
+        status: "ready",
+        reasonCode: "owner_already_ready",
+        processId: 4101,
+      },
+      {
+        adapter: "manual",
+        status: "ready",
+        reasonCode: "owner_already_ready",
+        processId: 4101,
+      },
+    ],
+  );
+  assert.notEqual(
+    output.reentryResults[0].invocationId,
+    output.reentryResults[1].invocationId,
   );
 });
 
@@ -182,12 +238,14 @@ test("field probe rejects incomplete or competing installed owner definitions", 
       state: "Ready",
       lastRunTime: "2026-08-24T12:05:08.000Z",
       lastTaskResult: 0,
+      multipleInstances: "IgnoreNew",
     },
     {
       name: "VEMVisionRuntime",
       state: "Ready",
       lastRunTime: "2026-08-24T12:05:09.000Z",
       lastTaskResult: 0,
+      multipleInstances: "IgnoreNew",
     },
   ]);
   assert.equal(output.visionMainCount, 1);
@@ -238,6 +296,7 @@ test("field probe rejects incomplete or competing installed owner definitions", 
     "missing-logon-trigger",
     "unexpected-task-action",
     "task-restart-policy",
+    "parallel-task-reentry",
     "legacy-vision-owner",
     "legacy-runtime-task-owner",
     "legacy-runtime-service-owner",

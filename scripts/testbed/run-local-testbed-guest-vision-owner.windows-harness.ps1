@@ -76,7 +76,7 @@ try {
     }
   }
   function Convert-TestbedStartupProbeToReadiness {
-    param($Probe, $OwnerManifest, $MachineEvidence, $VisionEvidence, $VisionReadiness, $Route)
+    param($Probe, $OwnerManifest, $MachineEvidence, $VisionEvidence, $VisionReadiness, $Route, $OwnerReentry)
     return [ordered]@{
       vision = [ordered]@{
         processCount = @($Probe.processes.vision).Count

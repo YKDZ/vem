@@ -866,9 +866,18 @@ function Convert-TestbedStartupProbeToReadiness(
   [object]$MachineEvidence,
   [object]$VisionEvidence,
   [object]$VisionReadiness,
-  [string]$Route
+  [string]$Route,
+  [object]$OwnerReentry
 ) {
   $sessionId = [int]$MachineEvidence.sessionId
+  $machineLaunch = Wait-TestbedOwnerLaunchResult `
+    -Owner $OwnerManifest.owners.machineUi `
+    -ExpectedRole "machine-ui" `
+    -ExpectedProcessId ([int]$MachineEvidence.processId)
+  $visionLaunch = Wait-TestbedOwnerLaunchResult `
+    -Owner $OwnerManifest.owners.vision `
+    -ExpectedRole "vision" `
+    -ExpectedProcessId ([int]$VisionEvidence.processId)
   return [ordered]@{
     schemaVersion = "vem-installed-runtime-startup-acceptance/v1"
     ok = $true
@@ -889,18 +898,174 @@ function Convert-TestbedStartupProbeToReadiness(
       machineUi = [ordered]@{
         taskState = [string](@($Probe.tasks | Where-Object { [string]$_.name -eq "VEMMachineUI" })[0].state)
         processCount = @($Probe.processes.machineUi).Count
+        processId = [int]$MachineEvidence.processId
         sessionId = $sessionId
         route = $Route
       }
       vision = [ordered]@{
         taskState = [string](@($Probe.tasks | Where-Object { [string]$_.name -eq "VEMVisionRuntime" })[0].state)
         processCount = @($Probe.processes.vision).Count
+        processId = [int]$VisionEvidence.processId
         workerCount = @($Probe.visionWorkers).Count
         sessionId = [int]$VisionEvidence.sessionId
         readiness = $VisionReadiness
       }
+      ownerLaunch = [ordered]@{
+        machineUi = $machineLaunch
+        vision = $visionLaunch
+      }
+      ownerReentry = $OwnerReentry
     }
     modeEvidence = Get-TestbedStartupModeEvidence $sessionId $Probe
+  }
+}
+
+function Get-TestbedOwnerLaunchResult(
+  [object]$Owner,
+  [string]$ExpectedRole,
+  [int]$ExpectedProcessId
+) {
+  $path = [string]$Owner.launchResultPath
+  if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathFullyQualified($path)) {
+    throw "$ExpectedRole owner manifest launch result path is invalid"
+  }
+  Require-Path $path
+  $result = Get-Content -Raw -LiteralPath $path -Encoding UTF8 | ConvertFrom-Json
+  if ([string]$result.schemaVersion -cne "vem-runtime-owner-launch-result/v1" -or
+    [string]$result.role -cne $ExpectedRole -or
+    [string]$result.adapter -cne "scheduled_task") {
+    throw "$ExpectedRole owner launch result identity is invalid"
+  }
+  if ([string]$result.status -cne "ready") {
+    throw "$ExpectedRole owner launch failed at $([string]$result.failedStage): $([string]$result.reasonCode)"
+  }
+  if ([string]$result.reasonCode -notin @("owner_started", "owner_already_ready") -or
+    $null -ne $result.failedStage -or
+    [int]$result.processId -ne $ExpectedProcessId -or
+    $result.readiness.processStable -ne $true) {
+    throw "$ExpectedRole owner launch result does not match the observed ready owner"
+  }
+  if ([string]$result.invocationId -cnotmatch '^[a-f0-9]{32}$') {
+    throw "$ExpectedRole owner launch invocation ID is invalid"
+  }
+  try {
+    $startedAt = [DateTimeOffset]::ParseExact(
+      [string]$result.startedAt,
+      "yyyy-MM-ddTHH:mm:ss.fff'Z'",
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::AssumeUniversal
+    )
+    $finishedAt = [DateTimeOffset]::ParseExact(
+      [string]$result.finishedAt,
+      "yyyy-MM-ddTHH:mm:ss.fff'Z'",
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::AssumeUniversal
+    )
+  } catch {
+    throw "$ExpectedRole owner launch timestamps are invalid"
+  }
+  if ($finishedAt -lt $startedAt) { throw "$ExpectedRole owner launch finished before it started" }
+  return [ordered]@{
+    schemaVersion = "vem-runtime-owner-launch-result/v1"
+    role = $ExpectedRole
+    invocationId = [string]$result.invocationId
+    adapter = "scheduled_task"
+    startedAt = [string]$result.startedAt
+    finishedAt = [string]$result.finishedAt
+    status = "ready"
+    failedStage = $null
+    reasonCode = [string]$result.reasonCode
+    processId = $ExpectedProcessId
+    readiness = [ordered]@{
+      processStable = $true
+      listenerPort = $result.readiness.listenerPort
+    }
+  }
+}
+
+function Wait-TestbedOwnerLaunchResult(
+  [object]$Owner,
+  [string]$ExpectedRole,
+  [int]$ExpectedProcessId,
+  [string]$PreviousInvocationId = "",
+  [string]$ExpectedReasonCode = ""
+) {
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  do {
+    try {
+      $result = Get-TestbedOwnerLaunchResult $Owner $ExpectedRole $ExpectedProcessId
+      if (([string]::IsNullOrWhiteSpace($PreviousInvocationId) -or [string]$result.invocationId -cne $PreviousInvocationId) -and
+        ([string]::IsNullOrWhiteSpace($ExpectedReasonCode) -or [string]$result.reasonCode -ceq $ExpectedReasonCode)) {
+        return $result
+      }
+    } catch { $lastError = $_ }
+    Start-Sleep -Milliseconds 200
+  } while ([DateTime]::UtcNow -lt $deadline)
+  $diagnostic = if ($null -ne $lastError) { $lastError.Exception.Message } else { "no new terminal result" }
+  throw "$ExpectedRole owner launch result did not converge: $diagnostic"
+}
+
+function Wait-TestbedInteractiveOwnerTasksReady([int]$TimeoutSeconds = 20) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  do {
+    $tasks = @("VEMMachineUI", "VEMVisionRuntime") | ForEach-Object {
+      Get-ScheduledTask -TaskName $_ -TaskPath "\" -ErrorAction Stop
+    }
+    if (@($tasks | Where-Object { [string]$_.State -ne "Ready" }).Count -eq 0) { return }
+    Start-Sleep -Milliseconds 200
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "interactive owner tasks did not return to Ready before reentry"
+}
+
+function Invoke-TestbedInteractiveOwnerReentry(
+  [object]$OwnerManifest,
+  [object]$MachineEvidence,
+  [object]$VisionEvidence
+) {
+  Wait-TestbedInteractiveOwnerTasksReady
+  $machineBefore = Wait-TestbedOwnerLaunchResult `
+    -Owner $OwnerManifest.owners.machineUi `
+    -ExpectedRole "machine-ui" `
+    -ExpectedProcessId ([int]$MachineEvidence.processId)
+  $visionBefore = Wait-TestbedOwnerLaunchResult `
+    -Owner $OwnerManifest.owners.vision `
+    -ExpectedRole "vision" `
+    -ExpectedProcessId ([int]$VisionEvidence.processId)
+  foreach ($taskName in @("VEMMachineUI", "VEMMachineUI", "VEMVisionRuntime", "VEMVisionRuntime")) {
+    Start-ScheduledTask -TaskName $taskName -TaskPath "\" -ErrorAction Stop
+  }
+  $machineAfter = Wait-TestbedOwnerLaunchResult `
+    -Owner $OwnerManifest.owners.machineUi `
+    -ExpectedRole "machine-ui" `
+    -ExpectedProcessId ([int]$MachineEvidence.processId) `
+    -PreviousInvocationId ([string]$machineBefore.invocationId) `
+    -ExpectedReasonCode "owner_already_ready"
+  $visionAfter = Wait-TestbedOwnerLaunchResult `
+    -Owner $OwnerManifest.owners.vision `
+    -ExpectedRole "vision" `
+    -ExpectedProcessId ([int]$VisionEvidence.processId) `
+    -PreviousInvocationId ([string]$visionBefore.invocationId) `
+    -ExpectedReasonCode "owner_already_ready"
+  Wait-TestbedInteractiveOwnerTasksReady
+  $machineObserved = Wait-CanonicalProcessEvidence "machine.exe" ([string]$OwnerManifest.owners.machineUi.executablePath) 10
+  $visionObserved = Wait-TestbedVisionRuntimeEvidence 10
+  if ([int]$machineObserved.processId -ne [int]$MachineEvidence.processId -or
+    [int]$visionObserved.processId -ne [int]$VisionEvidence.processId) {
+    throw "scheduled task reentry replaced a canonical interactive owner"
+  }
+  return [ordered]@{
+    source = "installed_scheduled_task_reentry"
+    requestsPerRole = 2
+    machineUi = [ordered]@{
+      beforeProcessId = [int]$MachineEvidence.processId
+      afterProcessId = [int]$machineObserved.processId
+      invocationChanged = [string]$machineBefore.invocationId -cne [string]$machineAfter.invocationId
+    }
+    vision = [ordered]@{
+      beforeProcessId = [int]$VisionEvidence.processId
+      afterProcessId = [int]$visionObserved.processId
+      invocationChanged = [string]$visionBefore.invocationId -cne [string]$visionAfter.invocationId
+    }
   }
 }
 
@@ -1096,7 +1261,26 @@ function Get-TestbedInstalledRuntimeOwnerState {
   $visionReadiness = Get-TestbedVisionReadinessEvidence
   $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
   $probe = $probeRaw | ConvertFrom-Json
-  $readiness = Convert-TestbedStartupProbeToReadiness $probe $OwnerManifest $machineEvidence $visionEvidence $visionReadiness $route
+  $ownerReentry = $null
+  if ($Mode -eq "fast") {
+    Write-TestbedPhase "verify-installed-owner-reentry"
+    $ownerReentry = Invoke-TestbedInteractiveOwnerReentry $OwnerManifest $machineEvidence $visionEvidence
+    $target = Wait-InstalledTauriRoute "#/catalog"
+    $route = ([uri][string]$target.url).Fragment
+    $machineEvidence = Wait-CanonicalProcessEvidence "machine.exe" $MachinePath 10
+    $visionEvidence = Wait-TestbedVisionRuntimeEvidence 10
+    $visionReadiness = Get-TestbedVisionReadinessEvidence
+    $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
+    $probe = $probeRaw | ConvertFrom-Json
+  }
+  $readiness = Convert-TestbedStartupProbeToReadiness `
+    -Probe $probe `
+    -OwnerManifest $OwnerManifest `
+    -MachineEvidence $machineEvidence `
+    -VisionEvidence $visionEvidence `
+    -VisionReadiness $visionReadiness `
+    -Route $route `
+    -OwnerReentry $ownerReentry
   return [ordered]@{
     readiness = $readiness
     ownerManifest = $OwnerManifest
