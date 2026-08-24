@@ -12,7 +12,7 @@ use tokio_serial::{DataBits, Parity, SerialPortBuilderExt, StopBits};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannerRuntimeConfig {
     pub port_path: Option<String>,
     pub baud_rate: u32,
@@ -86,6 +86,12 @@ impl ScannerRuntimeController {
 
     pub async fn reconfigure(&self, config: ScannerRuntimeConfig) -> Result<(), String> {
         let mut state = self.state.lock().await;
+        if state
+            .as_ref()
+            .is_some_and(|running| running.config == config && !running.task.is_finished())
+        {
+            return Ok(());
+        }
         let previous_config = state.as_ref().map(|running| running.config.clone());
         if let Some(running) = state.take() {
             running.shutdown.cancel();
@@ -674,5 +680,41 @@ mod tests {
             "previous scanner runtime must be restored"
         );
         controller.stop().await.expect("stop restored runtime");
+    }
+
+    #[tokio::test]
+    async fn scanner_controller_keeps_the_live_reader_for_an_identical_reconfigure() {
+        let (raw_tx, _raw_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let controller =
+            ScannerRuntimeController::new(raw_tx, event_tx, PaymentCodeScanArmer::default());
+        let disabled = ScannerRuntimeConfig {
+            port_path: None,
+            baud_rate: 9_600,
+            source: "disabled".to_string(),
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+        };
+
+        controller
+            .reconfigure(disabled.clone())
+            .await
+            .expect("start scanner runtime");
+        let initial = event_rx.recv().await.expect("initial health event");
+        assert_eq!(
+            serde_json::to_value(initial).expect("event json")["snapshot"]["code"],
+            "SCANNER_DISABLED"
+        );
+
+        controller
+            .reconfigure(disabled)
+            .await
+            .expect("identical reconfigure");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), event_rx.recv())
+                .await
+                .is_err(),
+            "an identical reconfigure must preserve the live reader generation"
+        );
+        controller.stop().await.expect("stop scanner runtime");
     }
 }
