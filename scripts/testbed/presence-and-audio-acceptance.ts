@@ -183,21 +183,23 @@ function b3Speed(frame: JsonRecord | null | undefined): number | null {
   return match ? Number.parseInt(match[1], 16) : null;
 }
 
-function assertAutomaticVentEvidence(
-  automaticVent: JsonRecord,
+function assertPresenceVentEvidence(
+  presenceVent: JsonRecord,
   initialTransitionId: string,
   departureTransitionId: string,
+  rearmedTransitionId: string,
 ): number[] {
   const protocolFrames = assertArray(
-    automaticVent?.protocolFrames,
-    "automaticVent.protocolFrames",
+    presenceVent?.protocolFrames,
+    "presenceVent.protocolFrames",
   );
-  const speeds = assertArray(automaticVent?.speeds, "automaticVent.speeds");
+  const speeds = assertArray(presenceVent?.speeds, "presenceVent.speeds");
   if (
-    protocolFrames.length !== 2 ||
-    speeds.length !== 2 ||
+    protocolFrames.length !== 3 ||
+    speeds.length !== 3 ||
     speeds[0] !== 3 ||
     speeds[1] !== 0 ||
+    speeds[2] !== 2 ||
     protocolFrames.some((frame: unknown, index: number) => {
       const frameRecord = recordValue(frame);
       return (
@@ -207,7 +209,7 @@ function assertAutomaticVentEvidence(
     })
   ) {
     throw new Error(
-      "automatic B3 evidence must contain exactly one 3 then one 0",
+      "presence-driven B3 evidence must contain 3, then 0, then the updated base speed 2",
     );
   }
   const frameTimes = protocolFrames.map((frame) =>
@@ -216,18 +218,20 @@ function assertAutomaticVentEvidence(
   if (
     frameTimes.some((value) => value === null) ||
     (frameTimes[1] as number) - (frameTimes[0] as number) < 5_000 ||
-    !Number.isFinite(automaticVent?.guardElapsedMs) ||
-    Number(automaticVent.guardElapsedMs) < 5_000
+    (frameTimes[2] as number) < (frameTimes[1] as number) ||
+    !Number.isFinite(presenceVent?.guardElapsedMs) ||
+    Number(presenceVent.guardElapsedMs) < 5_000
   ) {
-    throw new Error("automatic B3 guard evidence is incomplete");
+    throw new Error("presence-driven B3 timing evidence is incomplete");
   }
   const edgeCorrelation = assertArray(
-    automaticVent?.edgeCorrelation,
-    "automaticVent.edgeCorrelation",
+    presenceVent?.edgeCorrelation,
+    "presenceVent.edgeCorrelation",
   );
   const expected: Array<[string, string, number]> = [
     [expectedStableEdgeId(initialTransitionId), initialTransitionId, 3],
     [expectedStableEdgeId(departureTransitionId), departureTransitionId, 0],
+    [expectedStableEdgeId(rearmedTransitionId), rearmedTransitionId, 2],
   ];
   if (
     edgeCorrelation.length !== expected.length ||
@@ -243,30 +247,32 @@ function assertAutomaticVentEvidence(
           recordValue(protocolFrames[index]).rawFrameHex,
     )
   ) {
-    throw new Error("automatic B3 stable-edge correlation is incomplete");
+    throw new Error("presence-driven B3 stable-edge correlation is incomplete");
   }
-  const precedence = recordValue(automaticVent?.adminPrecedence);
-  const duplicateSameEdge = recordValue(precedence?.duplicateSameEdge);
-  const precedenceFrame = recordValue(precedence?.frame);
+  const operatorSetting = recordValue(presenceVent?.operatorSetting);
+  const duplicateSameEdge = recordValue(operatorSetting?.duplicateSameEdge);
+  const operatorFrame = recordValue(operatorSetting?.frame);
   if (
-    typeof precedence?.commandNo !== "string" ||
-    precedence.commandNo.trim() === "" ||
-    precedence?.requestedSpeed !== 3 ||
-    precedence?.resultStatus !== "succeeded" ||
-    duplicateSameEdge?.edgeId !== expected[0][0] ||
+    typeof operatorSetting?.commandNo !== "string" ||
+    operatorSetting.commandNo.trim() === "" ||
+    operatorSetting?.requestedSpeed !== 2 ||
+    operatorSetting?.resultStatus !== "succeeded" ||
+    duplicateSameEdge?.actionId !== expected[0][0] ||
     duplicateSameEdge?.outcome !== "deduplicated" ||
-    precedenceFrame?.parsedOpcode !== "B3" ||
-    b3Speed(precedenceFrame) !== 3 ||
-    timestamp(precedenceFrame?.capturedAt) === null
+    operatorFrame?.parsedOpcode !== "B3" ||
+    b3Speed(operatorFrame) !== 2 ||
+    timestamp(operatorFrame?.capturedAt) === null
   ) {
-    throw new Error("automatic B3 Admin precedence evidence is incomplete");
+    throw new Error(
+      "presence-driven B3 operator-setting evidence is incomplete",
+    );
   }
-  const adminFrameTime = timestamp(precedenceFrame.capturedAt);
+  const operatorFrameTime = timestamp(operatorFrame.capturedAt);
   if (
-    (adminFrameTime as number) - (frameTimes[0] as number) < 5_000 ||
-    (frameTimes[1] as number) - (adminFrameTime as number) < 5_000
+    (operatorFrameTime as number) - (frameTimes[0] as number) < 5_000 ||
+    (frameTimes[1] as number) - (operatorFrameTime as number) < 5_000
   ) {
-    throw new Error("automatic B3 guard evidence is incomplete");
+    throw new Error("presence-driven B3 operator timing is incomplete");
   }
   return speeds.map((speed: unknown) => Number(speed));
 }
@@ -578,10 +584,11 @@ export function validatePresenceAndAudioAcceptanceEvidence(
       "presence and audio requires exactly one cue window per required transition",
     );
   }
-  const automaticVentSpeeds = assertAutomaticVentEvidence(
-    recordValue(acceptance.automaticVent),
+  const presenceVentSpeeds = assertPresenceVentEvidence(
+    recordValue(acceptance.presenceVent),
     initialTransitionId,
     departureTransitionId,
+    rearmedTransitionId,
   );
 
   return {
@@ -590,6 +597,6 @@ export function validatePresenceAndAudioAcceptanceEvidence(
     categoryTransitions: categories,
     cueWindowCount: cueWindows.length,
     nativeSource: audio.source,
-    automaticVentSpeeds,
+    presenceVentSpeeds,
   };
 }

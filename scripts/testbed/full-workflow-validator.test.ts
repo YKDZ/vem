@@ -284,12 +284,26 @@ function hardwareLifecycleReport() {
 function environmentCommand(
   action: string,
   commandNo: string,
-  resultJson: JsonRecord = { success: true },
+  resultJson: JsonRecord = {
+    outcome: "accepted",
+    acceptedRevision: 10,
+    convergence: "pending",
+  },
 ) {
+  const expectedOpcode =
+    action === "ventSpeed"
+      ? "B3"
+      : action === "targetTemperatureCelsius"
+        ? "B1"
+        : "B2";
   return {
     action,
     admin: { commandNo, status: "sent" },
     result: { status: "succeeded", resultJson },
+    snapshot: {
+      revision: resultJson.acceptedRevision,
+      convergence: "applied",
+    },
     mqtt: {
       commandObserved: true,
       resultObserved: true,
@@ -300,10 +314,17 @@ function environmentCommand(
     },
     serial: {
       lowerBoundaryObserved: true,
-      automaticB3FrameCount: action === "ventSpeed" ? 1 : 0,
+      protocolFrameObserved: true,
+      expectedOpcode,
+      b3FrameCount: action === "ventSpeed" ? 1 : 0,
       protocolFrame: {
-        parsedOpcode: action === "ventSpeed" ? "B3" : "B2",
-        rawFrameHex: action === "ventSpeed" ? "55b303" : "55b201",
+        parsedOpcode: expectedOpcode,
+        rawFrameHex:
+          expectedOpcode === "B3"
+            ? "55b302"
+            : expectedOpcode === "B1"
+              ? "55b117"
+              : "55b201",
         capturedAt: "2026-07-22T08:00:05.000Z",
       },
     },
@@ -312,7 +333,7 @@ function environmentCommand(
 
 function environmentControlReport() {
   return {
-    schemaVersion: "vem-environment-control-guest-full/v1",
+    schemaVersion: "vem-environment-control-guest-full/v2",
     ok: true,
     handoffSerialSessionId: "serial-replacement",
     serialSessionReplacement: {
@@ -325,149 +346,99 @@ function environmentControlReport() {
       environmentCommand("ventSpeed", "MCMD-3"),
       environmentCommand("targetTemperatureCelsius", "MCMD-4"),
     ],
-    overlapRejection: {
-      rejected: true,
-      httpStatus: 409,
-      error: "ENVIRONMENT_COMMAND_IN_PROGRESS",
-    },
     daemon: {
       health: { hardwareOnline: true },
       readiness: { ready: true },
-      automaticVent: {
+      environmentControl: {
         health: {
-          component: "automatic_vent",
+          component: "environment_control",
           level: "ok",
-          code: "AUTOMATIC_VENT_READY",
-        },
-        outcomes: [
-          { edgeId: "presence-1:arrival", outcome: "accepted" },
-          { edgeId: "presence-1:arrival", outcome: "deduplicated" },
-          { edgeId: "presence-2:departure", outcome: "accepted" },
-          { edgeId: "presence-3:departure", outcome: "accepted" },
-          { edgeId: "presence-4:arrival", outcome: "accepted" },
-          { edgeId: "presence-4:departure", outcome: "accepted" },
-          { edgeId: "presence-5:arrival", outcome: "accepted" },
-        ],
-      },
-    },
-    precedence: {
-      automaticArrival: {
-        edgeId: "presence-1:arrival",
-        requestedSpeed: 3,
-        outcome: "accepted",
-        b3FrameCountDelta: 1,
-        protocolFrames: ["B3"],
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b303",
-          capturedAt: "2026-07-22T08:00:00.000Z",
-        },
-      },
-      adminB3: {
-        commandNo: "MCMD-3",
-        resultStatus: "succeeded",
-        mqttCommandNo: "MCMD-3",
-        mqttResultNo: "MCMD-3",
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b303",
-          capturedAt: "2026-07-22T08:00:05.000Z",
-        },
-      },
-      sameEdgeAfterAdmin: {
-        edgeId: "presence-1:arrival",
-        outcome: "deduplicated",
-        b3FrameCountDelta: 0,
-        protocolFrames: [],
-        guardWindow: {
-          completed: true,
-          durationMs: 5_000,
-          protocolFrames: [],
-          b3FrameCountDelta: 0,
-        },
-      },
-      nextStableEdge: {
-        edgeId: "presence-2:departure",
-        requestedSpeed: 0,
-        outcome: "accepted",
-        b3FrameCountDelta: 1,
-        protocolFrames: ["B3"],
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b300",
-          capturedAt: "2026-07-22T08:00:10.000Z",
+          code: "ENVIRONMENT_CONTROL_APPLIED",
         },
       },
     },
-    operatorGearPersistence: {
-      operatorGearCommand: {
-        admin: { commandNo: "MCMD-OPERATOR-GEAR" },
-        result: { status: "succeeded" },
-        serial: {
-          protocolFrame: {
-            sessionId: "serial-replacement",
-            parsedOpcode: "B3",
-            rawFrameHex: "55b302",
-            capturedAt: "2026-07-22T08:00:15.000Z",
-          },
+    axisIndependence: {
+      snapshots: Array.from({ length: 3 }, () => ({
+        convergence: "applied",
+        settings: { baseVentSpeed: 3 },
+        desired: { ventSpeed: 0 },
+      })),
+    },
+    persistentZero: {
+      restore: {
+        snapshot: {
+          convergence: "applied",
+          settings: { baseVentSpeed: 0 },
+          desired: { ventSpeed: 0 },
         },
       },
-      departureAfterOperatorGear: {
-        edgeId: "presence-3:departure",
-        requestedSpeed: 0,
-        outcome: "accepted",
-        b3FrameCountDelta: 1,
-        protocolFrames: ["B3"],
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b300",
-          capturedAt: "2026-07-22T08:00:20.000Z",
+    },
+    temporaryStopRestore: {
+      stop: {
+        snapshot: {
+          convergence: "applied",
+          settings: { baseVentSpeed: 2 },
+          desired: { ventSpeed: 0 },
         },
       },
-      arrivalAfterOperatorGear: {
-        edgeId: "presence-4:arrival",
-        requestedSpeed: 3,
-        expectedSpeed: 2,
-        outcome: "accepted",
-        b3FrameCountDelta: 1,
-        protocolFrames: ["B3"],
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b302",
-          capturedAt: "2026-07-22T08:00:25.000Z",
+      restore: {
+        snapshot: {
+          convergence: "applied",
+          settings: { baseVentSpeed: 2 },
+          desired: { ventSpeed: 2 },
         },
       },
-      secondDepartureAfterOperatorGear: {
-        edgeId: "presence-4:departure",
-        requestedSpeed: 0,
-        outcome: "accepted",
-        b3FrameCountDelta: 1,
-        protocolFrames: ["B3"],
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b300",
-          capturedAt: "2026-07-22T08:00:30.000Z",
-        },
+    },
+    idempotency: {
+      first: { admission: { outcome: "accepted", acceptedRevision: 20 } },
+      retry: {
+        admission: { outcome: "deduplicated", acceptedRevision: 20 },
+        serial: { protocolFrames: [] },
       },
-      secondArrivalAfterOperatorGear: {
-        edgeId: "presence-5:arrival",
-        requestedSpeed: 3,
-        expectedSpeed: 2,
-        outcome: "accepted",
-        b3FrameCountDelta: 1,
-        protocolFrames: ["B3"],
-        frame: {
-          sessionId: "serial-replacement",
-          parsedOpcode: "B3",
-          rawFrameHex: "55b302",
-          capturedAt: "2026-07-22T08:00:35.000Z",
+    },
+    explicitRetry: {
+      admission: { outcome: "accepted", acceptedRevision: 20 },
+      serial: {
+        protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b302" },
+      },
+    },
+    daemonRestart: {
+      before: { revision: 20 },
+      after: {
+        revision: 20,
+        convergence: "applied",
+        settings: { baseVentSpeed: 2 },
+        desired: { ventSpeed: 2 },
+        confirmed: { ventSpeed: 2 },
+      },
+      frame: { parsedOpcode: "B3", rawFrameHex: "55b302" },
+    },
+    lowerControllerReconnect: {
+      disconnectedSessionId: "serial-replacement",
+      reconnectedSessionId: "serial-reconnected",
+      admission: { outcome: "accepted", acceptedRevision: 21 },
+      offlineSnapshot: {
+        revision: 21,
+        convergence: "offline",
+        settings: { baseVentSpeed: 4 },
+        desired: { ventSpeed: 4 },
+      },
+      snapshot: {
+        revision: 21,
+        convergence: "applied",
+        confirmed: { ventSpeed: 4 },
+      },
+      frame: { parsedOpcode: "B3", rawFrameHex: "55b304" },
+    },
+    cleanup: {
+      snapshot: {
+        convergence: "applied",
+        settings: {
+          airConditionerEnabled: false,
+          targetTemperatureCelsius: 26,
+          baseVentSpeed: 3,
         },
+        desired: { ventSpeed: 0 },
       },
     },
     boundaries: {
@@ -475,6 +446,8 @@ function environmentControlReport() {
       mqtt: true,
       daemonIpc: true,
       lowerSerial: true,
+      daemonRestart: true,
+      lowerControllerReconnect: true,
     },
   };
 }
@@ -815,8 +788,17 @@ function localOperationsReport() {
       outcome: "completed",
     },
     localEnvironmentControl: {
-      request: { ventSpeed: 3 },
-      result: { success: true },
+      request: {
+        actionId: "local-operations:run-1:base-vent-3",
+        source: "local_operator",
+        action: { type: "set_base_vent_speed", ventSpeed: 3 },
+      },
+      admission: { outcome: "accepted", acceptedRevision: 4 },
+      snapshot: {
+        convergence: "applied",
+        settings: { baseVentSpeed: 3 },
+        desired: { ventSpeed: 3 },
+      },
       protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b303" },
     },
     maintenanceEntry: {
@@ -1095,7 +1077,7 @@ function presenceAndAudioReport() {
           },
         ],
       },
-      automaticVent: {
+      presenceVent: {
         protocolFrames: [
           {
             parsedOpcode: "B3",
@@ -1107,8 +1089,13 @@ function presenceAndAudioReport() {
             rawFrameHex: "55b300",
             capturedAt: "2026-07-22T08:00:10.000Z",
           },
+          {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+            capturedAt: "2026-07-22T08:00:11.000Z",
+          },
         ],
-        speeds: [3, 0],
+        speeds: [3, 0, 2],
         guardElapsedMs: 10_000,
         edgeCorrelation: [
           {
@@ -1131,18 +1118,28 @@ function presenceAndAudioReport() {
               capturedAt: "2026-07-22T08:00:10.000Z",
             },
           },
+          {
+            edgeId: "presence-3:arrival",
+            transitionId: "vision:presence-3:welcome",
+            speed: 2,
+            frame: {
+              parsedOpcode: "B3",
+              rawFrameHex: "55b302",
+              capturedAt: "2026-07-22T08:00:11.000Z",
+            },
+          },
         ],
-        adminPrecedence: {
+        operatorSetting: {
           commandNo: "environment-command-1",
-          requestedSpeed: 3,
+          requestedSpeed: 2,
           resultStatus: "succeeded",
           frame: {
             parsedOpcode: "B3",
-            rawFrameHex: "55b303",
+            rawFrameHex: "55b302",
             capturedAt: "2026-07-22T08:00:05.000Z",
           },
           duplicateSameEdge: {
-            edgeId: "presence-1:arrival",
+            actionId: "presence-1:arrival",
             outcome: "deduplicated",
           },
         },
@@ -1790,73 +1787,65 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "failed",
     );
-    const missingNextStableEdge = environmentControlReport();
-    delete recordValue(missingNextStableEdge.precedence).nextStableEdge;
+    const missingRestore = environmentControlReport();
+    delete recordValue(missingRestore.temporaryStopRestore).restore;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
-        missingNextStableEdge,
+        missingRestore,
         "/reports/environment-control.json",
       ).status,
       "failed",
     );
-    const shortGuardWindow = environmentControlReport();
-    shortGuardWindow.precedence.sameEdgeAfterAdmin.guardWindow.durationMs = 4_999;
+    const dedupeChangedRevision = environmentControlReport();
+    dedupeChangedRevision.idempotency.retry.admission.acceptedRevision = 22;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
-        shortGuardWindow,
+        dedupeChangedRevision,
         "/reports/environment-control.json",
       ).status,
       "failed",
     );
-    const delayedAutomaticRebound = environmentControlReport();
-    arrayValue(
-      recordValue(
-        recordValue(
-          recordValue(delayedAutomaticRebound.precedence).sameEdgeAfterAdmin,
-        ).guardWindow,
-      ).protocolFrames,
-    ).push("B3");
-    recordValue(
-      recordValue(
-        recordValue(delayedAutomaticRebound.precedence).sameEdgeAfterAdmin,
-      ).guardWindow,
-    ).b3FrameCountDelta = 1;
+    const dedupeEmittedFrame = environmentControlReport();
+    recordValue(dedupeEmittedFrame.idempotency.retry.serial).protocolFrames = [
+      "B3",
+    ];
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
-        delayedAutomaticRebound,
+        dedupeEmittedFrame,
         "/reports/environment-control.json",
       ).status,
       "failed",
     );
-    const nextStableEdgeWithExtraB3 = environmentControlReport();
-    nextStableEdgeWithExtraB3.precedence.nextStableEdge.b3FrameCountDelta = 2;
+    const retryIncrementedRevision = environmentControlReport();
+    retryIncrementedRevision.explicitRetry.admission.acceptedRevision = 21;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
-        nextStableEdgeWithExtraB3,
+        retryIncrementedRevision,
         "/reports/environment-control.json",
       ).status,
       "failed",
     );
-    const automaticPathSentB1 = environmentControlReport();
-    automaticPathSentB1.precedence.automaticArrival.protocolFrames.push("B1");
+    const restartChangedRevision = environmentControlReport();
+    restartChangedRevision.daemonRestart.after.revision = 21;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
-        automaticPathSentB1,
+        restartChangedRevision,
         "/reports/environment-control.json",
       ).status,
       "failed",
     );
-    const automaticPathSentB2 = environmentControlReport();
-    automaticPathSentB2.precedence.nextStableEdge.protocolFrames.push("B2");
+    const offlineWasNotObserved = environmentControlReport();
+    offlineWasNotObserved.lowerControllerReconnect.offlineSnapshot.convergence =
+      "pending";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
-        automaticPathSentB2,
+        offlineWasNotObserved,
         "/reports/environment-control.json",
       ).status,
       "failed",

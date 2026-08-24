@@ -80,7 +80,7 @@ type PresenceAudioDependencies = {
   sleep: (milliseconds: number) => Promise<void>;
   now: () => number;
   randomUUID: () => string;
-  issueAdminVentReset: (
+  issueAdminVentBaseline: (
     guestInput: GuestInputRecord,
     dependencies: PresenceAudioDependencies,
   ) => Promise<JsonRecord>;
@@ -88,7 +88,12 @@ type PresenceAudioDependencies = {
     guestInput: GuestInputRecord,
     dependencies: PresenceAudioDependencies,
   ) => Promise<JsonRecord>;
-  submitDuplicateAutomaticVentIntent: (
+  submitTemporaryVentStop: (
+    handoff: HandoffRecord,
+    actionId: string,
+    dependencies: PresenceAudioDependencies,
+  ) => Promise<JsonRecord>;
+  submitDuplicateStablePresenceAction: (
     handoff: HandoffRecord,
     edgeId: string,
     dependencies: PresenceAudioDependencies,
@@ -752,58 +757,67 @@ async function waitForB3Sequence(
   );
 }
 
-function automaticVentEvidence({
+function presenceVentEvidence({
   frames,
   initialTransitionId,
   departureTransitionId,
-  adminOverride,
+  rearmedTransitionId,
+  operatorSetting,
   duplicateSameEdge,
 }: {
   frames: unknown[];
   initialTransitionId: unknown;
   departureTransitionId: unknown;
-  adminOverride: JsonRecord | null | undefined;
+  rearmedTransitionId: unknown;
+  operatorSetting: JsonRecord | null | undefined;
   duplicateSameEdge: JsonRecord | null | undefined;
 }): JsonRecord {
   const speeds = frames.map((frame) => (frame as JsonRecord).speed);
-  if (speeds.join(",") !== "3,3,0") {
+  if (speeds.join(",") !== "3,2,0,2") {
     throw new Error(
-      `automatic B3 evidence must be exactly 3,3,0: ${JSON.stringify(frames)}`,
+      `presence-driven B3 evidence must be exactly 3,2,0,2: ${JSON.stringify(frames)}`,
     );
   }
-  const [arrivalFrame, adminFrame, departureFrame] = frames;
+  const [arrivalFrame, operatorFrame, departureFrame, rearmedFrame] = frames;
   const arrivalAt = Date.parse(
     String((arrivalFrame as JsonRecord)?.capturedAt ?? ""),
   );
-  const adminAt = Date.parse(
-    String((adminFrame as JsonRecord)?.capturedAt ?? ""),
+  const operatorAt = Date.parse(
+    String((operatorFrame as JsonRecord)?.capturedAt ?? ""),
   );
   const departureAt = Date.parse(
     String((departureFrame as JsonRecord)?.capturedAt ?? ""),
   );
   if (
     !Number.isFinite(arrivalAt) ||
-    !Number.isFinite(adminAt) ||
-    !Number.isFinite(departureAt)
+    !Number.isFinite(operatorAt) ||
+    !Number.isFinite(departureAt) ||
+    !Number.isFinite(
+      Date.parse(String((rearmedFrame as JsonRecord)?.capturedAt ?? "")),
+    )
   ) {
-    throw new Error("automatic B3 evidence requires capturedAt timestamps");
+    throw new Error(
+      "presence-driven B3 evidence requires capturedAt timestamps",
+    );
   }
   const guardElapsedMs = departureAt - arrivalAt;
-  if (adminAt - arrivalAt < 5_000 || departureAt - adminAt < 5_000) {
+  if (operatorAt - arrivalAt < 5_000 || departureAt - operatorAt < 5_000) {
     throw new Error(
-      `automatic B3 guard was shorter than 5 seconds: ${guardElapsedMs}`,
+      `presence-driven B3 guard was shorter than 5 seconds: ${guardElapsedMs}`,
     );
   }
   if (
-    adminOverride?.requestedSpeed !== 3 ||
-    adminOverride?.resultStatus !== "succeeded" ||
+    operatorSetting?.requestedSpeed !== 2 ||
+    operatorSetting?.resultStatus !== "succeeded" ||
     duplicateSameEdge?.outcome !== "deduplicated"
   ) {
-    throw new Error("automatic B3 Admin precedence evidence is incomplete");
+    throw new Error(
+      "presence-driven B3 operator-setting evidence is incomplete",
+    );
   }
   return {
-    protocolFrames: [arrivalFrame, departureFrame],
-    speeds: [3, 0],
+    protocolFrames: [arrivalFrame, departureFrame, rearmedFrame],
+    speeds: [3, 0, 2],
     guardElapsedMs,
     edgeCorrelation: [
       {
@@ -818,10 +832,16 @@ function automaticVentEvidence({
         speed: 0,
         frame: departureFrame,
       },
+      {
+        edgeId: stableEdgeId(rearmedTransitionId),
+        transitionId: rearmedTransitionId,
+        speed: 2,
+        frame: rearmedFrame,
+      },
     ],
-    adminPrecedence: {
-      ...(adminOverride ?? {}),
-      frame: adminFrame,
+    operatorSetting: {
+      ...(operatorSetting ?? {}),
+      frame: operatorFrame,
       duplicateSameEdge,
     },
   };
@@ -954,21 +974,74 @@ async function issueAdminVentCommand(
   );
 }
 
-async function issueAdminVentReset(
-  guestInput: GuestInputRecord,
-  dependencies: PresenceAudioDependencies,
-): Promise<JsonRecord> {
-  return issueAdminVentCommand(guestInput, 0, dependencies);
-}
-
-async function issueAdminVentOverride(
+async function issueAdminVentBaseline(
   guestInput: GuestInputRecord,
   dependencies: PresenceAudioDependencies,
 ): Promise<JsonRecord> {
   return issueAdminVentCommand(guestInput, 3, dependencies);
 }
 
-async function submitDuplicateAutomaticVentIntent(
+async function issueAdminVentOverride(
+  guestInput: GuestInputRecord,
+  dependencies: PresenceAudioDependencies,
+): Promise<JsonRecord> {
+  return issueAdminVentCommand(guestInput, 2, dependencies);
+}
+
+async function submitTemporaryVentStop(
+  handoff: HandoffRecord,
+  actionId: string,
+  dependencies: PresenceAudioDependencies,
+): Promise<JsonRecord> {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
+  const request = dependencies.fetchJson as (
+    url: string,
+    options: JsonRecord,
+  ) => Promise<unknown>;
+  const admission = (await request(
+    `${daemonBaseUrl(handoff)}/v1/environment-control/actions`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        actionId,
+        source: "local_operator",
+        action: { type: "temporarily_stop_vent" },
+      }),
+    },
+  )) as JsonRecord;
+  if (admission.outcome !== "accepted") {
+    throw new Error(
+      `temporary vent stop was not accepted: ${JSON.stringify(admission)}`,
+    );
+  }
+  const deadline = dependencies.now() + TRACE_TIMEOUT_MS;
+  do {
+    const snapshot = (await request(
+      `${daemonBaseUrl(handoff)}/v1/environment-control`,
+      {
+        headers: {
+          authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
+        },
+      },
+    )) as JsonRecord;
+    if (
+      snapshot.revision === admission.acceptedRevision &&
+      snapshot.convergence === "applied" &&
+      (snapshot.desired as JsonRecord | undefined)?.ventSpeed === 0
+    ) {
+      return { admission, snapshot };
+    }
+    await dependencies.sleep(100);
+  } while (dependencies.now() < deadline);
+  throw new Error("temporary vent stop did not converge");
+}
+
+async function submitDuplicateStablePresenceAction(
   handoff: HandoffRecord,
   edgeId: string,
   dependencies: PresenceAudioDependencies,
@@ -980,23 +1053,24 @@ async function submitDuplicateAutomaticVentIntent(
       url: string,
       options: JsonRecord,
     ) => Promise<unknown>
-  )(`${daemonBaseUrl(handoff)}/v1/intents/automatic-vent`, {
+  )(`${daemonBaseUrl(handoff)}/v1/environment-control/actions`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ edgeId, ventSpeed: 3 }),
+    body: JSON.stringify({
+      actionId: edgeId,
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
+    }),
   });
-  if (
-    (response as JsonRecord | null)?.edgeId !== edgeId ||
-    (response as JsonRecord | null)?.outcome !== "deduplicated"
-  ) {
+  if ((response as JsonRecord | null)?.outcome !== "deduplicated") {
     throw new Error(
-      `duplicate automatic vent edge was not deduplicated: ${JSON.stringify(response)}`,
+      `duplicate stable-presence action was not deduplicated: ${JSON.stringify(response)}`,
     );
   }
-  return response;
+  return { ...(response as JsonRecord), actionId: edgeId };
 }
 
 function defaultDependencies(): PresenceAudioDependencies {
@@ -1025,9 +1099,10 @@ function defaultDependencies(): PresenceAudioDependencies {
     sleep,
     now: () => Date.now(),
     randomUUID,
-    issueAdminVentReset,
+    issueAdminVentBaseline,
     issueAdminVentOverride,
-    submitDuplicateAutomaticVentIntent,
+    submitTemporaryVentStop,
+    submitDuplicateStablePresenceAction,
     artifactRoot: (outPath: string) =>
       join(dirname(localPath(outPath)), "presence-and-audio-artifacts"),
     makeDirectory: (path: string) => mkdirSync(path, { recursive: true }),
@@ -1269,7 +1344,12 @@ export async function runPresenceAndAudioGuestFull(
       presenceCuesEnabled: true,
       transactionCuesEnabled: true,
     });
-    await dependencies.issueAdminVentReset(activeGuestInput, dependencies);
+    await dependencies.issueAdminVentBaseline(activeGuestInput, dependencies);
+    await dependencies.submitTemporaryVentStop(
+      activeHandoff,
+      `${operationId}:baseline-stop`,
+      dependencies,
+    );
     await returnToCatalogHome(activeClient, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       activeGuestInput,
@@ -1308,7 +1388,7 @@ export async function runPresenceAndAudioGuestFull(
       activeGuestInput,
       sessionId,
       ventFrameCursor,
-      [3, 3],
+      [3, 2],
       dependencies,
     );
     const checkpoints = [
@@ -1318,7 +1398,7 @@ export async function runPresenceAndAudioGuestFull(
       },
     ];
     const duplicateSameEdge =
-      await dependencies.submitDuplicateAutomaticVentIntent(
+      await dependencies.submitDuplicateStablePresenceAction(
         activeHandoff,
         stableEdgeId(initialWelcome.transitionId),
         dependencies,
@@ -1348,7 +1428,6 @@ export async function runPresenceAndAudioGuestFull(
     );
     const duplicateB3Record = duplicateB3 as JsonRecord | null;
     const afterAdminB3Record = afterAdminB3 as JsonRecord;
-    const afterAdminB3Frames = (afterAdminB3Record.frames as unknown[]) ?? [];
     if (
       b3FramesSince(
         duplicateB3Record,
@@ -1398,7 +1477,7 @@ export async function runPresenceAndAudioGuestFull(
       label: "sustained-empty-departed",
       traceId: Number(departure.entry.id),
     });
-    const departureB3 = await waitForB3Sequence(
+    await waitForB3Sequence(
       activeGuestInput,
       sessionId,
       serialEvidenceCursor(
@@ -1407,17 +1486,6 @@ export async function runPresenceAndAudioGuestFull(
       [0],
       dependencies,
     );
-    const automaticVent = automaticVentEvidence({
-      frames: [
-        ...afterAdminB3Frames,
-        ...((departureB3 as JsonRecord).frames as unknown[]),
-      ],
-      initialTransitionId: initialWelcome.transitionId,
-      departureTransitionId: departure.entry.transitionId,
-      adminOverride: adminOverride as JsonRecord | null | undefined,
-      duplicateSameEdge: duplicateSameEdge as JsonRecord | null | undefined,
-    });
-
     boundary = traceId(departure.trace);
     const rearmedFenceTraceId = boundary;
     const rearmedCapture = await startCueCapture("rearmed-welcome");
@@ -1435,6 +1503,21 @@ export async function runPresenceAndAudioGuestFull(
     checkpoints.push({
       label: "rearmed-arrival-settled",
       traceId: rearmedWelcome.terminalTraceId,
+    });
+    const rearmedB3 = await waitForB3Sequence(
+      activeGuestInput,
+      sessionId,
+      ventFrameCursor,
+      [3, 2, 0, 2],
+      dependencies,
+    );
+    const presenceVent = presenceVentEvidence({
+      frames: (rearmedB3 as JsonRecord).frames as unknown[],
+      initialTransitionId: initialWelcome.transitionId,
+      departureTransitionId: departure.entry.transitionId,
+      rearmedTransitionId: rearmedWelcome.transitionId,
+      operatorSetting: adminOverride as JsonRecord | null | undefined,
+      duplicateSameEdge: duplicateSameEdge as JsonRecord | null | undefined,
     });
 
     const supportedCategoryKeys = await readSupportedCategoryKeys(
@@ -1564,7 +1647,7 @@ export async function runPresenceAndAudioGuestFull(
         supportedCategoryKeys,
         categories,
       },
-      automaticVent,
+      presenceVent,
     };
     runtimeTrace = await readTrace();
     acceptance.runtimeTrace = runtimeTrace;

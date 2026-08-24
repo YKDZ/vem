@@ -6,12 +6,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.ts";
+import { restartInstalledDaemon } from "./local-operations-guest-full.ts";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
 
-const SCHEMA_VERSION = "vem-environment-control-guest-full/v1";
+const SCHEMA_VERSION = "vem-environment-control-guest-full/v2";
 const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
-const ADMIN_OVERRIDE_GUARD_MS = 5_000;
 const HARDWARE_BINDING_READY_TIMEOUT_MS = 60_000;
 
 type JsonRecord = Record<string, unknown>;
@@ -458,13 +458,14 @@ export function isReplacementSessionB3(
   );
 }
 
-function automaticVentHealth(
+function environmentControlHealth(
   health: JsonRecord | null | undefined,
 ): JsonRecord | null {
   const components = (health?.components ?? []) as unknown[];
   return (
     (components.find(
-      (component) => (component as JsonRecord)?.component === "automatic_vent",
+      (component) =>
+        (component as JsonRecord)?.component === "environment_control",
     ) as JsonRecord | undefined) ?? null
   );
 }
@@ -539,7 +540,7 @@ function b3FramesSince(
     }));
 }
 
-export function automaticSerialEvidence(
+export function environmentSerialEvidence(
   evidence: JsonRecord | null | undefined,
   beforeFrameCount: JsonRecord | number,
 ): JsonRecord {
@@ -599,20 +600,105 @@ export async function waitForExpectedProtocolFrame({
   );
 }
 
-async function requestAutomaticVentIntent({
+async function waitForEnvironmentSnapshot(
+  handoff: HandoffRecord,
+  label: string,
+  predicate: (snapshot: JsonRecord) => boolean,
+  timeoutMs = 45_000,
+): Promise<JsonRecord> {
+  const deadline = Date.now() + timeoutMs;
+  let last: JsonRecord | null = null;
+  do {
+    last = (await daemonGet(handoff, "/v1/environment-control").catch(
+      () => null,
+    )) as JsonRecord | null;
+    if (last && predicate(last)) return last;
+    await sleep(100);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `${label} did not reach the expected environment snapshot: ${JSON.stringify(last)}`,
+  );
+}
+
+function snapshotRevision(snapshot: JsonRecord | null | undefined): number {
+  const revision = snapshot?.revision;
+  if (!Number.isInteger(revision) || Number(revision) < 0) {
+    throw new Error(`environment snapshot revision is invalid: ${revision}`);
+  }
+  return Number(revision);
+}
+
+async function submitDaemonAction({
+  handoff,
+  actionId,
+  source,
+  action,
+}: {
+  handoff: HandoffRecord;
+  actionId: string;
+  source: "local_operator" | "stable_presence" | "automatic_policy";
+  action: JsonRecord;
+}): Promise<JsonRecord> {
+  return (await daemonPost(handoff, "/v1/environment-control/actions", {
+    actionId,
+    source,
+    action,
+  })) as JsonRecord;
+}
+
+async function submitDaemonActionAndWait({
+  handoff,
+  actionId,
+  source,
+  action,
+}: {
+  handoff: HandoffRecord;
+  actionId: string;
+  source: "local_operator" | "stable_presence" | "automatic_policy";
+  action: JsonRecord;
+}): Promise<JsonRecord> {
+  const admission = await submitDaemonAction({
+    handoff,
+    actionId,
+    source,
+    action,
+  });
+  if (admission.outcome !== "accepted") {
+    throw new Error(
+      `environment action ${actionId} was not newly accepted: ${JSON.stringify(admission)}`,
+    );
+  }
+  const acceptedRevision = Number(admission.acceptedRevision);
+  const snapshot = await waitForEnvironmentSnapshot(
+    handoff,
+    `environment action ${actionId}`,
+    (candidate) =>
+      snapshotRevision(candidate) === acceptedRevision &&
+      candidate.convergence === "applied",
+  );
+  return { actionId, source, action, admission, snapshot };
+}
+
+async function submitDaemonActionWithFrame({
   guestInput,
   handoff,
   sessionId,
-  edgeId,
-  ventSpeed,
-  expectedSpeed = ventSpeed,
+  actionId,
+  source,
+  action,
+  expectedOpcode,
+  expectedSpeed = null,
+  expectedOutcome = "accepted",
 }: {
   guestInput: GuestInputRecord;
   handoff: HandoffRecord;
   sessionId: string;
-  edgeId: string;
-  ventSpeed: number;
-  expectedSpeed?: number;
+  actionId: string;
+  source: "local_operator" | "stable_presence" | "automatic_policy";
+  action: JsonRecord;
+  expectedOpcode: string;
+  expectedSpeed?: number | null;
+  expectedOutcome?: "accepted" | "deduplicated";
 }): Promise<JsonRecord> {
   const beforeEvidence = (await control(
     guestInput,
@@ -620,87 +706,78 @@ async function requestAutomaticVentIntent({
     {},
   )) as JsonRecord;
   const beforeCursor = serialEvidenceCursor(beforeEvidence);
-  const response = (await daemonPost(handoff, "/v1/intents/automatic-vent", {
-    edgeId,
-    ventSpeed,
-  })) as JsonRecord | null;
-  if (response?.edgeId !== edgeId) {
+  const admission = await submitDaemonAction({
+    handoff,
+    actionId,
+    source,
+    action,
+  });
+  if (admission.outcome !== expectedOutcome) {
     throw new Error(
-      `automatic vent edge correlation is invalid: ${JSON.stringify(response)}`,
+      `environment action ${actionId} returned ${String(admission.outcome)} instead of ${expectedOutcome}`,
     );
   }
-  if (response?.outcome !== "accepted") {
+  if (expectedOutcome === "deduplicated") {
+    await sleep(500);
     const evidence = (await control(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
       {},
     )) as JsonRecord;
+    const protocolFrames = serialProtocolFrames(evidence, beforeCursor);
+    if (protocolFrames.length !== 0) {
+      throw new Error(
+        `deduplicated environment action emitted protocol frames: ${JSON.stringify(protocolFrames)}`,
+      );
+    }
     return {
-      edgeId,
-      requestedSpeed: ventSpeed,
-      outcome: response?.outcome,
-      beforeFrameCount: beforeCursor.frameCount,
-      ...automaticSerialEvidence(evidence as JsonRecord, beforeCursor),
+      actionId,
+      source,
+      action,
+      admission,
+      snapshot: admission.snapshot,
+      serial: {
+        beforeFrameCursor: beforeCursor,
+        protocolFrames,
+        protocolFrame: null,
+      },
     };
   }
   const { evidence, frame } = await waitForExpectedProtocolFrame({
     guestInput,
     sessionId,
     beforeFrameCount: beforeCursor,
-    expectedOpcode: "B3",
+    expectedOpcode,
     expectedSpeed,
   });
+  const acceptedRevision = Number(admission.acceptedRevision);
+  const snapshot = await waitForEnvironmentSnapshot(
+    handoff,
+    `environment action ${actionId}`,
+    (candidate) =>
+      snapshotRevision(candidate) === acceptedRevision &&
+      candidate.convergence === "applied",
+  );
   return {
-    edgeId,
-    requestedSpeed: ventSpeed,
-    expectedSpeed,
-    outcome: response?.outcome,
-    beforeFrameCount: beforeCursor.frameCount,
-    frame,
-    ...automaticSerialEvidence(evidence as JsonRecord, beforeCursor),
+    actionId,
+    source,
+    action,
+    admission,
+    snapshot,
+    serial: {
+      beforeFrameCursor: beforeCursor,
+      protocolFrames: serialProtocolFrames(
+        evidence as JsonRecord,
+        beforeCursor,
+      ),
+      protocolFrame: frame,
+    },
   };
-}
-
-async function observeAdminOverrideGuard({
-  guestInput,
-  sessionId,
-  beforeFrameCount,
-}: {
-  guestInput: GuestInputRecord;
-  sessionId: string;
-  beforeFrameCount: JsonRecord | number;
-}): Promise<JsonRecord> {
-  const startedAt = Date.now();
-  const deadline = startedAt + ADMIN_OVERRIDE_GUARD_MS;
-  let evidence: JsonRecord | null = null;
-  do {
-    evidence = (await control(
-      guestInput,
-      `/v1/serial-sessions/${sessionId}/evidence`,
-      {},
-    )) as JsonRecord;
-    const observation = automaticSerialEvidence(evidence, beforeFrameCount);
-    const protocolFrames = (observation.protocolFrames as unknown[]) ?? [];
-    if (protocolFrames.length > 0) {
-      return {
-        completed: false,
-        durationMs: Date.now() - startedAt,
-        ...observation,
-      };
-    }
-    if (Date.now() >= deadline) {
-      return {
-        completed: true,
-        durationMs: Date.now() - startedAt,
-        ...observation,
-      };
-    }
-    await sleep(100);
-  } while (true);
 }
 
 async function commandEnvironment({
   guestInput,
+  handoff,
   token,
   machineId,
   sessionId,
@@ -708,6 +785,7 @@ async function commandEnvironment({
   body,
 }: {
   guestInput: GuestInputRecord;
+  handoff: HandoffRecord;
   token: string;
   machineId: string;
   sessionId: string;
@@ -768,11 +846,29 @@ async function commandEnvironment({
   );
   const commandMqttPayload = commandMqtt?.payload as JsonRecord | undefined;
   const resultMqttPayload = resultMqtt?.payload as JsonRecord | undefined;
+  const resultJson = result.resultJson as JsonRecord | undefined;
+  if (
+    result.status !== "succeeded" ||
+    !["accepted", "deduplicated"].includes(String(resultJson?.outcome)) ||
+    !Number.isInteger(resultJson?.acceptedRevision)
+  ) {
+    throw new Error(
+      `remote environment action was not admitted: ${JSON.stringify(result)}`,
+    );
+  }
+  const snapshot = await waitForEnvironmentSnapshot(
+    handoff,
+    `remote environment command ${String(admin.commandNo)}`,
+    (candidate) =>
+      snapshotRevision(candidate) === Number(resultJson?.acceptedRevision) &&
+      candidate.convergence === "applied",
+  );
   return {
     action,
     request: body,
     admin,
     result,
+    snapshot,
     mqtt: {
       commandObserved: commandMqtt !== null,
       resultObserved: resultMqtt !== null,
@@ -797,231 +893,34 @@ async function commandEnvironment({
       expectedOpcode,
       protocolFrame,
       protocolFrameObserved: protocolFrames.includes(expectedOpcode),
-      automaticB3FrameCount: b3FramesSince(
-        afterEvidence as JsonRecord,
-        beforeCursor,
-      ).length,
+      b3FrameCount: b3FramesSince(afterEvidence as JsonRecord, beforeCursor)
+        .length,
     },
   };
 }
 
-export async function collectAutomaticVentPrecedence({
-  guestInput,
-  handoff,
-  token,
-  machineId,
-  sessionId,
-  runId,
-  report,
-  commandEnvironmentRequest = commandEnvironment,
-  requestAutomaticVentIntentRequest = requestAutomaticVentIntent,
-  observeAdminOverrideGuardRequest = observeAdminOverrideGuard,
-}: {
-  guestInput: GuestInputRecord;
-  handoff: HandoffRecord;
-  token: string;
-  machineId: string;
-  sessionId: string;
-  runId: string;
-  report: JsonRecord;
-  commandEnvironmentRequest?: typeof commandEnvironment;
-  requestAutomaticVentIntentRequest?: typeof requestAutomaticVentIntent;
-  observeAdminOverrideGuardRequest?: typeof observeAdminOverrideGuard;
-}): Promise<JsonRecord> {
-  const commands = (report.commands as unknown[]) ?? [];
-  const daemon = report.daemon as JsonRecord;
-  const automaticVent = daemon.automaticVent as JsonRecord;
-  const outcomes = (automaticVent.outcomes as unknown[]) ?? [];
-  const initialVentReset = await commandEnvironmentRequest({
-    guestInput,
-    token,
-    machineId,
-    sessionId,
-    action: "ventSpeed",
-    body: { ventSpeed: 0 },
-  });
-  commands.push(initialVentReset);
-  const automaticArrival = await requestAutomaticVentIntentRequest({
-    guestInput,
-    handoff,
-    sessionId,
-    edgeId: `environment-control:${runId}:arrival`,
-    ventSpeed: 3,
-  });
-  outcomes.push(automaticArrival);
-  const adminVent = await commandEnvironmentRequest({
-    guestInput,
-    token,
-    machineId,
-    sessionId,
-    action: "ventSpeed",
-    body: { ventSpeed: 3 },
-  });
-  commands.push(adminVent);
-  const sameEdgeAfterAdmin = await requestAutomaticVentIntentRequest({
-    guestInput,
-    handoff,
-    sessionId,
-    edgeId: String(automaticArrival.edgeId),
-    ventSpeed: 3,
-  });
-  outcomes.push(sameEdgeAfterAdmin);
-  const sameEdgeRecord = sameEdgeAfterAdmin as JsonRecord;
-  sameEdgeRecord.guardWindow = await observeAdminOverrideGuardRequest({
-    guestInput,
-    sessionId,
-    beforeFrameCount: sameEdgeAfterAdmin.beforeFrameCount as
-      | JsonRecord
-      | number,
-  });
-  const guardWindow = sameEdgeRecord.guardWindow as JsonRecord;
-  if (guardWindow.completed !== true) {
-    const { protocolFrames, b3FrameCountDelta } = guardWindow;
-    const reason =
-      (b3FrameCountDelta as number) > 0
-        ? "delayed automatic B3 rebound"
-        : "lower-controller activity";
-    throw new Error(
-      `Admin B3 override guard observed ${reason}: ${JSON.stringify(protocolFrames)}`,
-    );
-  }
-  const nextStableEdge = await requestAutomaticVentIntentRequest({
-    guestInput,
-    handoff,
-    sessionId,
-    edgeId: `environment-control:${runId}:departure`,
-    ventSpeed: 0,
-  });
-  outcomes.push(nextStableEdge);
-  // 操作员风速挡位保持回归：Admin 设为 2 档后，后续每次来人都应打开 2 档，
-  // 而不是回到固定 3 档；离开仍应关闭（0）。
-  const operatorGearCommand = await commandEnvironmentRequest({
-    guestInput,
-    token,
-    machineId,
-    sessionId,
-    action: "ventSpeed",
-    body: { ventSpeed: 2 },
-  });
-  commands.push(operatorGearCommand);
-  const departureAfterOperatorGear = await requestAutomaticVentIntentRequest({
-    guestInput,
-    handoff,
-    sessionId,
-    edgeId: `environment-control:${runId}:departure-after-gear`,
-    ventSpeed: 0,
-  });
-  outcomes.push(departureAfterOperatorGear);
-  const arrivalAfterOperatorGear = await requestAutomaticVentIntentRequest({
-    guestInput,
-    handoff,
-    sessionId,
-    edgeId: `environment-control:${runId}:arrival-after-gear`,
-    ventSpeed: 3,
-    expectedSpeed: 2,
-  });
-  outcomes.push(arrivalAfterOperatorGear);
-  const secondDepartureAfterOperatorGear =
-    await requestAutomaticVentIntentRequest({
-      guestInput,
-      handoff,
-      sessionId,
-      edgeId: `environment-control:${runId}:departure-after-gear-2`,
-      ventSpeed: 0,
-    });
-  outcomes.push(secondDepartureAfterOperatorGear);
-  const secondArrivalAfterOperatorGear =
-    await requestAutomaticVentIntentRequest({
-      guestInput,
-      handoff,
-      sessionId,
-      edgeId: `environment-control:${runId}:arrival-after-gear-2`,
-      ventSpeed: 3,
-      expectedSpeed: 2,
-    });
-  outcomes.push(secondArrivalAfterOperatorGear);
-  automaticVent.outcomes = outcomes;
-  report.commands = commands;
-  report.precedence = {
-    initialVentReset,
-    automaticArrival,
-    adminB3: {
-      commandNo: (adminVent.admin as JsonRecord).commandNo,
-      resultStatus: (adminVent.result as JsonRecord).status,
-      mqttCommandNo: (adminVent.mqtt as JsonRecord).commandNo,
-      mqttResultNo: (adminVent.mqtt as JsonRecord).resultCommandNo,
-      frame:
-        ((adminVent.serial as JsonRecord).protocolFrame as unknown) ?? null,
-    },
-    sameEdgeAfterAdmin,
-    nextStableEdge,
-  };
-  report.operatorGearPersistence = {
-    operatorGearCommand,
-    departureAfterOperatorGear,
-    arrivalAfterOperatorGear,
-    secondDepartureAfterOperatorGear,
-    secondArrivalAfterOperatorGear,
-  };
-  return {
-    initialVentReset,
-    automaticArrival,
-    adminVent,
-    sameEdgeAfterAdmin,
-    nextStableEdge,
-    operatorGearPersistence: report.operatorGearPersistence,
-  };
-}
-
-async function proveOverlapRejection({
-  guestInput,
-  token,
-  machineId,
-}: {
-  guestInput: GuestInputRecord;
-  token: string;
-  machineId: string;
-}): Promise<JsonRecord> {
-  const first = adminRequest(
-    guestInput,
-    `/machines/${machineId}/commands/environment-control`,
-    {
-      token,
-      method: "POST",
-      body: { targetTemperatureCelsius: 22 },
-    },
-  );
-  try {
-    await adminRequest(
-      guestInput,
-      `/machines/${machineId}/commands/environment-control`,
-      {
-        token,
-        method: "POST",
-        body: { ventSpeed: 3 },
-      },
-    );
-    return {
-      rejected: false,
-      httpStatus: null,
-      error: null,
-      first: await first,
-    };
-  } catch (error) {
-    const err = error as Error & {
-      httpStatus?: unknown;
-      payload?: { message?: unknown; error?: unknown };
-    };
-    return {
-      rejected: true,
-      httpStatus: err.httpStatus ?? null,
-      error: err.payload?.message ?? err.payload?.error ?? null,
-      first: await first.catch((firstError) => ({
-        error:
-          firstError instanceof Error ? firstError.message : String(firstError),
-      })),
-    };
-  }
+async function startEnvironmentSerialSession(
+  guestInput: GuestInputRecord,
+  handoff: HandoffRecord,
+  handoffPath: string,
+): Promise<JsonRecord> {
+  const replacement = (await control(guestInput, "/v1/serial-sessions/start", {
+    runId: required(guestInput.runId, "runId"),
+    machineCode: required(guestInput.machineCode, "machineCode"),
+    saleCorrelationId: `sale-correlation://${required(guestInput.runId, "runId").toLowerCase()}.environment-reconnect-${Date.now()}`,
+    targetIdentity: required(
+      recordValue(guestInput.hostControlPlane).targetIdentity,
+      "hostControlPlane.targetIdentity",
+    ),
+    runtimeBase: required(
+      recordValue(guestInput.hostControlPlane).runtimeBaseIdentity,
+      "hostControlPlane.runtimeBaseIdentity",
+    ),
+  })) as JsonRecord;
+  required(replacement.sessionId, "replacement serial session id");
+  handoff.commissioningSerialSession = replacement;
+  writeJson(handoffPath, handoff);
+  return replacement;
 }
 
 export async function runEnvironmentControlGuest(options: {
@@ -1035,6 +934,7 @@ export async function runEnvironmentControlGuest(options: {
   const handoff = readJson(options.handoffPath);
   const runId = required(guestInput.runId, "runId");
   const machineCode = required(guestInput.machineCode, "machineCode");
+  const actionPrefix = `vm-env:${runId.replace(/[^A-Za-z0-9._:-]/g, "-").slice(-48)}`;
   let session: JsonRecord | null = null;
   const report: JsonRecord = {
     schemaVersion: SCHEMA_VERSION,
@@ -1045,15 +945,23 @@ export async function runEnvironmentControlGuest(options: {
     handoffSerialSessionId: null,
     serialSessionReplacement: null,
     commands: [],
-    overlapRejection: null,
-    daemon: { automaticVent: { health: null, outcomes: [] } },
-    precedence: null,
-    operatorGearPersistence: null,
+    baseline: null,
+    axisIndependence: null,
+    persistentZero: null,
+    temporaryStopRestore: null,
+    idempotency: null,
+    explicitRetry: null,
+    daemonRestart: null,
+    lowerControllerReconnect: null,
+    cleanup: null,
+    daemon: { environmentControl: { health: null } },
     boundaries: {
       adminApi: false,
       mqtt: false,
       daemonIpc: false,
       lowerSerial: false,
+      daemonRestart: false,
+      lowerControllerReconnect: false,
     },
   };
   try {
@@ -1076,73 +984,331 @@ export async function runEnvironmentControlGuest(options: {
     const token = await adminLogin(guestInput);
     const machine = await findMachine(guestInput, token);
 
-    report.overlapRejection = await proveOverlapRejection({
-      guestInput,
-      token,
-      machineId: String(machine.id),
-    });
-    const overlapRejection = report.overlapRejection as JsonRecord;
-    const overlapFirst = overlapRejection.first as JsonRecord | undefined;
-    if (overlapFirst?.commandNo) {
-      await waitForCommandResult(
-        guestInput,
-        token,
-        String(machine.id),
-        String(overlapFirst.commandNo),
-      ).catch(() => null);
-    }
-
-    for (const step of [
-      ["airConditionerOnTrue", { airConditionerOn: true }],
-      ["airConditionerOnFalse", { airConditionerOn: false }],
+    const baselineActions = [];
+    for (const [label, action] of [
+      ["baseline-ac-off", { type: "set_air_conditioner", enabled: false }],
+      [
+        "baseline-target-26",
+        { type: "set_target_temperature", temperatureCelsius: 26 },
+      ],
+      ["baseline-base-3", { type: "set_base_vent_speed", ventSpeed: 3 }],
+      ["baseline-stop", { type: "temporarily_stop_vent" }],
     ] as Array<[string, JsonRecord]>) {
-      (report.commands as unknown[]).push(
-        await commandEnvironment({
-          guestInput,
-          token,
-          machineId: String(machine.id),
-          sessionId: String(activeSession.sessionId),
-          action: step[0],
-          body: step[1] as JsonRecord,
+      baselineActions.push(
+        await submitDaemonActionAndWait({
+          handoff,
+          actionId: `${actionPrefix}:${label}`,
+          source: "local_operator",
+          action,
         }),
       );
     }
-    const {
-      initialVentReset,
-      automaticArrival,
-      adminVent,
-      sameEdgeAfterAdmin,
-      nextStableEdge,
-    } = await collectAutomaticVentPrecedence({
+    const baselineSnapshot = await waitForEnvironmentSnapshot(
+      handoff,
+      "normalized environment baseline",
+      (snapshot) => {
+        const settings = recordValue(snapshot.settings);
+        const desired = recordValue(snapshot.desired);
+        return (
+          settings.airConditionerEnabled === false &&
+          settings.targetTemperatureCelsius === 26 &&
+          settings.baseVentSpeed === 3 &&
+          desired.ventSpeed === 0 &&
+          snapshot.convergence === "applied"
+        );
+      },
+    );
+    report.baseline = { actions: baselineActions, snapshot: baselineSnapshot };
+
+    const commands = report.commands as unknown[];
+    for (const [action, body] of [
+      ["airConditionerOnTrue", { airConditionerOn: true }],
+      ["targetTemperatureCelsius", { targetTemperatureCelsius: 23 }],
+      ["airConditionerOnFalse", { airConditionerOn: false }],
+    ] as Array<[string, JsonRecord]>) {
+      commands.push(
+        await commandEnvironment({
+          guestInput,
+          handoff,
+          token,
+          machineId: String(machine.id),
+          sessionId: String(activeSession.sessionId),
+          action,
+          body,
+        }),
+      );
+    }
+    const axisSnapshots = commands.map(
+      (entry) => (entry as JsonRecord).snapshot as JsonRecord,
+    );
+    if (
+      axisSnapshots.some((snapshot) => {
+        const settings = recordValue(snapshot.settings);
+        const desired = recordValue(snapshot.desired);
+        return settings.baseVentSpeed !== 3 || desired.ventSpeed !== 0;
+      })
+    ) {
+      throw new Error("AC or target-temperature action changed vent state");
+    }
+    report.axisIndependence = { snapshots: axisSnapshots };
+
+    const restoreBeforeZero = await submitDaemonActionWithFrame({
+      guestInput,
+      handoff,
+      sessionId: String(activeSession.sessionId),
+      actionId: `${actionPrefix}:restore-before-zero`,
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
+      expectedOpcode: "B3",
+      expectedSpeed: 3,
+    });
+    const persistentZeroCommand = await commandEnvironment({
       guestInput,
       handoff,
       token,
       machineId: String(machine.id),
       sessionId: String(activeSession.sessionId),
-      runId,
-      report,
+      action: "ventSpeed",
+      body: { ventSpeed: 0 },
     });
-    (report.commands as unknown[]).push(
-      await commandEnvironment({
-        guestInput,
-        token,
-        machineId: String(machine.id),
-        sessionId: String(activeSession.sessionId),
-        action: "targetTemperatureCelsius",
-        body: { targetTemperatureCelsius: 23 },
-      }),
+    commands.push(persistentZeroCommand);
+    const stopAtPersistentZero = await submitDaemonActionAndWait({
+      handoff,
+      actionId: `${actionPrefix}:stop-at-persistent-zero`,
+      source: "stable_presence",
+      action: { type: "temporarily_stop_vent" },
+    });
+    const restorePersistentZero = await submitDaemonActionAndWait({
+      handoff,
+      actionId: `${actionPrefix}:restore-persistent-zero`,
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
+    });
+    const persistentZeroSnapshot = recordValue(restorePersistentZero.snapshot);
+    if (
+      recordValue(persistentZeroSnapshot.settings).baseVentSpeed !== 0 ||
+      recordValue(persistentZeroSnapshot.desired).ventSpeed !== 0
+    ) {
+      throw new Error("persistent vent speed 0 was incorrectly restored");
+    }
+    report.persistentZero = {
+      restoreBeforeZero,
+      command: persistentZeroCommand,
+      stop: stopAtPersistentZero,
+      restore: restorePersistentZero,
+    };
+
+    const baseTwoCommand = await commandEnvironment({
+      guestInput,
+      handoff,
+      token,
+      machineId: String(machine.id),
+      sessionId: String(activeSession.sessionId),
+      action: "ventSpeed",
+      body: { ventSpeed: 2 },
+    });
+    commands.push(baseTwoCommand);
+    const stopBaseTwo = await submitDaemonActionWithFrame({
+      guestInput,
+      handoff,
+      sessionId: String(activeSession.sessionId),
+      actionId: `${actionPrefix}:stop-base-two`,
+      source: "stable_presence",
+      action: { type: "temporarily_stop_vent" },
+      expectedOpcode: "B3",
+      expectedSpeed: 0,
+    });
+    const restoreBaseTwo = await submitDaemonActionWithFrame({
+      guestInput,
+      handoff,
+      sessionId: String(activeSession.sessionId),
+      actionId: `${actionPrefix}:restore-base-two`,
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
+      expectedOpcode: "B3",
+      expectedSpeed: 2,
+    });
+    report.temporaryStopRestore = {
+      setBaseWhileUnoccupied: baseTwoCommand,
+      stop: stopBaseTwo,
+      restore: restoreBaseTwo,
+    };
+
+    const deduplicatedRestore = await submitDaemonActionWithFrame({
+      guestInput,
+      handoff,
+      sessionId: String(activeSession.sessionId),
+      actionId: `${actionPrefix}:restore-base-two`,
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
+      expectedOpcode: "B3",
+      expectedSpeed: 2,
+      expectedOutcome: "deduplicated",
+    });
+    if (
+      Number(recordValue(deduplicatedRestore.admission).acceptedRevision) !==
+      Number(recordValue(restoreBaseTwo.admission).acceptedRevision)
+    ) {
+      throw new Error("deduplicated environment action changed revision");
+    }
+    report.idempotency = {
+      first: restoreBaseTwo,
+      retry: deduplicatedRestore,
+    };
+
+    const retryCurrent = await submitDaemonActionWithFrame({
+      guestInput,
+      handoff,
+      sessionId: String(activeSession.sessionId),
+      actionId: `${actionPrefix}:explicit-retry`,
+      source: "local_operator",
+      action: { type: "retry_current_desired" },
+      expectedOpcode: "B3",
+      expectedSpeed: 2,
+    });
+    if (
+      Number(recordValue(retryCurrent.admission).acceptedRevision) !==
+      Number(recordValue(restoreBaseTwo.admission).acceptedRevision)
+    ) {
+      throw new Error("explicit retry incorrectly incremented revision");
+    }
+    report.explicitRetry = retryCurrent;
+
+    const restartBeforeEvidence = (await control(
+      guestInput,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
+      {},
+    )) as JsonRecord;
+    const restartCursor = serialEvidenceCursor(restartBeforeEvidence);
+    const beforeRestart = await daemonGet(handoff, "/v1/environment-control");
+    const restartedDaemon = await restartInstalledDaemon(
+      handoff,
+      options.handoffPath,
     );
+    await waitForDaemonReadyRefresh(handoff);
+    await waitForLowerControllerReady(
+      handoff,
+      HARDWARE_BINDING_READY_TIMEOUT_MS,
+    );
+    const restartFrame = await waitForExpectedProtocolFrame({
+      guestInput,
+      sessionId: String(activeSession.sessionId),
+      beforeFrameCount: restartCursor,
+      expectedOpcode: "B3",
+      expectedSpeed: 2,
+    });
+    const afterRestart = await waitForEnvironmentSnapshot(
+      handoff,
+      "daemon restart replay",
+      (snapshot) =>
+        snapshotRevision(snapshot) ===
+          snapshotRevision(beforeRestart as JsonRecord) &&
+        recordValue(snapshot.settings).baseVentSpeed === 2 &&
+        recordValue(snapshot.desired).ventSpeed === 2 &&
+        recordValue(snapshot.confirmed).ventSpeed === 2 &&
+        snapshot.convergence === "applied",
+    );
+    report.daemonRestart = {
+      before: beforeRestart,
+      daemon: restartedDaemon,
+      after: afterRestart,
+      frame: restartFrame.frame,
+    };
+
+    const disconnectedSessionId = String(activeSession.sessionId);
+    const disconnected = await control(
+      guestInput,
+      `/v1/serial-sessions/${disconnectedSessionId}/abort`,
+      {},
+    );
+    const offlineAdmission = await submitDaemonAction({
+      handoff,
+      actionId: `${actionPrefix}:offline-base-four`,
+      source: "local_operator",
+      action: { type: "set_base_vent_speed", ventSpeed: 4 },
+    });
+    if (offlineAdmission.outcome !== "accepted") {
+      throw new Error(
+        `offline environment action was not accepted: ${JSON.stringify(offlineAdmission)}`,
+      );
+    }
+    const offlineSnapshot = await waitForEnvironmentSnapshot(
+      handoff,
+      "lower-controller offline persistence",
+      (snapshot) =>
+        snapshotRevision(snapshot) ===
+          Number(offlineAdmission.acceptedRevision) &&
+        recordValue(snapshot.settings).baseVentSpeed === 4 &&
+        recordValue(snapshot.desired).ventSpeed === 4 &&
+        snapshot.convergence === "offline",
+    );
+    const reconnectedSession = await startEnvironmentSerialSession(
+      guestInput,
+      handoff,
+      options.handoffPath,
+    );
+    session = reconnectedSession;
+    await waitForLowerControllerReady(
+      handoff,
+      HARDWARE_BINDING_READY_TIMEOUT_MS,
+    );
+    const reconnectFrame = await waitForExpectedProtocolFrame({
+      guestInput,
+      sessionId: String(reconnectedSession.sessionId),
+      beforeFrameCount: 0,
+      expectedOpcode: "B3",
+      expectedSpeed: 4,
+    });
+    const reconnectedSnapshot = await waitForEnvironmentSnapshot(
+      handoff,
+      "lower-controller reconnect convergence",
+      (snapshot) =>
+        snapshotRevision(snapshot) ===
+          Number(offlineAdmission.acceptedRevision) &&
+        recordValue(snapshot.confirmed).ventSpeed === 4 &&
+        snapshot.convergence === "applied",
+    );
+    report.lowerControllerReconnect = {
+      disconnectedSessionId,
+      disconnected,
+      admission: offlineAdmission,
+      offlineSnapshot,
+      reconnectedSessionId: reconnectedSession.sessionId,
+      frame: reconnectFrame.frame,
+      snapshot: reconnectedSnapshot,
+    };
+
+    const cleanupActions = [];
+    for (const [label, action] of [
+      ["cleanup-ac-off", { type: "set_air_conditioner", enabled: false }],
+      [
+        "cleanup-target-26",
+        { type: "set_target_temperature", temperatureCelsius: 26 },
+      ],
+      ["cleanup-base-3", { type: "set_base_vent_speed", ventSpeed: 3 }],
+      ["cleanup-stop", { type: "temporarily_stop_vent" }],
+    ] as Array<[string, JsonRecord]>) {
+      cleanupActions.push(
+        await submitDaemonActionAndWait({
+          handoff,
+          actionId: `${actionPrefix}:${label}`,
+          source: "local_operator",
+          action,
+        }),
+      );
+    }
+    const finalSnapshot = await daemonGet(handoff, "/v1/environment-control");
+    report.cleanup = { actions: cleanupActions, snapshot: finalSnapshot };
+
     const health = await daemonGet(handoff, "/healthz");
     report.daemon = {
-      ...(report.daemon as JsonRecord),
       health,
       readiness: await daemonGet(handoff, "/readyz"),
-      automaticVent: {
-        ...((report.daemon as JsonRecord).automaticVent as JsonRecord),
-        health: automaticVentHealth(health as JsonRecord | null),
+      environmentControl: {
+        health: environmentControlHealth(health as JsonRecord | null),
+        snapshot: finalSnapshot,
       },
     };
-    const commands = report.commands as unknown[];
     const daemon = report.daemon as JsonRecord;
     (report.boundaries as JsonRecord).adminApi = commands.every(
       (entry) =>
@@ -1159,7 +1325,13 @@ export async function runEnvironmentControlGuest(options: {
         (
           ((entry as JsonRecord).result as JsonRecord | undefined)
             ?.resultJson as JsonRecord | undefined
-        )?.success === true,
+        )?.outcome === "accepted" &&
+        Number.isInteger(
+          (
+            ((entry as JsonRecord).result as JsonRecord | undefined)
+              ?.resultJson as JsonRecord | undefined
+          )?.acceptedRevision,
+        ),
     );
     (report.boundaries as JsonRecord).mqtt = commands.every(
       (entry) =>
@@ -1188,69 +1360,64 @@ export async function runEnvironmentControlGuest(options: {
           ((entry as JsonRecord).serial as JsonRecord | undefined)
             ?.expectedOpcode,
     );
-    const replacement = report.serialSessionReplacement as JsonRecord;
-    const replacementSessionId = String(
-      replacement.replacementControlPlaneSessionId,
+    const persistentZero = report.persistentZero as JsonRecord;
+    const stopRestore = report.temporaryStopRestore as JsonRecord;
+    const idempotency = report.idempotency as JsonRecord;
+    const retry = report.explicitRetry as JsonRecord;
+    const restart = report.daemonRestart as JsonRecord;
+    const reconnect = report.lowerControllerReconnect as JsonRecord;
+    const final = finalSnapshot as JsonRecord;
+    const persistentZeroRestoreSnapshot = recordValue(
+      recordValue(persistentZero.restore).snapshot,
     );
-    const automaticArrivalRecord = automaticArrival as JsonRecord;
-    const initialVentResetRecord = initialVentReset as JsonRecord;
-    const adminVentRecord = adminVent as JsonRecord;
-    const sameEdgeAfterAdminRecord = sameEdgeAfterAdmin as JsonRecord;
-    const nextStableEdgeRecord = nextStableEdge as JsonRecord;
+    const stopBaseTwoSnapshot = recordValue(
+      recordValue(stopRestore.stop).snapshot,
+    );
+    const restoreBaseTwoSnapshot = recordValue(
+      recordValue(stopRestore.restore).snapshot,
+    );
     (report.boundaries as JsonRecord).daemonIpc =
       (daemon.health as JsonRecord | undefined)?.hardwareOnline === true &&
       (daemon.readiness as JsonRecord | undefined)?.ready === true &&
-      automaticArrivalRecord.outcome === "accepted" &&
-      automaticArrivalRecord.requestedSpeed === 3 &&
-      isReplacementSessionB3(
-        (initialVentResetRecord.serial as JsonRecord | undefined)
-          ?.protocolFrame as JsonRecord | undefined,
-        replacementSessionId,
-        0,
-      ) &&
-      isReplacementSessionB3(
-        automaticArrivalRecord.frame as JsonRecord | undefined,
-        replacementSessionId,
-        3,
-      ) &&
-      isReplacementSessionB3(
-        (adminVentRecord.serial as JsonRecord | undefined)?.protocolFrame as
-          | JsonRecord
-          | undefined,
-        replacementSessionId,
-        3,
-      ) &&
-      sameEdgeAfterAdminRecord.edgeId === automaticArrivalRecord.edgeId &&
-      sameEdgeAfterAdminRecord.outcome === "deduplicated" &&
-      (sameEdgeAfterAdminRecord.b3FrameCountDelta as number) === 0 &&
-      ((sameEdgeAfterAdminRecord.protocolFrames as unknown[]) ?? []).length ===
-        0 &&
-      (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)?.completed ===
-        true &&
+      recordValue(persistentZeroRestoreSnapshot.settings).baseVentSpeed === 0 &&
+      recordValue(persistentZeroRestoreSnapshot.desired).ventSpeed === 0 &&
+      recordValue(stopBaseTwoSnapshot.settings).baseVentSpeed === 2 &&
+      recordValue(stopBaseTwoSnapshot.desired).ventSpeed === 0 &&
+      recordValue(restoreBaseTwoSnapshot.desired).ventSpeed === 2 &&
+      recordValue(recordValue(idempotency.retry).admission).outcome ===
+        "deduplicated" &&
       Number(
-        (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)?.durationMs,
-      ) >= ADMIN_OVERRIDE_GUARD_MS &&
-      (
-        (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)
-          .protocolFrames as unknown[]
-      ).length === 0 &&
-      (sameEdgeAfterAdminRecord.guardWindow as JsonRecord).b3FrameCountDelta ===
-        0 &&
-      nextStableEdgeRecord.edgeId !== automaticArrivalRecord.edgeId &&
-      nextStableEdgeRecord.outcome === "accepted" &&
-      nextStableEdgeRecord.requestedSpeed === 0 &&
-      isReplacementSessionB3(
-        nextStableEdgeRecord.frame as JsonRecord | undefined,
-        replacementSessionId,
-        0,
-      ) &&
-      (automaticArrivalRecord.b3FrameCountDelta as number) === 1 &&
-      ((automaticArrivalRecord.protocolFrames as unknown[]) ?? []).length ===
-        1 &&
-      (automaticArrivalRecord.protocolFrames as unknown[])[0] === "B3" &&
-      (nextStableEdgeRecord.b3FrameCountDelta as number) === 1 &&
-      ((nextStableEdgeRecord.protocolFrames as unknown[]) ?? []).length === 1 &&
-      (nextStableEdgeRecord.protocolFrames as unknown[])[0] === "B3";
+        recordValue(recordValue(idempotency.first).admission).acceptedRevision,
+      ) ===
+        Number(
+          recordValue(recordValue(idempotency.retry).admission)
+            .acceptedRevision,
+        ) &&
+      Number(recordValue(retry.admission).acceptedRevision) ===
+        Number(
+          recordValue(recordValue(idempotency.first).admission)
+            .acceptedRevision,
+        ) &&
+      recordValue(final.settings).airConditionerEnabled === false &&
+      recordValue(final.settings).targetTemperatureCelsius === 26 &&
+      recordValue(final.settings).baseVentSpeed === 3 &&
+      recordValue(final.desired).ventSpeed === 0 &&
+      final.convergence === "applied";
+    (report.boundaries as JsonRecord).daemonRestart =
+      snapshotRevision(restart.before as JsonRecord) ===
+        snapshotRevision(restart.after as JsonRecord) &&
+      recordValue(recordValue(restart.after).settings).baseVentSpeed === 2 &&
+      recordValue(recordValue(restart.after).desired).ventSpeed === 2 &&
+      recordValue(recordValue(restart.after).confirmed).ventSpeed === 2 &&
+      b3Speed(restart.frame as JsonRecord) === 2;
+    (report.boundaries as JsonRecord).lowerControllerReconnect =
+      recordValue(reconnect.admission).outcome === "accepted" &&
+      recordValue(reconnect.offlineSnapshot).convergence === "offline" &&
+      recordValue(recordValue(reconnect.offlineSnapshot).settings)
+        .baseVentSpeed === 4 &&
+      recordValue(reconnect.snapshot).convergence === "applied" &&
+      recordValue(recordValue(reconnect.snapshot).confirmed).ventSpeed === 4 &&
+      b3Speed(reconnect.frame as JsonRecord) === 4;
     report.ok = Object.values(report.boundaries as JsonRecord).every(Boolean);
     writeJson(options.outPath, report);
     return report;
@@ -1266,9 +1433,9 @@ export async function runEnvironmentControlGuest(options: {
     report.daemon = {
       ...(report.daemon as JsonRecord),
       health,
-      automaticVent: {
-        ...((report.daemon as JsonRecord).automaticVent as JsonRecord),
-        health: automaticVentHealth(health as JsonRecord | null),
+      environmentControl: {
+        ...((report.daemon as JsonRecord).environmentControl as JsonRecord),
+        health: environmentControlHealth(health as JsonRecord | null),
       },
     };
     report.error = {

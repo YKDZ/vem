@@ -917,6 +917,57 @@ Start-ScheduledTask -TaskName $taskName
 } | ConvertTo-Json -Compress))
 `.trim();
 }
+export function buildInstalledDaemonRestartScript({
+  daemonPath = CANONICAL_DAEMON_PATH,
+  daemonDataDirectory = "C:\\ProgramData\\VEM\\vending-daemon",
+} = {}) {
+  const encodedDaemonPath = Buffer.from(daemonPath, "utf8").toString("base64");
+  const encodedDaemonDataDirectory = Buffer.from(
+    daemonDataDirectory,
+    "utf8",
+  ).toString("base64");
+  return `
+$ErrorActionPreference = 'Stop'
+$daemonPath = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedDaemonPath}')))
+$daemonDataDirectory = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedDaemonDataDirectory}')))
+$daemonServiceName = 'VemVendingDaemon'
+$daemonService = Get-Service -Name $daemonServiceName -ErrorAction SilentlyContinue
+if ($null -ne $daemonService) {
+  Restart-Service -Name $daemonServiceName -Force -ErrorAction Stop
+} else {
+  Get-CimInstance Win32_Process -Filter "Name = 'vending-daemon.exe'" | Where-Object {
+    $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $daemonPath)
+  } | ForEach-Object {
+    try { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction Stop } catch {}
+  }
+  for ($attempt = 0; $attempt -lt 100; $attempt += 1) {
+    $daemonAlive = @(Get-CimInstance Win32_Process -Filter "Name = 'vending-daemon.exe'" | Where-Object {
+      $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $daemonPath)
+    })
+    if ($daemonAlive.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  $null = Start-Process -FilePath $daemonPath -ArgumentList @('--console', '--data-dir', $daemonDataDirectory) -WorkingDirectory ([System.IO.Path]::GetDirectoryName($daemonPath)) -PassThru
+}
+$daemonProcess = $null
+for ($attempt = 0; $attempt -lt 100; $attempt += 1) {
+  $daemonAlive = @(Get-CimInstance Win32_Process -Filter "Name = 'vending-daemon.exe'" | Where-Object {
+    $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $daemonPath)
+  })
+  if ($daemonAlive.Count -eq 1) {
+    $daemonProcess = Get-Process -Id ([int]$daemonAlive[0].ProcessId) -ErrorAction Stop
+    break
+  }
+  if ($daemonAlive.Count -gt 1) { throw "daemon_count:$($daemonAlive.Count)" }
+  Start-Sleep -Milliseconds 200
+}
+if ($null -eq $daemonProcess) { throw 'daemon_restart_timeout' }
+[Console]::Out.WriteLine(([ordered]@{
+  daemonProcessId = [int]$daemonProcess.Id
+  daemonService = if ($null -ne $daemonService) { $daemonServiceName } else { $null }
+} | ConvertTo-Json -Compress))
+`.trim();
+}
 function buildInstalledRuntimeObservationScript({
   daemonPath = CANONICAL_DAEMON_PATH,
   machinePath = CANONICAL_MACHINE_PATH,
@@ -1084,7 +1135,7 @@ async function refreshRestartedRuntimeHandoff(
     cdp: { ...handoffCdp },
   };
 }
-async function restartInstalledRuntime(
+export async function restartInstalledRuntime(
   handoff: HandoffRecord,
   handoffPath: string,
   dependencies: RuntimeRestartDependencies = {},
@@ -1121,6 +1172,65 @@ async function restartInstalledRuntime(
     waitForDaemonReadyRefreshFn,
     previousGeneration: readyBeforeRestart.generation,
   });
+}
+export async function restartInstalledDaemon(
+  handoff: HandoffRecord,
+  handoffPath: string,
+  dependencies: RuntimeRestartDependencies = {},
+): Promise<JsonRecord> {
+  const runPowerShell = dependencies.runPowerShell ?? runLocalPowerShell;
+  const waitForDaemonReadyRefreshFn =
+    dependencies.waitForDaemonReadyRefreshFn ??
+    (waitForDaemonReadyRefresh as (
+      handoff: JsonRecord,
+      options?: unknown,
+    ) => Promise<unknown>);
+  const writeJsonFn = dependencies.writeJsonFn ?? writeJson;
+  const readyBeforeRestart = (await waitForDaemonReadyRefreshFn(
+    handoff,
+  )) as JsonRecord;
+  const restartObservation = recordValue(
+    JSON.parse(
+      await runPowerShell(
+        buildInstalledDaemonRestartScript({
+          daemonPath:
+            String(
+              (handoff.daemon as JsonRecord | undefined)?.executablePath ?? "",
+            ) || CANONICAL_DAEMON_PATH,
+          daemonDataDirectory: required(
+            (handoff.daemon as JsonRecord | undefined)?.dataDirectory,
+            "handoff daemon dataDirectory",
+          ),
+        }),
+      ),
+    ),
+  );
+  const deadline = Date.now() + AUDIO_PREFERENCE_TIMEOUT_MS;
+  let ready: JsonRecord | null = null;
+  do {
+    ready = (await waitForDaemonReadyRefreshFn(handoff)) as JsonRecord;
+    if (ready.generation !== readyBeforeRestart.generation) break;
+    await sleep(200);
+  } while (Date.now() < deadline);
+  if (!ready || ready.generation === readyBeforeRestart.generation) {
+    throw new Error("daemon ready generation did not advance after restart");
+  }
+  const daemonProcessId = Number(restartObservation.daemonProcessId);
+  if (!Number.isInteger(daemonProcessId) || daemonProcessId <= 0) {
+    throw new Error("daemon restart did not report one valid process owner");
+  }
+  const daemon = recordValue(handoff.daemon);
+  handoff.daemon = {
+    ...daemon,
+    processId: daemonProcessId,
+    serviceName: restartObservation.daemonService ?? null,
+    ready: { ...ready },
+  };
+  writeJsonFn(handoffPath, handoff);
+  return {
+    ready: { ...ready },
+    daemon: { ...(handoff.daemon as JsonRecord) },
+  };
 }
 export async function collectAudioPreferencePersistenceEvidence(
   { handoff, handoffPath }: { handoff: HandoffRecord; handoffPath: string },
@@ -1349,10 +1459,20 @@ export function validateLocalOperationsEvidence(
   )
     throw new Error("manual dispense diagnostic outcome is missing");
   if (
-    (localEnvironmentControl?.request as JsonRecord | undefined)?.ventSpeed !==
-      3 ||
-    (localEnvironmentControl?.result as JsonRecord | undefined)?.success !==
-      true ||
+    recordValue(localEnvironmentControl?.request).source !== "local_operator" ||
+    recordValue(recordValue(localEnvironmentControl?.request).action).type !==
+      "set_base_vent_speed" ||
+    recordValue(recordValue(localEnvironmentControl?.request).action)
+      .ventSpeed !== 3 ||
+    recordValue(localEnvironmentControl?.admission).outcome !== "accepted" ||
+    !Number.isInteger(
+      recordValue(localEnvironmentControl?.admission).acceptedRevision,
+    ) ||
+    recordValue(recordValue(localEnvironmentControl?.snapshot).settings)
+      .baseVentSpeed !== 3 ||
+    recordValue(recordValue(localEnvironmentControl?.snapshot).desired)
+      .ventSpeed !== 3 ||
+    recordValue(localEnvironmentControl?.snapshot).convergence !== "applied" ||
     (localEnvironmentControl?.protocolFrame as JsonRecord | undefined)
       ?.parsedOpcode !== "B3"
   )
@@ -1544,10 +1664,15 @@ export async function runLocalOperationsGuest(
       input,
       `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
     )) as JsonRecord;
-    const environmentResult = await daemonRequest(
+    const environmentRequest = {
+      actionId: `local-operations:${runId}:base-vent-3`,
+      source: "local_operator",
+      action: { type: "set_base_vent_speed", ventSpeed: 3 },
+    };
+    const environmentAdmission = await daemonRequest(
       handoff,
-      "/v1/maintenance/environment-control",
-      { ventSpeed: 3 },
+      "/v1/environment-control/actions",
+      environmentRequest,
     );
     await waitForSerialBoundaryFn(input, String(activeSession.sessionId), "B3");
     const environmentAfterEvidence = (await controlRequest(
@@ -1558,9 +1683,24 @@ export async function runLocalOperationsGuest(
       environmentBeforeEvidence,
       environmentAfterEvidence,
     );
+    const environmentSnapshot = await waitForState(
+      "local environment control convergence",
+      () => daemonRequest(handoff, "/v1/environment-control"),
+      (value) => {
+        const snapshot = recordValue(value);
+        return (
+          snapshot.revision ===
+            recordValue(environmentAdmission).acceptedRevision &&
+          snapshot.convergence === "applied" &&
+          recordValue(snapshot.settings).baseVentSpeed === 3 &&
+          recordValue(snapshot.desired).ventSpeed === 3
+        );
+      },
+    );
     report.localEnvironmentControl = {
-      request: { ventSpeed: 3 },
-      result: environmentResult as JsonRecord,
+      request: environmentRequest,
+      admission: environmentAdmission as JsonRecord,
+      snapshot: environmentSnapshot,
       protocolFrame: environmentFrames.at(-1) ?? null,
       protocolFrames: environmentFrames,
     };

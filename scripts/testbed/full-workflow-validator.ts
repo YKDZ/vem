@@ -672,7 +672,13 @@ function validateLocalOperationsTrack(
   const manualDispense = maybeRecord(report.manualDispense);
   const localEnvironmentControl = maybeRecord(report.localEnvironmentControl);
   const localEnvironmentRequest = recordValue(localEnvironmentControl?.request);
-  const localEnvironmentResult = recordValue(localEnvironmentControl?.result);
+  const localEnvironmentAction = recordValue(localEnvironmentRequest?.action);
+  const localEnvironmentAdmission = recordValue(
+    localEnvironmentControl?.admission,
+  );
+  const localEnvironmentSnapshot = recordValue(
+    localEnvironmentControl?.snapshot,
+  );
   const localEnvironmentFrame = recordValue(
     localEnvironmentControl?.protocolFrame,
   );
@@ -691,8 +697,14 @@ function validateLocalOperationsTrack(
       String(manualDispense?.outcome ?? ""),
     ) ||
     manualDispense?.slotId !== planogram.slotId ||
-    localEnvironmentRequest?.ventSpeed !== 3 ||
-    localEnvironmentResult?.success !== true ||
+    localEnvironmentRequest?.source !== "local_operator" ||
+    localEnvironmentAction?.type !== "set_base_vent_speed" ||
+    localEnvironmentAction?.ventSpeed !== 3 ||
+    localEnvironmentAdmission?.outcome !== "accepted" ||
+    !Number.isInteger(localEnvironmentAdmission?.acceptedRevision) ||
+    recordValue(localEnvironmentSnapshot.settings).baseVentSpeed !== 3 ||
+    recordValue(localEnvironmentSnapshot.desired).ventSpeed !== 3 ||
+    localEnvironmentSnapshot.convergence !== "applied" ||
     localEnvironmentFrame?.parsedOpcode !== "B3" ||
     maintenanceEntries.length < 1 ||
     maintenanceEntries.some(
@@ -728,7 +740,7 @@ function validateLocalOperationsTrack(
     slotDisplayLabel: planogram?.slotDisplayLabel,
     planogramVersion: planogram?.planogramVersion,
     manualOutcome: manualDispense?.outcome,
-    localVentSpeed: localEnvironmentRequest?.ventSpeed,
+    localVentSpeed: localEnvironmentAction?.ventSpeed,
   });
 }
 
@@ -846,7 +858,7 @@ function validateEnvironmentControlTrack(
   reportPath: string,
 ): TrackResult {
   if (
-    report?.schemaVersion !== "vem-environment-control-guest-full/v1" ||
+    report?.schemaVersion !== "vem-environment-control-guest-full/v2" ||
     report?.ok !== true
   ) {
     return failedTrack(
@@ -858,233 +870,144 @@ function validateEnvironmentControlTrack(
   }
   const commands = arrayValue(report.commands);
   const commandRecords = commands.map((entry: unknown) => recordValue(entry));
-  const byAction = new Map(
-    commandRecords.map((entry) => [entry.action, entry]),
-  );
   const requiredActions = [
     "airConditionerOnTrue",
     "airConditionerOnFalse",
     "ventSpeed",
+    "targetTemperatureCelsius",
   ];
-  const optionalTemperature = maybeRecord(
-    byAction.get("targetTemperatureCelsius"),
-  );
-  const hasRequiredActions = requiredActions.every((action) => {
-    const entry = byAction.get(action) as JsonRecord | undefined;
+  const validCommand = (entry: JsonRecord): boolean => {
     const admin = recordValue(entry?.admin);
     const result = recordValue(entry?.result);
     const resultJson = recordValue(result.resultJson);
     const mqtt = recordValue(entry?.mqtt);
     const serial = recordValue(entry?.serial);
+    const snapshot = recordValue(entry?.snapshot);
     return (
-      admin?.commandNo &&
+      typeof admin?.commandNo === "string" &&
+      admin.commandNo.length > 0 &&
       admin?.status === "sent" &&
       result?.status === "succeeded" &&
-      resultJson?.success === true &&
+      ["accepted", "deduplicated"].includes(String(resultJson?.outcome)) &&
+      Number.isInteger(resultJson?.acceptedRevision) &&
+      snapshot?.revision === resultJson.acceptedRevision &&
+      snapshot?.convergence === "applied" &&
       mqtt?.commandObserved === true &&
       mqtt?.resultObserved === true &&
       mqtt?.commandNo === admin.commandNo &&
       mqtt?.resultCommandNo === admin.commandNo &&
-      serial?.lowerBoundaryObserved === true
+      serial?.lowerBoundaryObserved === true &&
+      serial?.protocolFrameObserved === true &&
+      recordValue(serial?.protocolFrame).parsedOpcode === serial?.expectedOpcode
     );
-  });
-  const optionalTemperatureResult = recordValue(optionalTemperature?.result);
-  const optionalTemperatureResultJson = recordValue(
-    optionalTemperatureResult.resultJson,
+  };
+  const hasRequiredActions = requiredActions.every((action) =>
+    commandRecords.some(
+      (entry) => entry.action === action && validCommand(entry),
+    ),
   );
-  const optionalTemperatureSerial = recordValue(optionalTemperature?.serial);
-  const hasTemperature =
-    optionalTemperature === null ||
-    (optionalTemperatureResult?.status === "succeeded" &&
-      optionalTemperatureResultJson?.success === true &&
-      optionalTemperatureSerial?.lowerBoundaryObserved === true);
-  const overlap = recordValue(report.overlapRejection);
-  const precedence = recordValue(report.precedence);
   const sessionReplacement = recordValue(report.serialSessionReplacement);
   const replacementSessionId =
     sessionReplacement.replacementControlPlaneSessionId;
-  const automaticArrival = recordValue(precedence.automaticArrival);
-  const adminB3 = recordValue(precedence.adminB3);
-  const sameEdgeAfterAdmin = recordValue(precedence.sameEdgeAfterAdmin);
-  const nextStableEdge = recordValue(precedence.nextStableEdge);
-  const operatorGear = recordValue(report.operatorGearPersistence);
-  const operatorGearCommand = recordValue(operatorGear.operatorGearCommand);
-  const departureAfterOperatorGear = recordValue(
-    operatorGear.departureAfterOperatorGear,
+  const axisIndependence = recordValue(report.axisIndependence);
+  const axisSnapshots = arrayValue(axisIndependence.snapshots).map((entry) =>
+    recordValue(entry),
   );
-  const arrivalAfterOperatorGear = recordValue(
-    operatorGear.arrivalAfterOperatorGear,
+  const persistentZero = recordValue(report.persistentZero);
+  const persistentZeroSnapshot = recordValue(
+    recordValue(persistentZero.restore).snapshot,
   );
-  const secondDepartureAfterOperatorGear = recordValue(
-    operatorGear.secondDepartureAfterOperatorGear,
+  const stopRestore = recordValue(report.temporaryStopRestore);
+  const stoppedSnapshot = recordValue(recordValue(stopRestore.stop).snapshot);
+  const restoredSnapshot = recordValue(
+    recordValue(stopRestore.restore).snapshot,
   );
-  const secondArrivalAfterOperatorGear = recordValue(
-    operatorGear.secondArrivalAfterOperatorGear,
+  const idempotency = recordValue(report.idempotency);
+  const firstAdmission = recordValue(recordValue(idempotency.first).admission);
+  const retryAdmission = recordValue(recordValue(idempotency.retry).admission);
+  const retrySerial = recordValue(recordValue(idempotency.retry).serial);
+  const explicitRetry = recordValue(report.explicitRetry);
+  const explicitRetryAdmission = recordValue(explicitRetry.admission);
+  const explicitRetryFrame = recordValue(
+    recordValue(explicitRetry.serial).protocolFrame,
   );
+  const restart = recordValue(report.daemonRestart);
+  const restartBefore = recordValue(restart.before);
+  const restartAfter = recordValue(restart.after);
+  const reconnect = recordValue(report.lowerControllerReconnect);
+  const offlineAdmission = recordValue(reconnect.admission);
+  const offlineSnapshot = recordValue(reconnect.offlineSnapshot);
+  const reconnectedSnapshot = recordValue(reconnect.snapshot);
+  const cleanupSnapshot = recordValue(recordValue(report.cleanup).snapshot);
   const b3Speed = (frame: unknown): number | null => {
     const match = /^55b3(0[0-4])$/i.exec(
       String(recordValue(frame).rawFrameHex ?? ""),
     );
     return match ? Number.parseInt(match[1], 16) : null;
   };
-  const validPrecedenceFrame = (frame: unknown, speed: number): boolean => {
-    const frameRecord = recordValue(frame);
-    return (
-      frameRecord?.parsedOpcode === "B3" &&
-      b3Speed(frameRecord) === speed &&
-      Number.isFinite(Date.parse(String(frameRecord?.capturedAt ?? "")))
+  const axisIndependent =
+    axisSnapshots.length === 3 &&
+    axisSnapshots.every(
+      (snapshot) =>
+        recordValue(snapshot.settings).baseVentSpeed === 3 &&
+        recordValue(snapshot.desired).ventSpeed === 0 &&
+        snapshot.convergence === "applied",
     );
-  };
-  const validReplacementB3 = (frame: unknown, speed: number): boolean => {
-    const frameRecord = recordValue(frame);
-    return (
-      validPrecedenceFrame(frameRecord, speed) &&
-      (frameRecord?.sessionId === replacementSessionId ||
-        String(frameRecord?.sessionId ?? "").startsWith("serial-session://"))
-    );
-  };
-  const onlyAutomaticB3 = (
-    entry: unknown,
-    expectedB3FrameCount: number,
-  ): boolean => {
-    const entryRecord = recordValue(entry);
-    const protocolFrames = arrayValue(entryRecord.protocolFrames);
-    const opcodeSet = new Set(protocolFrames.map((frame) => String(frame)));
-    return (
-      protocolFrames.length === expectedB3FrameCount &&
-      opcodeSet.size === 1 &&
-      opcodeSet.has("B3") &&
-      !opcodeSet.has("B1") &&
-      !opcodeSet.has("B2")
-    );
-  };
-  const validNoActionGuardWindow = (guardWindow: unknown): boolean => {
-    const guardRecord = recordValue(guardWindow);
-    const protocolFrames = arrayValue(guardRecord.protocolFrames);
-    return (
-      guardRecord?.completed === true &&
-      Number.isFinite(Number(guardRecord.durationMs)) &&
-      Number(guardRecord.durationMs) >= 5_000 &&
-      protocolFrames.length === 0 &&
-      guardRecord.b3FrameCountDelta === 0
-    );
-  };
-  const precedenceCorrelated =
-    automaticArrival.edgeId &&
-    automaticArrival.requestedSpeed === 3 &&
-    automaticArrival.outcome === "accepted" &&
-    automaticArrival.b3FrameCountDelta === 1 &&
-    onlyAutomaticB3(automaticArrival, 1) &&
-    validReplacementB3(automaticArrival.frame, 3) &&
-    commands.some(
-      (entry: unknown) =>
-        recordValue(recordValue(entry).admin).commandNo === adminB3.commandNo,
-    ) &&
-    adminB3.resultStatus === "succeeded" &&
-    adminB3.mqttCommandNo === adminB3.commandNo &&
-    adminB3.mqttResultNo === adminB3.commandNo &&
-    validReplacementB3(adminB3.frame, 3) &&
-    sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
-    sameEdgeAfterAdmin.outcome === "deduplicated" &&
-    sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
-    arrayValue(sameEdgeAfterAdmin.protocolFrames).length === 0 &&
-    validNoActionGuardWindow(sameEdgeAfterAdmin.guardWindow) &&
-    nextStableEdge.edgeId &&
-    nextStableEdge.edgeId !== automaticArrival.edgeId &&
-    nextStableEdge.requestedSpeed === 0 &&
-    nextStableEdge.outcome === "accepted" &&
-    nextStableEdge.b3FrameCountDelta === 1 &&
-    onlyAutomaticB3(nextStableEdge, 1) &&
-    validReplacementB3(nextStableEdge.frame, 0) &&
-    Date.parse(String(recordValue(automaticArrival.frame).capturedAt ?? "")) <
-      Date.parse(String(recordValue(adminB3.frame).capturedAt ?? "")) &&
-    Date.parse(String(recordValue(adminB3.frame).capturedAt ?? "")) <
-      Date.parse(String(recordValue(nextStableEdge.frame).capturedAt ?? ""));
-  const operatorGearFrameAt = (entry: unknown): number =>
-    Date.parse(String(recordValue(entry).capturedAt ?? ""));
-  const operatorGearCommandAdmin = recordValue(operatorGearCommand.admin);
-  const operatorGearCommandResult = recordValue(operatorGearCommand.result);
-  const operatorGearCommandSerial = recordValue(operatorGearCommand.serial);
-  const operatorGearCorrelated =
-    operatorGearCommandAdmin?.commandNo &&
-    operatorGearCommandResult?.status === "succeeded" &&
-    validReplacementB3(operatorGearCommandSerial.protocolFrame, 2) &&
-    departureAfterOperatorGear.edgeId &&
-    departureAfterOperatorGear.requestedSpeed === 0 &&
-    departureAfterOperatorGear.outcome === "accepted" &&
-    departureAfterOperatorGear.b3FrameCountDelta === 1 &&
-    onlyAutomaticB3(departureAfterOperatorGear, 1) &&
-    validReplacementB3(departureAfterOperatorGear.frame, 0) &&
-    arrivalAfterOperatorGear.edgeId &&
-    arrivalAfterOperatorGear.requestedSpeed === 3 &&
-    arrivalAfterOperatorGear.expectedSpeed === 2 &&
-    arrivalAfterOperatorGear.outcome === "accepted" &&
-    arrivalAfterOperatorGear.b3FrameCountDelta === 1 &&
-    onlyAutomaticB3(arrivalAfterOperatorGear, 1) &&
-    validReplacementB3(arrivalAfterOperatorGear.frame, 2) &&
-    secondDepartureAfterOperatorGear.edgeId &&
-    secondDepartureAfterOperatorGear.requestedSpeed === 0 &&
-    secondDepartureAfterOperatorGear.outcome === "accepted" &&
-    secondDepartureAfterOperatorGear.b3FrameCountDelta === 1 &&
-    onlyAutomaticB3(secondDepartureAfterOperatorGear, 1) &&
-    validReplacementB3(secondDepartureAfterOperatorGear.frame, 0) &&
-    secondArrivalAfterOperatorGear.edgeId &&
-    secondArrivalAfterOperatorGear.requestedSpeed === 3 &&
-    secondArrivalAfterOperatorGear.expectedSpeed === 2 &&
-    secondArrivalAfterOperatorGear.outcome === "accepted" &&
-    secondArrivalAfterOperatorGear.b3FrameCountDelta === 1 &&
-    onlyAutomaticB3(secondArrivalAfterOperatorGear, 1) &&
-    validReplacementB3(secondArrivalAfterOperatorGear.frame, 2) &&
-    operatorGearFrameAt(operatorGearCommandSerial.protocolFrame) <
-      operatorGearFrameAt(departureAfterOperatorGear.frame) &&
-    operatorGearFrameAt(departureAfterOperatorGear.frame) <
-      operatorGearFrameAt(arrivalAfterOperatorGear.frame) &&
-    operatorGearFrameAt(arrivalAfterOperatorGear.frame) <
-      operatorGearFrameAt(secondDepartureAfterOperatorGear.frame) &&
-    operatorGearFrameAt(secondDepartureAfterOperatorGear.frame) <
-      operatorGearFrameAt(secondArrivalAfterOperatorGear.frame);
+  const persistentZeroProved =
+    recordValue(persistentZeroSnapshot.settings).baseVentSpeed === 0 &&
+    recordValue(persistentZeroSnapshot.desired).ventSpeed === 0 &&
+    persistentZeroSnapshot.convergence === "applied";
+  const stopRestoreProved =
+    recordValue(stoppedSnapshot.settings).baseVentSpeed === 2 &&
+    recordValue(stoppedSnapshot.desired).ventSpeed === 0 &&
+    recordValue(restoredSnapshot.settings).baseVentSpeed === 2 &&
+    recordValue(restoredSnapshot.desired).ventSpeed === 2 &&
+    stoppedSnapshot.convergence === "applied" &&
+    restoredSnapshot.convergence === "applied";
+  const idempotencyProved =
+    firstAdmission.outcome === "accepted" &&
+    retryAdmission.outcome === "deduplicated" &&
+    Number.isInteger(firstAdmission.acceptedRevision) &&
+    retryAdmission.acceptedRevision === firstAdmission.acceptedRevision &&
+    arrayValue(retrySerial.protocolFrames).length === 0;
+  const explicitRetryProved =
+    explicitRetryAdmission.outcome === "accepted" &&
+    explicitRetryAdmission.acceptedRevision ===
+      firstAdmission.acceptedRevision &&
+    explicitRetryFrame.parsedOpcode === "B3" &&
+    b3Speed(explicitRetryFrame) === 2;
+  const restartProved =
+    Number.isInteger(restartBefore.revision) &&
+    restartAfter.revision === restartBefore.revision &&
+    recordValue(restartAfter.settings).baseVentSpeed === 2 &&
+    recordValue(restartAfter.desired).ventSpeed === 2 &&
+    recordValue(restartAfter.confirmed).ventSpeed === 2 &&
+    restartAfter.convergence === "applied" &&
+    b3Speed(restart.frame) === 2;
+  const reconnectProved =
+    offlineAdmission.outcome === "accepted" &&
+    offlineSnapshot.revision === offlineAdmission.acceptedRevision &&
+    offlineSnapshot.convergence === "offline" &&
+    recordValue(offlineSnapshot.settings).baseVentSpeed === 4 &&
+    recordValue(offlineSnapshot.desired).ventSpeed === 4 &&
+    reconnectedSnapshot.revision === offlineAdmission.acceptedRevision &&
+    reconnectedSnapshot.convergence === "applied" &&
+    recordValue(reconnectedSnapshot.confirmed).ventSpeed === 4 &&
+    reconnect.disconnectedSessionId !== reconnect.reconnectedSessionId &&
+    b3Speed(reconnect.frame) === 4;
   const daemon = maybeRecord(report.daemon);
-  const automaticVent = recordValue(daemon?.automaticVent);
-  const automaticVentHealth = recordValue(automaticVent.health);
-  const automaticVentOutcomes = arrayValue(automaticVent.outcomes);
-  const automaticVentEvidence =
-    automaticVentHealth?.component === "automatic_vent" &&
-    automaticVentHealth?.level === "ok" &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === automaticArrival.edgeId &&
-        recordValue(entry).outcome === automaticArrival.outcome,
-    ) &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === sameEdgeAfterAdmin.edgeId &&
-        recordValue(entry).outcome === sameEdgeAfterAdmin.outcome,
-    ) &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === nextStableEdge.edgeId &&
-        recordValue(entry).outcome === nextStableEdge.outcome,
-    ) &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === departureAfterOperatorGear.edgeId &&
-        recordValue(entry).outcome === departureAfterOperatorGear.outcome,
-    ) &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === arrivalAfterOperatorGear.edgeId &&
-        recordValue(entry).outcome === arrivalAfterOperatorGear.outcome,
-    ) &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === secondDepartureAfterOperatorGear.edgeId &&
-        recordValue(entry).outcome === secondDepartureAfterOperatorGear.outcome,
-    ) &&
-    automaticVentOutcomes.some(
-      (entry: unknown) =>
-        recordValue(entry).edgeId === secondArrivalAfterOperatorGear.edgeId &&
-        recordValue(entry).outcome === secondArrivalAfterOperatorGear.outcome,
-    );
+  const environmentControl = recordValue(daemon?.environmentControl);
+  const environmentControlHealth = recordValue(environmentControl.health);
+  const cleanupProved =
+    cleanupSnapshot.convergence === "applied" &&
+    recordValue(cleanupSnapshot.settings).airConditionerEnabled === false &&
+    recordValue(cleanupSnapshot.settings).targetTemperatureCelsius === 26 &&
+    recordValue(cleanupSnapshot.settings).baseVentSpeed === 3 &&
+    recordValue(cleanupSnapshot.desired).ventSpeed === 0;
+  const environmentHealthProved =
+    environmentControlHealth.component === "environment_control" &&
+    environmentControlHealth.level === "ok" &&
+    environmentControlHealth.code === "ENVIRONMENT_CONTROL_APPLIED";
   const replacementEvidence =
     typeof sessionReplacement.previousControlPlaneSessionId === "string" &&
     sessionReplacement.previousControlPlaneSessionId !== "" &&
@@ -1094,20 +1017,25 @@ function validateEnvironmentControlTrack(
     report.handoffSerialSessionId === replacementSessionId;
   if (
     hasRequiredActions !== true ||
-    hasTemperature !== true ||
-    overlap.rejected !== true ||
-    overlap.httpStatus !== 409 ||
-    overlap.error !== "ENVIRONMENT_COMMAND_IN_PROGRESS" ||
     recordValue(report.boundaries)?.adminApi !== true ||
     recordValue(report.boundaries)?.mqtt !== true ||
     recordValue(report.boundaries)?.daemonIpc !== true ||
     recordValue(report.boundaries)?.lowerSerial !== true ||
+    recordValue(report.boundaries)?.daemonRestart !== true ||
+    recordValue(report.boundaries)?.lowerControllerReconnect !== true ||
     recordValue(daemon?.health)?.hardwareOnline !== true ||
     recordValue(daemon?.readiness)?.ready !== true ||
-    precedenceCorrelated !== true ||
-    operatorGearCorrelated !== true ||
+    axisIndependent !== true ||
+    persistentZeroProved !== true ||
+    stopRestoreProved !== true ||
+    idempotencyProved !== true ||
+    explicitRetryProved !== true ||
+    restartProved !== true ||
+    reconnectProved !== true ||
+    cleanupProved !== true ||
+    environmentHealthProved !== true ||
     replacementEvidence !== true ||
-    automaticVentEvidence !== true
+    commandRecords.every(validCommand) !== true
   ) {
     return failedTrack(
       "environmentControl",
@@ -1116,10 +1044,13 @@ function validateEnvironmentControlTrack(
       "environment control evidence is incomplete",
       {
         commands,
-        overlap,
         boundaries: maybeRecord(report.boundaries),
         daemon,
-        precedence,
+        persistentZero,
+        stopRestore,
+        idempotency,
+        restart,
+        reconnect,
         sessionReplacement,
       },
     );
@@ -1128,14 +1059,13 @@ function validateEnvironmentControlTrack(
     commandNos: commandRecords.map(
       (entry) => recordValue(entry.admin).commandNo,
     ),
-    overlapError: overlap.error,
-    temperatureProved: optionalTemperature !== null,
-    precedence: {
-      adminCommandNo: adminB3.commandNo,
-      automaticArrivalEdgeId: automaticArrival.edgeId,
-      nextStableEdgeId: nextStableEdge.edgeId,
-      operatorGearArrivalEdgeId: arrivalAfterOperatorGear.edgeId,
-      operatorGearCommandNo: operatorGearCommandAdmin?.commandNo ?? null,
+    stateMachine: {
+      persistentZero: true,
+      temporaryStopRestore: true,
+      idempotency: true,
+      explicitRetry: true,
+      daemonRestart: true,
+      lowerControllerReconnect: true,
       replacementSessionId,
     },
   });
