@@ -144,7 +144,8 @@ function Get-VemRecordedFixtureOwnerBindingSummary {
 function Invoke-VemRecordedFixtureOwnerRestart {
   param(
     [hashtable]$Dependencies,
-    [int]$ReadyStabilityMs
+    [int]$ReadyStabilityMs,
+    [switch]$AllowDegradedOwner
   )
 
   $getRoles = Get-VemRecordedFixtureDependency $Dependencies 'GetRoles' {
@@ -205,7 +206,7 @@ function Invoke-VemRecordedFixtureOwnerRestart {
     # select 曾成功停止但尚未重新拉起 owner 时，restore 必须可幂等恢复默认 site。
     & $startOwner
   } else {
-    if ($rolesReachableBeforeStop -and -not (Test-VemRecordedFixtureRolesReady $before)) {
+    if ($rolesReachableBeforeStop -and -not (Test-VemRecordedFixtureRolesReady $before) -and -not $AllowDegradedOwner) {
       throw '切换前 Vision runtime 角色未全部 ready'
     }
     if ($null -eq $oldOwner) {
@@ -462,7 +463,7 @@ function Invoke-VemRecordedFixtureSwitch {
     Set-VemRecordedFixtureObjectProperty $camera 'loop' $cameraDecision.loop
   }
   $ignoredWrite = & $writeTextAtomically $sitePath ($configuration | ConvertTo-Json -Depth 16)
-  Invoke-VemRecordedFixtureOwnerRestart $Dependencies $ReadyStabilityMs
+  Invoke-VemRecordedFixtureOwnerRestart $Dependencies $ReadyStabilityMs -AllowDegradedOwner:($Mode -eq 'restore')
   return [pscustomobject]@{
     mode = $Mode
     top = $decision.top

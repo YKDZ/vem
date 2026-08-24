@@ -151,7 +151,7 @@ Assert-ThrowsMessage {
 
 function New-FixtureSwitchHarnessState(
   [bool]$NewRolesOutsideOwner = $false,
-  [ValidateSet('old', 'partial', 'stopped', 'new')]
+  [ValidateSet('old', 'partial', 'degraded', 'stopped', 'new')]
   [string]$InitialPhase = 'old'
 ) {
   $fixtureRoot = 'C:\ProgramData\VEM\vision\fixtures\commit-b'
@@ -247,12 +247,18 @@ function New-FixtureSwitchHarnessState(
     WriteTextAtomically = { param($Path, $Content) $state.writeCount += 1; $state.files[$Path] = $Content; [void]$state.events.Add('write-site') }.GetNewClosure()
     GetRoles = {
       if ($state.phase -in @('partial', 'stopped')) { throw 'roles offline' }
+      if ($state.phase -eq 'degraded') {
+        return [pscustomobject]@{ roles = @(
+          [pscustomobject]@{ name = 'capture'; pid = 1101; ready = $false },
+          [pscustomobject]@{ name = 'worker'; pid = 1102; ready = $true }
+        ) }
+      }
       if ($state.phase -eq 'old') { return $oldRoles }
       return $newRoles
     }.GetNewClosure()
     GetCanonicalOwner = {
       if ($state.phase -eq 'stopped') { return $null }
-      if ($state.phase -in @('old', 'partial')) { return $oldOwner }
+      if ($state.phase -in @('old', 'partial', 'degraded')) { return $oldOwner }
       return $newOwner
     }.GetNewClosure()
     StopCanonicalOwner = { $state.ownerCallCount += 1; $state.phase = 'stopped'; [void]$state.events.Add('stop-owner') }.GetNewClosure()
@@ -384,6 +390,12 @@ Assert-True (($stoppedRestoreState.state.events -join '|') -eq 'write-site|start
 $partialRestoreState = New-FixtureSwitchHarnessState $false 'partial'
 Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $partialRestoreState.dependencies -ReadyStabilityMs 0 | Out-Null
 Assert-True (($partialRestoreState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') '部分停止状态恢复未在启动替换 owner 前完成 canonical stop'
+
+# 有限 top 录播自然到达 EOF 后 roles 仍可达，但 capture 会按协议变为非 ready；
+# restore 必须从这个预期降级状态收敛，不能把清理路径本身变成失败。
+$degradedRestoreState = New-FixtureSwitchHarnessState $false 'degraded'
+Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $degradedRestoreState.dependencies -ReadyStabilityMs 0 | Out-Null
+Assert-True (($degradedRestoreState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') '有限录播 EOF 后的可达非 ready owner 未被 restore 收敛'
 
 # Stop-VisionMainTask 返回后，roles/binding 可能已消失而其启动前 canonical worker 仍是孤儿；
 # switch 必须仅终止该已捕获 PID，不能等待超时或放宽停止谓词。

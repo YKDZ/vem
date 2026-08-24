@@ -1467,15 +1467,18 @@ describe("visionExperience slice runner", () => {
             JSON.stringify({
               route: "#/try-on?catalogKey=product%3A1",
               state: "acquiring",
+              attemptId,
             }),
           );
           setTimeout(() => {
             void adapter.writeFile(
               statePath,
               JSON.stringify({
-                route: "#/try-on?catalogKey=product%3A1",
-                state: "canceled",
-                phaseText: "检测到顾客已离开，本次试衣已取消",
+                route: selectedProductRoute,
+                catalogKey: selectedCatalogKey,
+                variantId: selectedVariantId,
+                state: null,
+                attemptId: null,
               }),
             );
           }, 50);

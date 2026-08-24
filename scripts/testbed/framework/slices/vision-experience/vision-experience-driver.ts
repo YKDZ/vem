@@ -1720,7 +1720,9 @@ export async function runManualCaptureScenario(
 }
 
 /**
- * 离开取消：模拟顶部相机 departure 后当前 attempt 应被取消。
+ * 离开取消：有限顶部相机录播自然产生 departure，当前 attempt 先进入活动态，
+ * 随后产品按既定顾客旅程自动返回同一商品。取消态由同步 watcher 消费，不能把
+ * 几乎不可观测的中间 DOM 当成验收事实。
  */
 export async function runDepartureScenario(
   adapter: TestAdapter,
@@ -1741,27 +1743,56 @@ export async function runDepartureScenario(
     );
   }
   await enterTryOn(adapter, acceptanceBinding, { timeoutMs, pollMs });
-  const canceled = await waitForCondition(
-    "departure-canceled",
+  const active = await waitForCondition(
+    "departure-attempt-active",
     async () => {
       const current = await readState(adapter);
       return {
         ok:
-          current?.state === "canceled" &&
-          /离开/.test(current?.phaseText ?? ""),
+          current?.route?.startsWith("#/try-on") === true &&
+          typeof current.attemptId === "string" &&
+          current.attemptId.length > 0 &&
+          [
+            "starting",
+            "accepted",
+            "acquiring",
+            "captured",
+            "generating",
+          ].includes(current.state ?? ""),
         value: current,
       };
     },
     { timeoutMs, pollMs },
   );
+  const returned = await waitForCondition(
+    "departure-returns-to-product",
+    async () => {
+      const current = await readState(adapter);
+      const routeIdentity = routeSelectionIdentity(current.route);
+      return {
+        ok:
+          routeIdentity.catalogKey === acceptanceBinding.selectedCatalogKey &&
+          routeIdentity.variantId === acceptanceBinding.selectedVariantId,
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
+  const returnedIdentity = routeSelectionIdentity(returned.route);
   const assertions = [
     businessAssertion({
       id: "departure-cancels-attempt",
       source: "machine-ui-dom",
-      expected: { state: "canceled", departureDetected: true },
+      expected: {
+        activeAttempt: true,
+        returnedCatalogKey: acceptanceBinding.selectedCatalogKey,
+        returnedVariantId: acceptanceBinding.selectedVariantId,
+      },
       observed: {
-        state: canceled.state,
-        departureDetected: /离开/.test(canceled.phaseText ?? ""),
+        activeAttempt:
+          typeof active.attemptId === "string" && active.attemptId.length > 0,
+        returnedCatalogKey: returnedIdentity.catalogKey,
+        returnedVariantId: returnedIdentity.variantId,
       },
     }),
   ];
