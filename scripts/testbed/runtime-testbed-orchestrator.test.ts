@@ -14,6 +14,7 @@ import {
   collectStartupRebootObservations,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
+  processReplayCleanupPowerShell,
   processReplayGuestDirectory,
   powerShellFocusArgument,
   reconstructedAcceptancePasses,
@@ -286,6 +287,19 @@ describe("runtime testbed scheduler contract", () => {
     assert.equal(
       processReplayGuestDirectory({ enabled: false, mode: "full", pass: 1 }),
       null,
+    );
+  });
+
+  it("清理尚不存在的过程回放目录时不污染 Windows PowerShell 退出码", () => {
+    assert.deepEqual(processReplayCleanupPowerShell(null), []);
+    assert.deepEqual(
+      processReplayCleanupPowerShell(
+        "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1",
+      ),
+      [
+        "$processReplayRoot = 'C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1'",
+        "if (Test-Path -LiteralPath $processReplayRoot) { Remove-Item -LiteralPath $processReplayRoot -Recurse -Force -ErrorAction Stop }",
+      ],
     );
   });
 

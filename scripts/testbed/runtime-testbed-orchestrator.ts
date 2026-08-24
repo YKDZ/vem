@@ -261,6 +261,17 @@ export function processReplayGuestDirectory({
   return `C:\\ProgramData\\VEM\\testbed\\process-replay-pass-${pass}`;
 }
 
+export function processReplayCleanupPowerShell(
+  directory: string | null,
+): string[] {
+  if (!directory) return [];
+  const literal = directory.replaceAll("'", "''");
+  return [
+    `$processReplayRoot = '${literal}'`,
+    "if (Test-Path -LiteralPath $processReplayRoot) { Remove-Item -LiteralPath $processReplayRoot -Recurse -Force -ErrorAction Stop }",
+  ];
+}
+
 function artifactFile(
   value: unknown,
   label: string,
@@ -1484,11 +1495,7 @@ async function stageAndRunGuest({
     "& tar.exe -xf $archive -C $source",
     "if ($LASTEXITCODE -ne 0) { throw 'source extraction failed' }",
     "Remove-Item -LiteralPath $archive -Force",
-    ...(processReplayGuestRoot
-      ? [
-          `Remove-Item -LiteralPath '${processReplayGuestRoot.replaceAll("'", "''")}' -Recurse -Force -ErrorAction SilentlyContinue`,
-        ]
-      : []),
+    ...processReplayCleanupPowerShell(processReplayGuestRoot),
   ].join("\n");
   await runProcess(
     "ssh",
