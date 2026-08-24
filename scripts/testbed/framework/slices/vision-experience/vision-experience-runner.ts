@@ -20,6 +20,7 @@ import { createProcessRoleManifest } from "../../fault-injection.ts";
 import {
   BusinessSetProcessReplay,
   type ProcessReplaySummary,
+  type ProcessReplayTimeline,
 } from "../../process-replay.ts";
 import { parseSourceGarmentMetadata } from "./source-garment-evidence.ts";
 import {
@@ -210,6 +211,7 @@ export async function runVisionExperienceSlice({
   includeDegradation = false,
   includeManualCapture = false,
   includeDeparture = false,
+  replayTimeline = null,
   stopOwner = null,
   timeoutMs = 60_000,
   pollMs = 250,
@@ -224,6 +226,7 @@ export async function runVisionExperienceSlice({
   includeDegradation?: boolean;
   includeManualCapture?: boolean;
   includeDeparture?: boolean;
+  replayTimeline?: ProcessReplayTimeline | null;
   stopOwner?: (() => void) | null;
   timeoutMs?: number;
   pollMs?: number;
@@ -235,6 +238,13 @@ export async function runVisionExperienceSlice({
   let hasPrimaryFailure = false;
   let geometryFixtureSelectionStarted = false;
   let restoreFailure: RecordedFixtureRestoreFailure | null = null;
+  const runReplaySegment = async <T>(
+    id: string,
+    operation: () => Promise<T> | T,
+  ): Promise<T> =>
+    replayTimeline
+      ? replayTimeline.runSegment(id, operation)
+      : await Promise.resolve(operation());
   try {
     await waitForCondition(
       "vision-ready",
@@ -255,11 +265,13 @@ export async function runVisionExperienceSlice({
     });
     geometryFixtureSelectionStarted = includeGarmentScale;
     const geometry = includeGarmentScale
-      ? await runRecordedResultGeometryScenario(adapter, {
-          timeoutMs,
-          pollMs,
-          acceptanceBinding,
-        })
+      ? await runReplaySegment("automatic-try-on", () =>
+          runRecordedResultGeometryScenario(adapter, {
+            timeoutMs,
+            pollMs,
+            acceptanceBinding,
+          }),
+        )
       : null;
     if (geometry && !geometry.ok) {
       report = buildAcceptanceReport({
@@ -277,11 +289,13 @@ export async function runVisionExperienceSlice({
     } else {
       const tryOn = geometry?.ok
         ? geometry.mid
-        : await runTryOnScenario(adapter, {
-            timeoutMs,
-            pollMs,
-            acceptanceBinding,
-          });
+        : await runReplaySegment("automatic-try-on", () =>
+            runTryOnScenario(adapter, {
+              timeoutMs,
+              pollMs,
+              acceptanceBinding,
+            }),
+          );
       const assertions = [...tryOn.assertions];
       const supportingEvidence: unknown[] = [...tryOn.supportingEvidence];
       if (includeSelfHeal && manifest) {
@@ -300,30 +314,36 @@ export async function runVisionExperienceSlice({
         supportingEvidence.push(geometry.evidence);
       }
       if (includeManualCapture) {
-        const manual = await runManualCaptureScenario(adapter, {
-          timeoutMs,
-          pollMs,
-          acceptanceBinding,
-        });
+        const manual = await runReplaySegment("manual-try-on", () =>
+          runManualCaptureScenario(adapter, {
+            timeoutMs,
+            pollMs,
+            acceptanceBinding,
+          }),
+        );
         assertions.push(...manual.assertions);
       }
       if (includeDeparture) {
-        const departure = await runDepartureScenario(adapter, {
-          timeoutMs,
-          pollMs,
-          acceptanceBinding,
-        });
+        const departure = await runReplaySegment("departure-cancellation", () =>
+          runDepartureScenario(adapter, {
+            timeoutMs,
+            pollMs,
+            acceptanceBinding,
+          }),
+        );
         assertions.push(...departure.assertions);
       }
       // 降级检查会按产品边界停止整个 Vision owner，因此必须最后执行，
       // 不能反向破坏同一轮仍需真实 Vision 的手动采集或离场链路。
       if (includeDegradation && stopOwner) {
-        const degradation = await runDegradationScenario(adapter, {
-          stopOwner,
-          timeoutMs,
-          pollMs,
-          acceptanceBinding,
-        });
+        const degradation = await runReplaySegment("vision-degradation", () =>
+          runDegradationScenario(adapter, {
+            stopOwner,
+            timeoutMs,
+            pollMs,
+            acceptanceBinding,
+          }),
+        );
         assertions.push(...degradation.assertions);
       }
       report = buildAcceptanceReport({
@@ -765,7 +785,7 @@ export async function main(
     runSlice?: typeof runVisionExperienceSlice;
     runReplay?: <T>(
       context: Parameters<typeof BusinessSetProcessReplay.run>[0],
-      operation: () => Promise<T> | T,
+      operation: (timeline?: ProcessReplayTimeline) => Promise<T> | T,
     ) => Promise<T>;
     failureIo?: {
       mkdir: typeof mkdir;
@@ -833,7 +853,7 @@ export async function main(
       },
     });
     adapter.recordMilestone?.("runner:slice", "started");
-    const executeSlice = () =>
+    const executeSlice = (replayTimeline?: ProcessReplayTimeline) =>
       (dependencies.runSlice ?? runVisionExperienceSlice)({
         adapter,
         acceptanceBinding,
@@ -843,6 +863,7 @@ export async function main(
         includeDegradation: process.env.RUN_DEGRADATION === "1",
         includeManualCapture: process.env.RUN_MANUAL === "1",
         includeDeparture: process.env.RUN_DEPARTURE === "1",
+        replayTimeline,
         stopOwner: dependencies.stopVisionOwner
           ? () => dependencies.stopVisionOwner!()
           : () => {

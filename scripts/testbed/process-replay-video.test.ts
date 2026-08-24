@@ -25,6 +25,25 @@ function capture(businessSet: string) {
       { file: "frames/000003.jpg", timestampMs: 2_250 },
     ],
     summary: { durationMs: 2_000 },
+    segments:
+      businessSet === "vision-experience"
+        ? [
+            {
+              id: "automatic-try-on",
+              status: "completed",
+              startMs: 100,
+              endMs: 900,
+              durationMs: 800,
+            },
+            {
+              id: "manual-try-on",
+              status: "completed",
+              startMs: 900,
+              endMs: 1_500,
+              durationMs: 600,
+            },
+          ]
+        : [],
   };
 }
 
@@ -73,8 +92,47 @@ describe("process replay video synthesis", () => {
         outputs.map((output) => output.businessSet),
         ["implicit-recommendation", "vision-experience"],
       );
-      assert.equal(calls.length, 2);
-      assert.ok(calls.every((call) => call.args.at(-1) === "replay.mp4"));
+      assert.equal(calls.length, 4);
+      assert.deepEqual(
+        calls.map((call) => call.args.at(-1)),
+        [
+          "replay.mp4",
+          "replay.mp4",
+          "replay-automatic-try-on.mp4",
+          "replay-manual-try-on.mp4",
+        ],
+      );
+      const visionOutput = outputs.find(
+        (output) => output.businessSet === "vision-experience",
+      );
+      assert.deepEqual(
+        visionOutput?.segmentVideos.map((segment) => ({
+          id: segment.id,
+          video: segment.videoPath.split("/").at(-1),
+        })),
+        [
+          {
+            id: "automatic-try-on",
+            video: "replay-automatic-try-on.mp4",
+          },
+          { id: "manual-try-on", video: "replay-manual-try-on.mp4" },
+        ],
+      );
+      const automaticCall = calls.find(
+        (call) => call.args.at(-1) === "replay-automatic-try-on.mp4",
+      );
+      assert.ok(automaticCall);
+      assert.deepEqual(automaticCall.args.slice(0, 8), [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        "0.100",
+        "-i",
+        "replay.mp4",
+      ]);
+      assert.deepEqual(automaticCall.args.slice(8, 10), ["-t", "0.800"]);
       assert.equal(
         readFileSync(
           join(

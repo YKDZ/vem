@@ -12,9 +12,18 @@ interface ReplayFrame {
   timestampMs: number;
 }
 
+interface ReplaySegment {
+  id: string;
+  status: "completed" | "interrupted";
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+}
+
 interface ReplayCapture extends JsonRecord {
   businessSet: string;
   frames: ReplayFrame[];
+  segments: ReplaySegment[];
   summary: JsonRecord & { durationMs: number };
 }
 
@@ -64,10 +73,41 @@ function parseCapture(value: unknown): ReplayCapture {
       timestampMs: Number(frame.timestampMs),
     };
   });
+  const segmentIds = new Set<string>();
+  const segments = (
+    Array.isArray(capture.segments) ? capture.segments : []
+  ).map((value, index) => {
+    const segment = recordValue(value);
+    if (
+      typeof segment.id !== "string" ||
+      !/^[a-z][a-z0-9-]{0,63}$/.test(segment.id) ||
+      segmentIds.has(segment.id) ||
+      (segment.status !== "completed" && segment.status !== "interrupted") ||
+      !Number.isFinite(segment.startMs) ||
+      !Number.isFinite(segment.endMs) ||
+      !Number.isFinite(segment.durationMs) ||
+      Number(segment.startMs) < 0 ||
+      Number(segment.endMs) < Number(segment.startMs) ||
+      Number(segment.endMs) > Number(summary.durationMs) ||
+      Number(segment.durationMs) !==
+        Number(segment.endMs) - Number(segment.startMs)
+    ) {
+      throw new Error(`process replay segment ${index + 1} is invalid`);
+    }
+    segmentIds.add(segment.id);
+    return {
+      id: segment.id,
+      status: segment.status,
+      startMs: Number(segment.startMs),
+      endMs: Number(segment.endMs),
+      durationMs: Number(segment.durationMs),
+    } as ReplaySegment;
+  });
   return {
     ...capture,
     businessSet: capture.businessSet,
     frames,
+    segments,
     summary: { ...summary, durationMs: Number(summary.durationMs) },
   } as ReplayCapture;
 }
@@ -144,7 +184,12 @@ export async function synthesizeProcessReplayVideos({
   root: string;
   runFfmpeg?: (invocation: FfmpegInvocation) => Promise<void>;
 }): Promise<
-  Array<{ businessSet: string; capturePath: string; videoPath: string }>
+  Array<{
+    businessSet: string;
+    capturePath: string;
+    videoPath: string;
+    segmentVideos: Array<{ id: string; videoPath: string }>;
+  }>
 > {
   const canonicalRoot = resolve(root);
   const capturePaths = await findCapturePaths(canonicalRoot);
@@ -182,7 +227,40 @@ export async function synthesizeProcessReplayVideos({
         "replay.mp4",
       ],
     });
-    outputs.push({ businessSet: capture.businessSet, capturePath, videoPath });
+    const segmentVideos: Array<{ id: string; videoPath: string }> = [];
+    for (const segment of capture.segments) {
+      const segmentVideoName = `replay-${segment.id}.mp4`;
+      const segmentVideoPath = join(directory, segmentVideoName);
+      await runFfmpeg({
+        cwd: directory,
+        args: [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-y",
+          "-ss",
+          (segment.startMs / 1_000).toFixed(3),
+          "-i",
+          "replay.mp4",
+          "-t",
+          (Math.max(33, segment.durationMs) / 1_000).toFixed(3),
+          "-vf",
+          "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+          "-fps_mode",
+          "vfr",
+          "-movflags",
+          "+faststart",
+          segmentVideoName,
+        ],
+      });
+      segmentVideos.push({ id: segment.id, videoPath: segmentVideoPath });
+    }
+    outputs.push({
+      businessSet: capture.businessSet,
+      capturePath,
+      videoPath,
+      segmentVideos,
+    });
   }
   return outputs.sort((left, right) =>
     left.businessSet.localeCompare(right.businessSet),

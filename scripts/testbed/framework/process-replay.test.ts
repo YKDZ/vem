@@ -309,6 +309,102 @@ test("动态页：screencast 帧被立即 ACK、按序落盘并写入时间戳�
   });
 });
 
+test("同一录制器记录有序业务分段且不改变业务返回值", async () => {
+  await withHttpTargets([target()], async (endpoint) => {
+    const { files, io } = inMemoryIo();
+    let clockMs = 10_000;
+    const value = await BusinessSetProcessReplay.run(
+      {
+        endpoint,
+        outputDirectory: "/replay/segments",
+        businessSet: "visionExperience",
+        webSocketFactory: (url) =>
+          new FakeWebSocket(url, (message, socket) =>
+            respondingSocketHandler(message, socket),
+          ),
+        io,
+        now: () => clockMs,
+      },
+      async (timeline) => {
+        const automatic = await timeline.runSegment(
+          "automatic-try-on",
+          async () => {
+            clockMs += 125;
+            return "automatic-result";
+          },
+        );
+        assert.equal(automatic, "automatic-result");
+        await timeline.runSegment("manual-try-on", async () => {
+          clockMs += 250;
+        });
+        return "business-result";
+      },
+    );
+
+    assert.equal(value, "business-result");
+    const capture = JSON.parse(
+      replayFile(files, "/replay/segments/capture.json").toString(),
+    );
+    assert.deepEqual(capture.segments, [
+      {
+        id: "automatic-try-on",
+        status: "completed",
+        startMs: 0,
+        endMs: 125,
+        durationMs: 125,
+      },
+      {
+        id: "manual-try-on",
+        status: "completed",
+        startMs: 125,
+        endMs: 375,
+        durationMs: 250,
+      },
+    ]);
+  });
+});
+
+test("业务分段失败保留 interrupted 边界并原样抛出业务错误", async () => {
+  await withHttpTargets([target()], async (endpoint) => {
+    const { files, io } = inMemoryIo();
+    let clockMs = 20_000;
+    const failure = new Error("manual flow failed");
+    await assert.rejects(
+      BusinessSetProcessReplay.run(
+        {
+          endpoint,
+          outputDirectory: "/replay/interrupted-segment",
+          businessSet: "visionExperience",
+          webSocketFactory: (url) =>
+            new FakeWebSocket(url, (message, socket) =>
+              respondingSocketHandler(message, socket),
+            ),
+          io,
+          now: () => clockMs,
+        },
+        async (timeline) =>
+          timeline.runSegment("manual-try-on", async () => {
+            clockMs += 75;
+            throw failure;
+          }),
+      ),
+      (error) => error === failure,
+    );
+    const capture = JSON.parse(
+      replayFile(files, "/replay/interrupted-segment/capture.json").toString(),
+    );
+    assert.deepEqual(capture.segments, [
+      {
+        id: "manual-try-on",
+        status: "interrupted",
+        startMs: 0,
+        endMs: 75,
+        durationMs: 75,
+      },
+    ]);
+  });
+});
+
 test("重跑前清理残留帧，避免上一轮更长的录制污染本轮清单", async () => {
   await withHttpTargets([target()], async (endpoint) => {
     const { files, io } = inMemoryIo();

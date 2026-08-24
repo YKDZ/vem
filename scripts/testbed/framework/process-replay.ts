@@ -80,6 +80,18 @@ export interface ProcessReplaySummary {
   playerPath: string;
 }
 
+export interface ProcessReplaySegment {
+  id: string;
+  status: "completed" | "interrupted";
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+}
+
+export interface ProcessReplayTimeline {
+  runSegment<T>(id: string, operation: () => Promise<T> | T): Promise<T>;
+}
+
 interface ReplayFrameRecord {
   file: string;
   timestampMs: number;
@@ -192,11 +204,13 @@ function captureJson({
   businessSet,
   createdAt,
   frames,
+  segments,
   summary,
 }: {
   businessSet: string | null;
   createdAt: string;
   frames: ReplayFrameRecord[];
+  segments: ProcessReplaySegment[];
   summary: ProcessReplaySummary;
 }) {
   return `${JSON.stringify(
@@ -205,6 +219,7 @@ function captureJson({
       createdAt,
       businessSet,
       frames,
+      segments,
       summary,
     },
     null,
@@ -223,6 +238,7 @@ export function renderProcessReplayPlayer({
     createdAt: string;
     businessSet: string | null;
     frames: ReplayFrameRecord[];
+    segments: ProcessReplaySegment[];
     summary: ProcessReplaySummary;
   };
 }): string {
@@ -264,6 +280,7 @@ export function renderProcessReplayPlayer({
 <script>
 const CAPTURE = ${payload};
 const FRAMES = Array.isArray(CAPTURE.frames) ? CAPTURE.frames : [];
+const SEGMENTS = Array.isArray(CAPTURE.segments) ? CAPTURE.segments : [];
 const img = document.createElement("img");
 const stage = document.getElementById("stage");
 const empty = document.getElementById("empty");
@@ -275,8 +292,12 @@ let playing = true;
 let anchor = null;
 
 function renderStatus() {
+  const elapsedMs = FRAMES.length && index >= 0
+    ? FRAMES[index].timestampMs - FRAMES[0].timestampMs
+    : 0;
+  const segment = SEGMENTS.find((entry) => elapsedMs >= entry.startMs && elapsedMs <= entry.endMs);
   status.textContent = FRAMES.length
-    ? "帧 " + (index + 1) + "/" + FRAMES.length + " | t=" + (FRAMES[index].timestampMs - FRAMES[0].timestampMs) + "ms | 已丢弃 " + CAPTURE.summary.framesDropped + " | 已截断 " + CAPTURE.summary.truncated
+    ? "帧 " + (index + 1) + "/" + FRAMES.length + " | t=" + elapsedMs + "ms" + (segment ? " | 场景 " + segment.id : "") + " | 已丢弃 " + CAPTURE.summary.framesDropped + " | 已截断 " + CAPTURE.summary.truncated
     : "该业务集没有产生画面帧（页面可能全程静止）";
   warn.textContent = CAPTURE.summary.status === "recorder-failure"
     ? "录制器异常：" + (CAPTURE.summary.reason ?? "未知")
@@ -343,7 +364,7 @@ export class BusinessSetProcessReplay {
       io?: ReplayIo;
       now?: () => number;
     },
-    operation: () => Promise<T> | T,
+    operation: (timeline: ProcessReplayTimeline) => Promise<T> | T,
   ): Promise<T> {
     const io = context.io ?? defaultReplayIo;
     const now = context.now ?? Date.now;
@@ -372,6 +393,34 @@ export class BusinessSetProcessReplay {
       capturePath,
       playerPath,
     };
+    const pendingSegments: Array<{
+      id: string;
+      status: ProcessReplaySegment["status"];
+      startedAtMs: number;
+      finishedAtMs: number | null;
+    }> = [];
+    const timeline: ProcessReplayTimeline = {
+      runSegment: async <R>(
+        id: string,
+        segmentOperation: () => Promise<R> | R,
+      ): Promise<R> => {
+        const segment = {
+          id,
+          status: "completed" as ProcessReplaySegment["status"],
+          startedAtMs: now(),
+          finishedAtMs: null as number | null,
+        };
+        pendingSegments.push(segment);
+        try {
+          return await segmentOperation();
+        } catch (error) {
+          segment.status = "interrupted";
+          throw error;
+        } finally {
+          segment.finishedAtMs = now();
+        }
+      },
+    };
 
     let recorder: {
       client: CdpClient;
@@ -396,7 +445,7 @@ export class BusinessSetProcessReplay {
     let result: T | null = null;
     let thrown: unknown = null;
     try {
-      result = await operation();
+      result = await operation(timeline);
     } catch (error) {
       thrown = error;
     } finally {
@@ -430,10 +479,33 @@ export class BusinessSetProcessReplay {
     }
 
     const createdAt = new Date(finishedAtMs).toISOString();
+    const timelineAnchorMs =
+      recorder?.state.frameRecords[0]?.receivedAtMs ?? startedAtMs;
+    const segments = pendingSegments.map((segment) => {
+      const startMs = Math.min(
+        summary.durationMs,
+        Math.max(0, segment.startedAtMs - timelineAnchorMs),
+      );
+      const endMs = Math.min(
+        summary.durationMs,
+        Math.max(
+          startMs,
+          (segment.finishedAtMs ?? finishedAtMs) - timelineAnchorMs,
+        ),
+      );
+      return {
+        id: segment.id,
+        status: segment.status,
+        startMs,
+        endMs,
+        durationMs: endMs - startMs,
+      };
+    });
     const capture = {
       createdAt,
       businessSet: context.businessSet ?? null,
       frames: recorder?.state.frameRecords ?? [],
+      segments,
       summary,
     };
     try {

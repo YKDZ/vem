@@ -1372,6 +1372,7 @@ describe("visionExperience slice runner", () => {
     let tryOnEntries = 0;
     let visionStopped = false;
     const destructiveOrder: string[] = [];
+    const replaySegments: string[] = [];
     const adapter = createFakeTestAdapter({
       files: {
         [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
@@ -1489,6 +1490,12 @@ describe("visionExperience slice runner", () => {
       includeManualCapture: true,
       includeDeparture: true,
       includeDegradation: true,
+      replayTimeline: {
+        runSegment: async (id, operation) => {
+          replaySegments.push(id);
+          return operation();
+        },
+      },
       stopOwner: async () => {
         destructiveOrder.push("stop-owner");
         visionStopped = true;
@@ -1509,6 +1516,12 @@ describe("visionExperience slice runner", () => {
     assert.equal(report.businessSets[0].status, "passed");
     assert.equal(report.businessSets[0].assertionCount, 19);
     assert.deepEqual(destructiveOrder, ["manual", "stop-owner"]);
+    assert.deepEqual(replaySegments, [
+      "automatic-try-on",
+      "manual-try-on",
+      "departure-cancellation",
+      "vision-degradation",
+    ]);
   });
 });
 
@@ -1556,6 +1569,10 @@ describe("process replay 轨道集成", () => {
         adapter.close = async () => {};
         adapter.recordMilestone = () => {};
         const capturedContext: { value?: JsonRecord } = {};
+        const replayTimeline = {
+          runSegment: async <T>(_id: string, operation: () => Promise<T> | T) =>
+            operation(),
+        };
         try {
           await runVisionExperienceMain(
             [
@@ -1569,10 +1586,13 @@ describe("process replay 轨道集成", () => {
             {
               startVisionOwner: () => undefined,
               createAdapter: () => adapter,
-              runSlice: async () => passedVisionReport(),
+              runSlice: async (options) => {
+                assert.equal(options.replayTimeline, replayTimeline);
+                return passedVisionReport();
+              },
               runReplay: async (context, operation) => {
                 capturedContext.value = context as JsonRecord;
-                const result = await operation();
+                const result = await operation(replayTimeline);
                 context.onSummary?.(replaySummaryFixture());
                 return result;
               },
