@@ -9,6 +9,7 @@ import {
   type VisionPresenceStatusPayload,
   type VisionProfileResultPayload,
 } from "@/native/vision";
+import { useImplicitRecommendationStore } from "@/stores/implicit-recommendation";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 
@@ -25,6 +26,7 @@ export function installVisionRecommendationCoordinator(
   if (existing) return existing;
 
   const machineStore = useMachineStore(pinia);
+  const recommendationStore = useImplicitRecommendationStore(pinia);
   const visionStore = useVisionStore(pinia);
   let subscription: ReturnType<typeof subscribeVisionProfiles> | null = null;
   let subscribedMachineCode: string | null = null;
@@ -53,14 +55,15 @@ export function installVisionRecommendationCoordinator(
         },
         onProfile: (payload: VisionProfileResultPayload) => {
           if (!isCurrentSubscription()) return;
-          visionStore.applyRecommendationProfileResult(payload);
+          visionStore.applyLatestProfileResult(payload);
+          recommendationStore.acceptLiveProfile(payload);
         },
         onError: (error) => {
           if (!isCurrentSubscription()) return;
           if (isVisionTryOnCapabilityDegraded(error)) {
             visionStore.markTryOnCapabilityDegraded();
           }
-          visionStore.clearRecommendationForVisionFailure();
+          visionStore.clearLatestDiagnosticPayload();
         },
       },
     );

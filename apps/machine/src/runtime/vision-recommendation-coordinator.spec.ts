@@ -11,6 +11,7 @@ import type {
   VisionProfileResultPayload,
 } from "@/native/vision";
 
+import { useImplicitRecommendationStore } from "@/stores/implicit-recommendation";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 
@@ -51,7 +52,7 @@ function runtimeConfiguration(
 describe("Vision recommendation coordinator", () => {
   afterEach(() => vi.clearAllMocks());
 
-  it("owns one app-level subscription and retains its profile across view navigation", () => {
+  it("owns one app-level subscription and forwards only live profiles to the recommendation owner", () => {
     const pinia = createPinia();
     const onProfile: Array<(payload: VisionProfileResultPayload) => void> = [];
     subscribeVisionProfilesMock.mockImplementation(
@@ -74,12 +75,11 @@ describe("Vision recommendation coordinator", () => {
     expect(subscribeVisionProfilesMock).toHaveBeenCalledOnce();
     expect(second).toBe(first);
     onProfile[0](profilePayload("recorded-video-profile-001"));
-    expect(useVisionStore(pinia).recommendationProfile).toMatchObject({
-      heightCm: 172,
-    });
-    expect(useVisionStore(pinia).lastRecommendationResult?.eventId).toBe(
+    expect(useVisionStore(pinia).presence.eventId).toBe(
       "recorded-video-profile-001",
     );
+    expect(useImplicitRecommendationStore(pinia).liveProfileSequence).toBe(1);
+    expect(useImplicitRecommendationStore(pinia).session.sessionId).toBeNull();
 
     // Views mount and unmount independently from this application coordinator.
     expect(subscribeVisionProfilesMock).toHaveBeenCalledOnce();
@@ -149,16 +149,13 @@ describe("Vision recommendation coordinator", () => {
     );
     const coordinator = installVisionRecommendationCoordinator(pinia);
     handlers[0].onProfile(profilePayload("profile-old"));
-    expect(useVisionStore(pinia).lastRecommendationResult?.eventId).toBe(
-      "profile-old",
-    );
+    expect(useVisionStore(pinia).presence.eventId).toBe("profile-old");
 
     machineStore.applyEffectiveRuntimeConfiguration(
       runtimeConfiguration("MACHINE-ACCEPTED-02"),
     );
     await nextTick();
     const visionStore = useVisionStore(pinia);
-    expect(visionStore.recommendationProfile).toBeNull();
     expect(visionStore.presence.eventId).toBeNull();
 
     handlers[0].onPresenceStatus({
@@ -177,10 +174,11 @@ describe("Vision recommendation coordinator", () => {
     });
     handlers[0].onProfile(profilePayload("profile-old-late"));
     expect(visionStore.presence.eventId).toBeNull();
-    expect(visionStore.lastRecommendationResult).toBeNull();
+    expect(useImplicitRecommendationStore(pinia).liveProfileSequence).toBe(1);
 
     handlers[1].onProfile(profilePayload("profile-new"));
-    expect(visionStore.lastRecommendationResult?.eventId).toBe("profile-new");
+    expect(visionStore.presence.eventId).toBe("profile-new");
+    expect(useImplicitRecommendationStore(pinia).liveProfileSequence).toBe(2);
     coordinator.close();
   });
 });

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { storeToRefs } from "pinia";
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
@@ -12,11 +11,13 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
+import ImplicitRecommendationBanner from "@/components/recommendation/ImplicitRecommendationBanner.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { recommendVariant } from "@/recommendation/engine";
+import { normalizeRecommendationSize } from "@/recommendation/implicit-recommendation-session";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useImplicitRecommendationStore } from "@/stores/implicit-recommendation";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useTryOnStore } from "@/stores/try-on";
 import { useVisionStore } from "@/stores/vision";
@@ -33,15 +34,11 @@ const route = useRoute();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const visionStore = useVisionStore();
+const recommendationStore = useImplicitRecommendationStore();
 const tryOnStore = useTryOnStore();
 const saleCapabilityStore = useSaleCapabilityStore();
-const {
-  recommendationProfile: currentProfile,
-  lastRecommendationResult: lastVisionResult,
-} = storeToRefs(visionStore);
 
 const selectedVariantId = ref<string | null>(null);
-const userSelectedVariant = ref(false);
 
 const catalogKey = computed(() => String(route.params.catalogKey ?? ""));
 const item = computed(() => {
@@ -114,13 +111,24 @@ const routedVariantId = computed(() => {
   const value = route.query.variantId;
   return typeof value === "string" ? value : null;
 });
+const recommendationProjection = computed(() => recommendationStore.projection);
+const productRecommendation = computed(
+  () => recommendationProjection.value.products[catalogKey.value] ?? null,
+);
+const latestRecommendationProfileEventId = computed(() => {
+  const eventIds = recommendationStore.session.seenProfileEventIds;
+  return eventIds[eventIds.length - 1] ?? "";
+});
 const automaticRecommendation = computed(() => {
-  if (userSelectedVariant.value) return null;
-  const recommendation = recommendVariant(
-    variantCandidates.value,
-    currentProfile.value,
+  const recommendedSize = productRecommendation.value?.recommendedSize;
+  if (!recommendedSize) return null;
+  return (
+    variantCandidates.value.find(
+      (variant) =>
+        variantIsSaleable(variant) &&
+        normalizeRecommendationSize(variant.size) === recommendedSize,
+    ) ?? null
   );
-  return recommendation.sizeMatched ? recommendation.variant : null;
 });
 const isVisionRecommendationActive = computed(
   () =>
@@ -170,23 +178,44 @@ const featureCards = [
 ] as const;
 
 watch(
-  [catalogKey, variantCandidates, routedVariantId],
-  ([nextCatalogKey, candidates, nextRoutedVariantId], previous) => {
+  [
+    catalogKey,
+    variantCandidates,
+    routedVariantId,
+    () => productRecommendation.value?.selectedSize ?? null,
+    () => productRecommendation.value?.selectedColor ?? null,
+  ],
+  (
+    [
+      nextCatalogKey,
+      candidates,
+      nextRoutedVariantId,
+      projectedSize,
+      projectedColor,
+    ],
+    previous,
+  ) => {
     const productChanged = nextCatalogKey !== previous?.[0];
-    if (productChanged) {
-      userSelectedVariant.value = false;
-    }
-    if (userSelectedVariant.value) {
-      const selectedSaleableVariant = candidates.find(
-        (variant) =>
-          variant.variantId === selectedVariantId.value &&
-          variantIsSaleable(variant),
+    const projectionChanged =
+      projectedSize !== previous?.[3] || projectedColor !== previous?.[4];
+    if (projectedSize && (productChanged || projectionChanged)) {
+      const projectedVariant = variantForProjectedSelection(
+        candidates,
+        projectedSize,
+        projectedColor,
       );
-      if (selectedSaleableVariant) {
-        selectedVariantId.value = selectedSaleableVariant.variantId;
+      if (projectedVariant) {
+        selectedVariantId.value = projectedVariant.variantId;
         return;
       }
-      userSelectedVariant.value = false;
+    }
+    if (
+      !productChanged &&
+      candidates.some(
+        (variant) => variant.variantId === selectedVariantId.value,
+      )
+    ) {
+      return;
     }
     selectedVariantId.value =
       candidates.find((variant) => variant.variantId === nextRoutedVariantId)
@@ -197,15 +226,6 @@ watch(
   },
   { immediate: true },
 );
-
-watch([currentProfile, lastVisionResult], () => {
-  if (userSelectedVariant.value) return;
-  selectedVariantId.value =
-    automaticRecommendation.value?.variantId ??
-    variantCandidates.value.find(variantIsSaleable)?.variantId ??
-    variantCandidates.value[0]?.variantId ??
-    null;
-});
 
 function variantIsSaleable(variant: MachineCatalogVariantCandidate): boolean {
   return variant.slotSalesState === "sale_ready" && variant.saleableStock > 0;
@@ -234,33 +254,43 @@ function uniqueVariantOptions(
   return [...options.values()];
 }
 
-function pickVariant(candidates: MachineCatalogVariantCandidate[]): void {
-  selectedVariantId.value =
-    candidates.find(variantIsSaleable)?.variantId ??
-    candidates[0]?.variantId ??
-    selectedVariantId.value;
+function variantForProjectedSelection(
+  candidates: readonly MachineCatalogVariantCandidate[],
+  size: string,
+  color: string | null,
+): MachineCatalogVariantCandidate | null {
+  const canonicalSize = normalizeRecommendationSize(size);
+  const sizeCandidates = candidates.filter(
+    (variant) =>
+      variant.size === size ||
+      (canonicalSize !== null &&
+        normalizeRecommendationSize(variant.size) === canonicalSize),
+  );
+  if (color !== null) {
+    const exact = sizeCandidates.find((variant) => variant.color === color);
+    if (exact) return exact;
+  }
+  return sizeCandidates[0] ?? null;
 }
 
 function selectSize(size: string | null): void {
-  userSelectedVariant.value = true;
+  recommendationStore.selectManualSize(catalogKey.value, size);
   const currentColor = selectedVariant.value?.color ?? null;
   const candidates = variantCandidates.value.filter(
     (variant) => variant.size === size,
   );
-  const preferred = candidates.find(
-    (variant) => variant.color === currentColor && variantIsSaleable(variant),
-  );
-  pickVariant(preferred ? [preferred] : candidates);
+  const exact = candidates.find((variant) => variant.color === currentColor);
+  selectedVariantId.value =
+    exact?.variantId ?? candidates[0]?.variantId ?? selectedVariantId.value;
 }
 
 function selectColor(color: string | null): void {
-  userSelectedVariant.value = true;
+  recommendationStore.selectColor(catalogKey.value, color);
   const currentSize = selectedVariant.value?.size ?? null;
-  pickVariant(
-    variantCandidates.value.filter(
-      (variant) => variant.size === currentSize && variant.color === color,
-    ),
+  const exact = variantCandidates.value.find(
+    (variant) => variant.size === currentSize && variant.color === color,
   );
+  if (exact) selectedVariantId.value = exact.variantId;
 }
 
 async function purchase(): Promise<void> {
@@ -302,12 +332,27 @@ async function startTryOn(): Promise<void> {
       :data-vision-recommendation-active="
         isVisionRecommendationActive ? 'true' : 'false'
       "
-      :data-vision-profile-event-id="lastVisionResult?.eventId ?? ''"
+      :data-recommendation-session-id="recommendationProjection.sessionId ?? ''"
+      :data-recommendation-canonical-size="
+        recommendationProjection.canonicalSize ?? ''
+      "
+      :data-recommendation-manual-size="
+        productRecommendation?.manualSizeSelected ? 'true' : 'false'
+      "
+      :data-vision-profile-event-id="latestRecommendationProfileEventId"
     >
       <div class="detail-mist detail-mist-left"></div>
       <div class="detail-mist detail-mist-right"></div>
 
       <KioskHeader class="detail-header" />
+
+      <ImplicitRecommendationBanner
+        v-if="recommendationProjection.visible"
+        class="detail-recommendation-banner"
+        :state="
+          recommendationProjection.banner === 'multiple' ? 'multiple' : 'active'
+        "
+      />
 
       <button
         class="detail-back-button kiosk-touch-target"
@@ -419,6 +464,14 @@ async function startTryOn(): Promise<void> {
 
           <section class="detail-section">
             <h2>❀ 规格选择</h2>
+            <div
+              v-if="productRecommendation?.recommendedSize"
+              class="detail-size-recommendation"
+              data-test="product-size-recommendation"
+              :data-recommended-size="productRecommendation.recommendedSize"
+            >
+              推荐 {{ productRecommendation.recommendedSize }}
+            </div>
             <p class="option-label">颜色</p>
             <div class="option-row">
               <button
@@ -636,6 +689,13 @@ async function startTryOn(): Promise<void> {
   justify-content: space-between;
 }
 
+.detail-recommendation-banner {
+  position: relative;
+  z-index: 5;
+  flex-shrink: 0;
+  margin-top: 1rem;
+}
+
 .detail-back-button {
   position: relative;
   z-index: 5;
@@ -840,6 +900,21 @@ async function startTryOn(): Promise<void> {
   font-size: 1.2rem;
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+
+.detail-size-recommendation {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  margin-top: 1rem;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid rgba(118, 138, 100, 0.48);
+  border-radius: 999px;
+  background: #f1f6eb;
+  color: #4f6540;
+  font-size: 1rem;
+  font-weight: 800;
+  box-shadow: 0 8px 18px rgba(82, 101, 65, 0.1);
 }
 
 .option-label {

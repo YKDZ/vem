@@ -1,7 +1,10 @@
 import type { Pinia } from "pinia";
 
+import { watch, type WatchStopHandle } from "vue";
+
 import type { DaemonEvent, UnknownDaemonEvent } from "@/daemon/schemas";
 
+import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
 import { daemonClient } from "@/daemon/client";
 import {
   installedMachineRuntimeTrace,
@@ -33,6 +36,7 @@ type RuntimeCoordinator = {
   reconciliation: Promise<void> | null;
   reconciliationRetryTimer: ReturnType<typeof globalThis.setTimeout> | null;
   journeyAudio: CustomerJourneyAudioRuntime | null;
+  stablePresenceStop: WatchStopHandle | null;
   teardown: Promise<void> | null;
   lastVisionDepartureEventId: string | null;
 };
@@ -48,6 +52,7 @@ function coordinatorFor(pinia: Pinia): RuntimeCoordinator {
     reconciliation: null,
     reconciliationRetryTimer: null,
     journeyAudio: null,
+    stablePresenceStop: null,
     teardown: null,
     lastVisionDepartureEventId: null,
   };
@@ -127,18 +132,6 @@ function dispatchDaemonEvent(
       updatedAt: event.updatedAt,
       latestDiagnosticPayload: event.latestDiagnosticPayload ?? null,
     });
-    const presence = visionStore.presence;
-    if (
-      presence.source === "person_departed" &&
-      !presence.personPresent &&
-      presence.eventId
-    ) {
-      refreshProjectionAfterVisionDeparture(
-        checkoutStore,
-        presence.eventId,
-        coordinator,
-      );
-    }
     return;
   }
   if (event.type === "transaction_changed") {
@@ -285,6 +278,22 @@ export function startMachineRuntime(pinia: Pinia): void {
     pinia,
     installedMachineRuntimeTrace() ?? undefined,
   );
+  const stablePresence = getStableVisionPresenceSession(pinia);
+  coordinator.stablePresenceStop = watch(
+    () => ({
+      edge: stablePresence.state.value.edge,
+      edgeId: stablePresence.state.value.edgeId,
+    }),
+    ({ edge, edgeId }) => {
+      if (edge !== "departure" || !edgeId) return;
+      refreshProjectionAfterVisionDeparture(
+        useCheckoutStore(pinia),
+        edgeId,
+        coordinator,
+      );
+    },
+    { flush: "sync" },
+  );
   void machineStore
     .loadEffectiveRuntimeConfiguration()
     .catch((error: unknown) => {
@@ -324,6 +333,8 @@ export function stopMachineRuntime(pinia: Pinia): Promise<void> {
   if (coordinator.teardown) return coordinator.teardown;
   coordinator.subscription?.close();
   coordinator.subscription = null;
+  coordinator.stablePresenceStop?.();
+  coordinator.stablePresenceStop = null;
   useCatalogStore(pinia).stopAutoRefresh();
   if (coordinator.pollTimer !== null) {
     globalThis.clearInterval(coordinator.pollTimer);

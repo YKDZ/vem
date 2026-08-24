@@ -190,6 +190,7 @@ describe("Customer journey audio runtime", () => {
     await runtime?.dispose();
     resetCustomerInteractionSessionForTests();
     resetStableVisionPresenceSessionForTests();
+    vi.useRealTimers();
   });
 
   it("plays transaction transitions with effective customer audio settings and rejects later disabled cues", async () => {
@@ -283,6 +284,7 @@ describe("Customer journey audio runtime", () => {
       proximity: { present: true },
       occupancy: { state: "single", confidence: 0.91 },
     });
+    await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
         "/audio/voice/interaction/awakened.mp3",
@@ -340,6 +342,7 @@ describe("Customer journey audio runtime", () => {
   });
 
   it("does not let operator maintenance input consume the first Vision welcome cue", async () => {
+    vi.useFakeTimers();
     useMachineStore(pinia).applyEffectiveRuntimeConfiguration(
       effectiveConfiguration({ volume: 0.7, transactionCuesEnabled: true }),
     );
@@ -366,6 +369,7 @@ describe("Customer journey audio runtime", () => {
       occupancy: { state: "single", confidence: 0.91 },
     });
 
+    await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
         "/audio/voice/interaction/awakened.mp3",
@@ -406,6 +410,7 @@ describe("Customer journey audio runtime", () => {
       occupancy: { state: "single", confidence: 0.91 },
     });
     await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(250);
     expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(1, {
       edgeId: "presence-1:arrival",
@@ -456,6 +461,7 @@ describe("Customer journey audio runtime", () => {
       occupancy: { state: "single", confidence: 0.91 },
     });
     await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
     await runtime.dispose();
     runtime = null;
     pendingRequest.reject?.(new Error("daemon stopped"));

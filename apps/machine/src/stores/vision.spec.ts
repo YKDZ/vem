@@ -107,7 +107,7 @@ describe("useVisionStore single-path readiness", () => {
 describe("useVisionStore presence behavior", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
-  it("keeps a sanitized recommendation profile only while a usable single person remains", () => {
+  it("keeps only the schema-sanitized diagnostic while projecting raw presence", () => {
     const store = useVisionStore();
     const unsanitizedProfile = {
       ...profile(),
@@ -121,16 +121,13 @@ describe("useVisionStore presence behavior", () => {
         identity: { id: "customer-1" },
       },
     } as unknown as VisionProfileResultPayload;
-    store.applyRecommendationProfileResult(unsanitizedProfile);
-    expect(store.recommendationProfile).toEqual({
+    store.applyLatestProfileResult(unsanitizedProfile);
+    expect(store.presence).toMatchObject({
       personPresent: true,
-      heightCm: 172,
-      bodyType: "regular",
-      upperColor: "blue",
-      confidence: 0.91,
+      occupancyState: "single",
     });
-    expect(JSON.stringify(store.lastRecommendationResult)).not.toContain("raw");
-    expect(JSON.stringify(store.lastRecommendationResult)).not.toContain(
+    expect(JSON.stringify(store.latestDiagnosticPayload)).not.toContain("raw");
+    expect(JSON.stringify(store.latestDiagnosticPayload)).not.toContain(
       "identity",
     );
 
@@ -147,7 +144,10 @@ describe("useVisionStore presence behavior", () => {
       closeTrigger: null,
       proximity: {},
     });
-    expect(store.recommendationProfile).toBeNull();
+    expect(store.presence).toMatchObject({
+      personPresent: false,
+      occupancyState: "none",
+    });
   });
 
   it("marks multiple people present but not usable for recommendation", () => {
@@ -163,6 +163,5 @@ describe("useVisionStore presence behavior", () => {
       },
     });
     expect(store.isMultiplePeoplePresent).toBe(true);
-    expect(store.canUseLatestProfileForRecommendation).toBe(false);
   });
 });

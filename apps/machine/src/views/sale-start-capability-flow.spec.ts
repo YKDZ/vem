@@ -91,6 +91,10 @@ import type {
 import { resetCustomerInteractionSessionForTests } from "@/composables/customer-interaction-session";
 import { resetStableVisionPresenceSessionForTests } from "@/composables/stable-vision-presence-session";
 import {
+  installImplicitRecommendationRuntime,
+  type ImplicitRecommendationRuntime,
+} from "@/runtime/implicit-recommendation-runtime";
+import {
   installVisionRecommendationCoordinator,
   type VisionRecommendationCoordinator,
 } from "@/runtime/vision-recommendation-coordinator";
@@ -115,6 +119,7 @@ let propertyRestorers: Array<() => void> = [];
 let capabilityRevision = 0;
 let visionRecommendationCoordinator: VisionRecommendationCoordinator | null =
   null;
+let implicitRecommendationRuntime: ImplicitRecommendationRuntime | null = null;
 
 beforeEach(() => {
   resetCustomerInteractionSessionForTests();
@@ -184,6 +189,8 @@ beforeEach(() => {
 afterEach(() => {
   visionRecommendationCoordinator?.close();
   visionRecommendationCoordinator = null;
+  implicitRecommendationRuntime?.close();
+  implicitRecommendationRuntime = null;
   resetCustomerInteractionSessionForTests();
   resetStableVisionPresenceSessionForTests();
   unmountMountedView();
@@ -519,6 +526,7 @@ function applyBlockedCapability(): void {
 }
 
 async function mountView(component: object): Promise<HTMLElement> {
+  implicitRecommendationRuntime ??= installImplicitRecommendationRuntime(pinia);
   visionRecommendationCoordinator ??=
     installVisionRecommendationCoordinator(pinia);
   const host = document.createElement("div");
@@ -529,6 +537,26 @@ async function mountView(component: object): Promise<HTMLElement> {
   await nextTick();
   await nextTick();
   return host;
+}
+
+async function establishStableSinglePresence(eventId: string): Promise<void> {
+  await Promise.resolve(
+    latestVisionHandlers?.onPresenceStatus?.({
+      source: "top",
+      eventId,
+      detectedAt: "2026-07-18T09:59:58.000Z",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.94 },
+    }),
+  );
+  await vi.advanceTimersByTimeAsync(1_000);
+  await nextTick();
 }
 
 describe("sale-start capability UI flow", () => {
@@ -923,7 +951,8 @@ describe("sale-start capability UI flow", () => {
     expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
   });
 
-  it("orders and selects catalog recommendations from a usable Vision profile with stable fallback", async () => {
+  it("keeps catalog order stable while projecting one refined size across products", async () => {
+    vi.useFakeTimers();
     const mediumItem = makeCatalogItem();
     const largeBase = {
       ...mediumItem,
@@ -974,6 +1003,7 @@ describe("sale-start capability UI flow", () => {
     const host = await mountView(CatalogView);
     requireButtonByText(host, "T恤").click();
     await nextTick();
+    await establishStableSinglePresence("presence-catalog-order");
     expect(
       Array.from(host.querySelectorAll('[data-test="catalog-product"]')).map(
         (element) => element.getAttribute("data-catalog-key"),
@@ -988,8 +1018,7 @@ describe("sale-start capability UI flow", () => {
         occupancy: { state: "single", confidence: 0.94 },
         profile: {
           personPresent: true,
-          heightCm: 178,
-          bodyType: "regular",
+          bodyType: "strong",
           upperColor: "蓝",
           confidence: 0.94,
         },
@@ -1011,8 +1040,11 @@ describe("sale-start capability UI flow", () => {
       recommendedProducts.map((element) =>
         element.getAttribute("data-catalog-key"),
       ),
-    ).toEqual([largeItem.catalogKey, mediumItem.catalogKey]);
-    recommendedProducts[0].click();
+    ).toEqual([mediumItem.catalogKey, largeItem.catalogKey]);
+    expect(
+      recommendedProducts[1].getAttribute("data-preferred-variant-id"),
+    ).toBe(largeItem.variantId);
+    recommendedProducts[1].click();
     await nextTick();
     expect(routerPushMock).toHaveBeenLastCalledWith({
       name: "product-detail",
@@ -1047,6 +1079,7 @@ describe("sale-start capability UI flow", () => {
   });
 
   it("keeps the fixed catalog home through repeated readiness changes", async () => {
+    vi.useFakeTimers();
     const item = makeCatalogItem();
     const blockedHealth = {
       ...healthSnapshot(),
@@ -1076,6 +1109,7 @@ describe("sale-start capability UI flow", () => {
 
     expect(routerReplaceMock).not.toHaveBeenCalled();
     expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
+    await establishStableSinglePresence("presence-before-readiness-refresh");
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
@@ -1111,6 +1145,7 @@ describe("sale-start capability UI flow", () => {
   });
 
   it("keeps vision recognition details silent in the catalog", async () => {
+    vi.useFakeTimers();
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
       items: [{ ...item, size: "M", targetGender: "male" }],
@@ -1123,6 +1158,7 @@ describe("sale-start capability UI flow", () => {
     const host = await mountView(CatalogView);
 
     expect(latestVisionHandlers).toBeTruthy();
+    await establishStableSinglePresence("presence-before-private-profile");
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
         source: "front",
@@ -1212,6 +1248,7 @@ describe("sale-start capability UI flow", () => {
   });
 
   it("presents only a matched automatic size recommendation until the customer chooses manually", async () => {
+    vi.useFakeTimers();
     const mediumItem = makeCatalogItem();
     const largeItem: MachineCatalogItem = {
       ...mediumItem,
@@ -1247,6 +1284,7 @@ describe("sale-start capability UI flow", () => {
     applyVisionTryOnConfig();
 
     const host = await mountView(ProductDetailView);
+    await establishStableSinglePresence("presence-before-detail-profile");
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
         source: "front",
@@ -1255,8 +1293,7 @@ describe("sale-start capability UI flow", () => {
         occupancy: { state: "single", confidence: 0.3 },
         profile: {
           personPresent: true,
-          heightCm: 178,
-          bodyType: "regular",
+          bodyType: "strong",
           upperColor: "蓝",
           confidence: 0.3,
         },
@@ -1271,10 +1308,14 @@ describe("sale-start capability UI flow", () => {
       host,
       '[data-test="product-detail-page"]',
     );
-    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
-      "false",
-    );
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe("true");
     expect(page.getAttribute("data-variant-id")).toBe(mediumItem.variantId);
+    expect(
+      requireElement<HTMLButtonElement>(
+        host,
+        '[data-test="product-size-option"][data-size="M"]',
+      ).classList,
+    ).toContain("option-pill-recommended");
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
@@ -1284,8 +1325,7 @@ describe("sale-start capability UI flow", () => {
         occupancy: { state: "single", confidence: 0.94 },
         profile: {
           personPresent: true,
-          heightCm: 178,
-          bodyType: "regular",
+          bodyType: "strong",
           upperColor: "蓝",
           confidence: 0.94,
         },
@@ -1444,7 +1484,8 @@ describe("sale-start capability UI flow", () => {
     ).toBe(largeItem.variantId);
   });
 
-  it("styles a recommendation only when Vision matches an available size", async () => {
+  it("keeps neutral M until a live profile maps to an available size", async () => {
+    vi.useFakeTimers();
     const mediumItem = makeCatalogItem();
     const largeItem: MachineCatalogItem = {
       ...mediumItem,
@@ -1483,6 +1524,9 @@ describe("sale-start capability UI flow", () => {
       host,
       '[data-test="product-detail-page"]',
     );
+    await establishStableSinglePresence("presence-before-size-style");
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe("true");
+    expect(page.getAttribute("data-variant-id")).toBe(mediumItem.variantId);
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
@@ -1500,9 +1544,8 @@ describe("sale-start capability UI flow", () => {
       >[0]),
     );
     await nextTick();
-    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
-      "false",
-    );
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe("true");
+    expect(page.getAttribute("data-variant-id")).toBe(mediumItem.variantId);
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
@@ -1511,8 +1554,7 @@ describe("sale-start capability UI flow", () => {
         detectedAt: "2026-07-22T10:00:02Z",
         profile: {
           personPresent: true,
-          heightCm: 190,
-          bodyType: "regular",
+          bodyType: "slim",
           upperColor: "黑",
           confidence: 0.94,
         },
@@ -1522,9 +1564,8 @@ describe("sale-start capability UI flow", () => {
       >[0]),
     );
     await nextTick();
-    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
-      "false",
-    );
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe("true");
+    expect(page.getAttribute("data-variant-id")).toBe(mediumItem.variantId);
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
@@ -1533,8 +1574,7 @@ describe("sale-start capability UI flow", () => {
         detectedAt: "2026-07-22T10:00:03Z",
         profile: {
           personPresent: true,
-          heightCm: 178,
-          bodyType: "regular",
+          bodyType: "strong",
           upperColor: "蓝",
           confidence: 0.94,
         },

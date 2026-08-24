@@ -5,6 +5,7 @@ import App from "./App.vue";
 import { installKioskBrowserGuards } from "./kiosk-browser-guards";
 import { router } from "./router";
 import { installTransactionRouteAuthority } from "./router/transaction-route-authority";
+import { installImplicitRecommendationRuntime } from "./runtime/implicit-recommendation-runtime";
 import { installVisionRecommendationCoordinator } from "./runtime/vision-recommendation-coordinator";
 import "./style.css";
 
@@ -24,8 +25,9 @@ async function bootstrap(): Promise<void> {
   const pinia = createPinia();
 
   app.use(pinia);
-  installVisionRecommendationCoordinator(pinia);
   installTransactionRouteAuthority(router, pinia);
+  installImplicitRecommendationRuntime(pinia);
+  installVisionRecommendationCoordinator(pinia);
   app.use(router);
 
   await router.isReady();

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { storeToRefs } from "pinia";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
+import type { ProductRecommendationProjection } from "@/recommendation/implicit-recommendation-session";
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import carouselImage1 from "@/assets/home/carousel-1.jpg";
@@ -22,21 +22,26 @@ import {
 } from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
+import ImplicitRecommendationBanner from "@/components/recommendation/ImplicitRecommendationBanner.vue";
 import { useCustomerInteractionSession } from "@/composables/customer-interaction-session";
 import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { recommendVariant } from "@/recommendation/engine";
+import { normalizeRecommendationSize } from "@/recommendation/implicit-recommendation-session";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCustomerJourneyStore } from "@/stores/customer-journey";
-import { useVisionStore } from "@/stores/vision";
+import { useImplicitRecommendationStore } from "@/stores/implicit-recommendation";
 import { formatCents } from "@/utils/format";
 
 const catalogStore = useCatalogStore();
 const customerJourneyStore = useCustomerJourneyStore();
-const { recommendationProfile: currentProfile, lastRecommendationResult } =
-  storeToRefs(useVisionStore());
+const recommendationStore = useImplicitRecommendationStore();
+const recommendationProjection = computed(() => recommendationStore.projection);
+const latestRecommendationProfileEventId = computed(() => {
+  const eventIds = recommendationStore.session.seenProfileEventIds;
+  return eventIds[eventIds.length - 1] ?? "";
+});
 const interactionSession = useCustomerInteractionSession();
 const stableVisionSession = getStableVisionPresenceSession();
 const presenceClass = computed(() =>
@@ -73,6 +78,7 @@ type DisplayProduct = {
   item: MachineCatalogItem;
   preferredVariantId: string | null;
   recommendationScore: number;
+  supportsSmartSizing: boolean;
 };
 
 const carouselSlides = [
@@ -126,24 +132,18 @@ const displayProducts = computed(() =>
     ...fallbackCategoryItems.value.map((item) =>
       toDisplayProduct(item, "other"),
     ),
-  ]
-    .map((product) => {
-      const recommendation = recommendVariant(
-        product.item.variantCandidates,
-        currentProfile.value,
-      );
-      return {
-        ...product,
-        preferredVariantId:
-          recommendation.score > 0
-            ? (recommendation.variant?.variantId ?? null)
-            : null,
-        recommendationScore: recommendation.score,
-      };
-    })
-    .sort(
-      (left, right) => right.recommendationScore - left.recommendationScore,
-    ),
+  ].map((product) => {
+    const recommendation =
+      recommendationProjection.value.products[product.item.catalogKey];
+    return {
+      ...product,
+      preferredVariantId: preferredVariantIdFor(product.item, recommendation),
+      recommendationScore: recommendation?.recommendedSize ? 1 : 0,
+      supportsSmartSizing:
+        recommendationProjection.value.visible &&
+        Boolean(recommendation?.supportsSmartSizing),
+    };
+  }),
 );
 const availableCategoryKeys = computed(
   () =>
@@ -337,7 +337,31 @@ function toDisplayProduct(
     item,
     preferredVariantId: null,
     recommendationScore: 0,
+    supportsSmartSizing: false,
   };
+}
+
+function preferredVariantIdFor(
+  item: MachineCatalogItem,
+  recommendation: ProductRecommendationProjection | undefined,
+): string | null {
+  if (!recommendation?.selectedSize) return null;
+  const desiredCanonicalSize = normalizeRecommendationSize(
+    recommendation.selectedSize,
+  );
+  const sizeCandidates = item.variantCandidates.filter(
+    (variant) =>
+      variant.size === recommendation.selectedSize ||
+      (desiredCanonicalSize !== null &&
+        normalizeRecommendationSize(variant.size) === desiredCanonicalSize),
+  );
+  if (recommendation.selectedColor !== null) {
+    const exact = sizeCandidates.find(
+      (variant) => variant.color === recommendation.selectedColor,
+    );
+    if (exact) return exact.variantId;
+  }
+  return sizeCandidates[0]?.variantId ?? null;
 }
 
 async function openProductDetail(product: DisplayProduct): Promise<void> {
@@ -371,13 +395,27 @@ onUnmounted(() => {
       class="catalog-home relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
       :class="presenceClass"
       data-test="catalog-page"
-      :data-vision-recommendation-active="currentProfile ? 'true' : 'false'"
-      :data-vision-profile-event-id="lastRecommendationResult?.eventId ?? ''"
+      :data-vision-recommendation-active="
+        recommendationProjection.banner === 'active' ? 'true' : 'false'
+      "
+      :data-recommendation-session-id="recommendationProjection.sessionId ?? ''"
+      :data-recommendation-canonical-size="
+        recommendationProjection.canonicalSize ?? ''
+      "
+      :data-vision-profile-event-id="latestRecommendationProfileEventId"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
 
       <KioskHeader class="relative z-10" />
+
+      <ImplicitRecommendationBanner
+        v-if="recommendationProjection.visible"
+        class="home-recommendation-banner relative z-10"
+        :state="
+          recommendationProjection.banner === 'multiple' ? 'multiple' : 'active'
+        "
+      />
 
       <div
         class="home-carousel-shell relative z-10 mt-6 shrink-0 overflow-hidden rounded-[26px] border border-[#ded6c2] bg-[#f8f3e8] p-2 shadow-[0_16px_40px_rgba(101,94,71,0.12)]"
@@ -583,13 +621,27 @@ onUnmounted(() => {
       :class="presenceClass"
       data-test="catalog-page"
       :data-category-key="selectedTopCategoryKey"
-      :data-vision-recommendation-active="currentProfile ? 'true' : 'false'"
-      :data-vision-profile-event-id="lastRecommendationResult?.eventId ?? ''"
+      :data-vision-recommendation-active="
+        recommendationProjection.banner === 'active' ? 'true' : 'false'
+      "
+      :data-recommendation-session-id="recommendationProjection.sessionId ?? ''"
+      :data-recommendation-canonical-size="
+        recommendationProjection.canonicalSize ?? ''
+      "
+      :data-vision-profile-event-id="latestRecommendationProfileEventId"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
 
       <KioskHeader class="relative z-10" />
+
+      <ImplicitRecommendationBanner
+        v-if="recommendationProjection.visible"
+        class="list-recommendation-banner relative z-10"
+        :state="
+          recommendationProjection.banner === 'multiple' ? 'multiple' : 'active'
+        "
+      />
 
       <div class="list-heading-row">
         <div class="list-title-group">
@@ -705,6 +757,9 @@ onUnmounted(() => {
                 :data-variant-id="product.item.variantId"
                 :data-preferred-variant-id="product.preferredVariantId ?? ''"
                 :data-recommendation-score="product.recommendationScore"
+                :data-smart-sizing-supported="
+                  product.supportsSmartSizing ? 'true' : 'false'
+                "
                 :data-saleable-stock="product.item.saleableStock"
                 :data-slot-sales-state="product.item.slotSalesState"
                 @click="openProductDetail(product)"
@@ -737,6 +792,13 @@ onUnmounted(() => {
                     {{ product.genderLabel }} ｜ {{ product.colors }}种颜色
                   </p>
                   <p class="mt-1">尺码 {{ product.sizeLabel }}</p>
+                  <span
+                    v-if="product.supportsSmartSizing"
+                    class="product-smart-sizing-label"
+                    data-test="catalog-product-smart-sizing"
+                  >
+                    支持智能选码 · 进入查看
+                  </span>
                   <strong>{{ product.price }}</strong>
                 </div>
               </button>
@@ -814,6 +876,11 @@ onUnmounted(() => {
   grid-row: 1;
 }
 
+.home-recommendation-banner {
+  grid-row: 2;
+  margin-top: clamp(12px, 1.35vh, 26px);
+}
+
 .catalog-home > header img[alt="唐诗村"] {
   height: clamp(36px, 5.9vw, 64px);
 }
@@ -833,7 +900,7 @@ onUnmounted(() => {
 }
 
 .home-carousel-shell {
-  grid-row: 2;
+  grid-row: 3;
   margin-top: var(--home-carousel-gap);
   padding: clamp(8px, 0.93vw, 10px);
   border-radius: clamp(26px, 2.8vw, 30px);
@@ -844,7 +911,7 @@ onUnmounted(() => {
 }
 
 .home-readiness-message {
-  grid-row: 3;
+  grid-row: 4;
   margin-top: clamp(12px, 1.04vh, 20px);
 }
 
@@ -892,19 +959,19 @@ onUnmounted(() => {
 }
 
 .home-category-heading {
-  grid-row: 4;
+  grid-row: 5;
   margin-top: var(--home-heading-gap);
   gap: clamp(12px, 1.85vw, 20px);
 }
 
 .home-category-grid {
-  grid-row: 5;
+  grid-row: 6;
   gap: clamp(16px, 2.41vw, 26px);
   margin-top: var(--home-category-gap);
 }
 
 .home-quick-grid {
-  grid-row: 6;
+  grid-row: 7;
   gap: clamp(8px, 1.67vw, 18px);
   margin-top: var(--home-quick-gap);
   padding-right: clamp(112px, 20.4vw, 220px);
@@ -920,6 +987,10 @@ onUnmounted(() => {
   gap: 1.4rem;
   margin-top: 1.55rem;
   padding-bottom: 7.5rem;
+}
+
+.list-recommendation-banner {
+  margin-top: 1rem;
 }
 
 .product-main {
@@ -1165,6 +1236,20 @@ onUnmounted(() => {
 .display-product-card p {
   color: #827b70;
   font-size: 0.88rem;
+}
+
+.product-smart-sizing-label {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0.75rem;
+  padding: 0.36rem 0.68rem;
+  border: 1px solid rgba(118, 138, 100, 0.42);
+  border-radius: 999px;
+  background: rgba(241, 246, 235, 0.92);
+  color: #536947;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .display-product-card strong {

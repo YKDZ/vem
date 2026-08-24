@@ -1,7 +1,5 @@
 import {
-  type VisionProfile,
   type VisionPresenceOccupancyState,
-  type VisionProfileNotUsableReason,
   visionErrorPayloadSchema,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
@@ -41,8 +39,6 @@ type VisionPresenceState = {
   personPresent: boolean;
   occupancyState: VisionPresenceOccupancyState;
   occupancyConfidence: number | null;
-  profileUsable: boolean;
-  profileNotUsableReason: VisionProfileNotUsableReason | null;
   lastSeenAt: string | null;
   departedAt: string | null;
   lastChangedAt: string | null;
@@ -50,17 +46,11 @@ type VisionPresenceState = {
   restoredFromRefresh: boolean;
 };
 
-const PROFILE_CONFIDENCE_THRESHOLD = 0.5;
-const RECOMMENDATION_PROFILE_EXPIRE_MS = 60_000;
-let recommendationExpiryTimer: ReturnType<typeof setTimeout> | null = null;
-
 const EMPTY_PRESENCE: VisionPresenceState = {
   eventId: null,
   personPresent: false,
   occupancyState: "none",
   occupancyConfidence: null,
-  profileUsable: false,
-  profileNotUsableReason: null,
   lastSeenAt: null,
   departedAt: null,
   lastChangedAt: null,
@@ -79,9 +69,6 @@ export const useVisionStore = defineStore("vision", {
     tryOnReady: false,
     visionBusinessReady: false,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
-    recommendationProfile: null as VisionProfile | null,
-    lastRecommendationResult: null as VisionProfileResultPayload | null,
-    recommendationProfileExpiresAt: null as string | null,
   }),
   getters: {
     isSinglePersonPresent: (state): boolean =>
@@ -90,10 +77,6 @@ export const useVisionStore = defineStore("vision", {
     isMultiplePeoplePresent: (state): boolean =>
       state.presence.personPresent &&
       state.presence.occupancyState === "multiple",
-    canUseLatestProfileForRecommendation: (state): boolean =>
-      state.presence.personPresent &&
-      state.presence.profileUsable &&
-      state.presence.occupancyState !== "multiple",
     isTryOnCapabilityDegraded: (state): boolean =>
       state.tryOnCapability === "degraded",
   },
@@ -131,12 +114,6 @@ export const useVisionStore = defineStore("vision", {
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromProfileResult(payload);
     },
-    applyRecommendationProfileResult(
-      payload: VisionProfileResultPayload,
-    ): void {
-      this.applyLatestProfileResult(payload);
-      this.updateRecommendationProfile(payload);
-    },
     applyPresenceStatus(payload: VisionPresenceStatusPayload): void {
       const parsed = visionPresenceStatusPayloadSchema.parse(payload);
       this.latestDiagnosticPayload = {
@@ -147,9 +124,6 @@ export const useVisionStore = defineStore("vision", {
       this.online = true;
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromPresenceStatus(parsed);
-      if (!parsed.personPresent) {
-        this.clearRecommendationState();
-      }
     },
     applyPersonDeparted(payload: VisionPersonDepartedPayload): void {
       const parsed = visionPersonDepartedPayloadSchema.parse(payload);
@@ -161,7 +135,6 @@ export const useVisionStore = defineStore("vision", {
       this.online = true;
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromPersonDeparted(parsed);
-      this.clearRecommendationState();
     },
     applyVisionReady(payload: unknown): void {
       const result = visionReadyPayloadSchema.safeParse(payload);
@@ -191,48 +164,6 @@ export const useVisionStore = defineStore("vision", {
     clearLatestDiagnosticPayload(): void {
       this.latestDiagnosticPayload = null;
       this.presence = { ...EMPTY_PRESENCE };
-      this.clearRecommendationState();
-    },
-    clearRecommendationForVisionFailure(): void {
-      this.clearRecommendationState();
-      this.clearLatestDiagnosticPayload();
-    },
-    clearRecommendationState(): void {
-      if (recommendationExpiryTimer !== null) {
-        clearTimeout(recommendationExpiryTimer);
-        recommendationExpiryTimer = null;
-      }
-      this.recommendationProfile = null;
-      this.lastRecommendationResult = null;
-      this.recommendationProfileExpiresAt = null;
-    },
-    updateRecommendationProfile(payload: VisionProfileResultPayload): void {
-      this.lastRecommendationResult = sanitizeRecommendationResult(payload);
-      this.restartRecommendationExpiryTimer();
-      if (!this.canUseLatestProfileForRecommendation) {
-        this.recommendationProfile = null;
-        return;
-      }
-      const profile = sanitizeRecommendationProfile(payload.profile);
-      if (
-        profile.confidence !== undefined &&
-        profile.confidence < PROFILE_CONFIDENCE_THRESHOLD
-      ) {
-        this.recommendationProfile = null;
-        return;
-      }
-      this.recommendationProfile = profile;
-    },
-    restartRecommendationExpiryTimer(): void {
-      if (recommendationExpiryTimer !== null) {
-        clearTimeout(recommendationExpiryTimer);
-      }
-      this.recommendationProfileExpiresAt = new Date(
-        Date.now() + RECOMMENDATION_PROFILE_EXPIRE_MS,
-      ).toISOString();
-      recommendationExpiryTimer = setTimeout(() => {
-        this.clearRecommendationState();
-      }, RECOMMENDATION_PROFILE_EXPIRE_MS);
     },
     applyTryOnCapabilityFromDiagnostic(value: unknown): void {
       if (isVisionReadyDiagnostic(value)) {
@@ -250,7 +181,6 @@ export const useVisionStore = defineStore("vision", {
       const profileDiagnostic = parseProfileResultDiagnostic(value);
       if (profileDiagnostic) {
         this.applyPresenceFromProfileResult(profileDiagnostic.payload);
-        this.updateRecommendationProfile(profileDiagnostic.payload);
         this.presence.restoredFromRefresh =
           options.restoredFromRefresh === true;
         return;
@@ -258,9 +188,6 @@ export const useVisionStore = defineStore("vision", {
       const presenceDiagnostic = parsePresenceStatusDiagnostic(value);
       if (presenceDiagnostic) {
         this.applyPresenceFromPresenceStatus(presenceDiagnostic.payload);
-        if (!presenceDiagnostic.payload.personPresent) {
-          this.clearRecommendationState();
-        }
         this.presence.restoredFromRefresh =
           options.restoredFromRefresh === true;
         return;
@@ -268,7 +195,6 @@ export const useVisionStore = defineStore("vision", {
       const departureDiagnostic = parsePersonDepartedDiagnostic(value);
       if (departureDiagnostic) {
         this.applyPresenceFromPersonDeparted(departureDiagnostic.payload);
-        this.clearRecommendationState();
         this.presence.restoredFromRefresh =
           options.restoredFromRefresh === true;
         return;
@@ -278,18 +204,11 @@ export const useVisionStore = defineStore("vision", {
     applyPresenceFromProfileResult(payload: VisionProfileResultPayload): void {
       const personPresent = payload.profile.personPresent;
       const occupancy = normalizeOccupancy(payload.occupancy, personPresent);
-      const profileUsable = profileResultUsable(payload, occupancy.state);
       this.presence = {
         eventId: payload.eventId,
         personPresent,
         occupancyState: occupancy.state,
         occupancyConfidence: occupancy.confidence,
-        profileUsable,
-        profileNotUsableReason:
-          payload.quality.notUsableReason ??
-          (profileUsable
-            ? null
-            : profileNotUsableReason(payload, occupancy.state)),
         lastSeenAt: personPresent
           ? payload.detectedAt
           : this.presence.lastSeenAt,
@@ -309,16 +228,6 @@ export const useVisionStore = defineStore("vision", {
         personPresent,
         occupancyState: occupancy.state,
         occupancyConfidence: occupancy.confidence,
-        profileUsable: presenceStatusProfileUsable(
-          this.presence.profileUsable,
-          personPresent,
-          occupancy.state,
-        ),
-        profileNotUsableReason: presenceStatusProfileNotUsableReason(
-          this.presence.profileNotUsableReason,
-          personPresent,
-          occupancy.state,
-        ),
         lastSeenAt: personPresent
           ? payload.detectedAt
           : this.presence.lastSeenAt,
@@ -336,8 +245,6 @@ export const useVisionStore = defineStore("vision", {
         personPresent: false,
         occupancyState: "none",
         occupancyConfidence: null,
-        profileUsable: false,
-        profileNotUsableReason: null,
         lastSeenAt: payload.lastSeenAt ?? this.presence.lastSeenAt,
         departedAt: payload.detectedAt,
         lastChangedAt: payload.detectedAt,
@@ -353,33 +260,6 @@ export const useVisionStore = defineStore("vision", {
   },
 });
 
-function sanitizeRecommendationProfile(profile: VisionProfile): VisionProfile {
-  return {
-    personPresent: profile.personPresent,
-    heightCm: profile.heightCm ?? undefined,
-    bodyType: profile.bodyType,
-    upperColor: profile.upperColor,
-    confidence: profile.confidence,
-  };
-}
-
-function sanitizeRecommendationResult(
-  payload: VisionProfileResultPayload,
-): VisionProfileResultPayload {
-  return {
-    source: payload.source,
-    eventId: payload.eventId,
-    detectedAt: payload.detectedAt,
-    profile: sanitizeRecommendationProfile(payload.profile),
-    quality: {
-      overall: payload.quality.overall,
-      warnings: [],
-      profileUsable: payload.quality.profileUsable,
-      notUsableReason: payload.quality.notUsableReason,
-    },
-  };
-}
-
 function normalizeOccupancy(
   occupancy: VisionPresenceStatusPayload["occupancy"] | undefined,
   personPresent: boolean,
@@ -394,57 +274,6 @@ function normalizeOccupancy(
     state: personPresent ? "unknown" : "none",
     confidence: null,
   };
-}
-
-function profileResultUsable(
-  payload: VisionProfileResultPayload,
-  occupancyState: VisionPresenceOccupancyState,
-): boolean {
-  if (!payload.profile.personPresent) return false;
-  if (occupancyState === "multiple") return false;
-  if (
-    payload.profile.confidence !== undefined &&
-    payload.profile.confidence < PROFILE_CONFIDENCE_THRESHOLD
-  ) {
-    return false;
-  }
-  return payload.quality.profileUsable;
-}
-
-function profileNotUsableReason(
-  payload: VisionProfileResultPayload,
-  occupancyState: VisionPresenceOccupancyState,
-): VisionProfileNotUsableReason | null {
-  if (occupancyState === "multiple") return "multiple_people";
-  if (!payload.profile.personPresent) return "no_person";
-  if (
-    payload.profile.confidence !== undefined &&
-    payload.profile.confidence < PROFILE_CONFIDENCE_THRESHOLD
-  ) {
-    return "low_confidence";
-  }
-  if (!payload.quality.profileUsable) return "unknown";
-  return null;
-}
-
-function presenceStatusProfileUsable(
-  current: boolean,
-  personPresent: boolean,
-  occupancyState: VisionPresenceOccupancyState,
-): boolean {
-  if (!personPresent) return false;
-  if (occupancyState === "multiple") return false;
-  return current;
-}
-
-function presenceStatusProfileNotUsableReason(
-  current: VisionProfileNotUsableReason | null,
-  personPresent: boolean,
-  occupancyState: VisionPresenceOccupancyState,
-): VisionProfileNotUsableReason | null {
-  if (!personPresent) return null;
-  if (occupancyState === "multiple") return "multiple_people";
-  return current === "multiple_people" ? null : current;
 }
 
 function parseProfileResultDiagnostic(

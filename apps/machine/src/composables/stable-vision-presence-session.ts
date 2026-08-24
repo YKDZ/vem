@@ -1,9 +1,12 @@
+import type { Pinia } from "pinia";
+
 import { readonly, ref, watch, type Ref, type WatchStopHandle } from "vue";
 
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useVisionStore } from "@/stores/vision";
 
 const ABSENCE_DEPARTURE_MS = 5_000;
+const OCCUPANCY_CONFIRMATION_MS = 1_000;
 const MIN_OCCUPANCY_CONFIDENCE = 0.5;
 
 export type StableVisionPresenceEdge = "arrival" | "departure" | null;
@@ -36,6 +39,12 @@ let started = false;
 let stopVisionWatch: WatchStopHandle | null = null;
 let stopDepartureNavigationWatch: WatchStopHandle | null = null;
 let absenceTimer: ReturnType<typeof setTimeout> | null = null;
+let occupancyTimer: ReturnType<typeof setTimeout> | null = null;
+let occupancyCandidate: {
+  occupancyState: "single" | "multiple";
+  lastSeenAt: string | null;
+  restored: boolean;
+} | null = null;
 let epoch = 0;
 
 function clearAbsenceTimer(): void {
@@ -43,9 +52,15 @@ function clearAbsenceTimer(): void {
   absenceTimer = null;
 }
 
-function arrive(
+function clearOccupancyCandidate(): void {
+  if (occupancyTimer !== null) clearTimeout(occupancyTimer);
+  occupancyTimer = null;
+  occupancyCandidate = null;
+}
+
+function confirmOccupancy(
   lastSeenAt: string | null,
-  occupancyState: StableVisionPresenceState["occupancyState"],
+  occupancyState: "single" | "multiple",
   restored: boolean,
 ): void {
   clearAbsenceTimer();
@@ -65,7 +80,39 @@ function arrive(
   };
 }
 
+function scheduleOccupancyConfirmation(
+  lastSeenAt: string | null,
+  occupancyState: "single" | "multiple",
+  restored: boolean,
+): void {
+  clearAbsenceTimer();
+  if (state.value.present && state.value.occupancyState === occupancyState) {
+    clearOccupancyCandidate();
+    state.value = { ...state.value, lastSeenAt, restored };
+    return;
+  }
+  if (occupancyCandidate?.occupancyState === occupancyState) {
+    occupancyCandidate = { occupancyState, lastSeenAt, restored };
+    return;
+  }
+
+  clearOccupancyCandidate();
+  occupancyCandidate = { occupancyState, lastSeenAt, restored };
+  occupancyTimer = setTimeout(() => {
+    occupancyTimer = null;
+    const candidate = occupancyCandidate;
+    occupancyCandidate = null;
+    if (!candidate) return;
+    confirmOccupancy(
+      candidate.lastSeenAt,
+      candidate.occupancyState,
+      candidate.restored,
+    );
+  }, OCCUPANCY_CONFIRMATION_MS);
+}
+
 function scheduleDeparture(departedAt: string | null, restored: boolean): void {
+  clearOccupancyCandidate();
   if (!state.value.present || absenceTimer !== null) return;
   absenceTimer = setTimeout(() => {
     absenceTimer = null;
@@ -83,10 +130,10 @@ function scheduleDeparture(departedAt: string | null, restored: boolean): void {
   }, ABSENCE_DEPARTURE_MS);
 }
 
-function start(): void {
+function start(pinia?: Pinia): void {
   if (started) return;
   started = true;
-  const visionStore = useVisionStore();
+  const visionStore = useVisionStore(pinia);
   stopVisionWatch = watch(
     () => ({
       online: visionStore.online,
@@ -104,19 +151,23 @@ function start(): void {
         presence.occupancyState === "unknown"
       ) {
         clearAbsenceTimer();
+        clearOccupancyCandidate();
         return;
       }
       if (presence.personPresent) {
         if (
           presence.occupancyConfidence === null ||
-          presence.occupancyConfidence < MIN_OCCUPANCY_CONFIDENCE
+          presence.occupancyConfidence < MIN_OCCUPANCY_CONFIDENCE ||
+          (presence.occupancyState !== "single" &&
+            presence.occupancyState !== "multiple")
         ) {
           clearAbsenceTimer();
+          clearOccupancyCandidate();
           return;
         }
-        arrive(
+        scheduleOccupancyConfirmation(
           presence.lastSeenAt ?? presence.lastChangedAt,
-          presence.occupancyState === "multiple" ? "multiple" : "single",
+          presence.occupancyState,
           presence.restoredFromRefresh,
         );
         return;
@@ -127,6 +178,7 @@ function start(): void {
           presence.occupancyConfidence < MIN_OCCUPANCY_CONFIDENCE)
       ) {
         clearAbsenceTimer();
+        clearOccupancyCandidate();
         return;
       }
       scheduleDeparture(
@@ -138,8 +190,10 @@ function start(): void {
   );
 }
 
-export function getStableVisionPresenceSession(): StableVisionPresenceSession {
-  start();
+export function getStableVisionPresenceSession(
+  pinia?: Pinia,
+): StableVisionPresenceSession {
+  start(pinia);
   return { state: readonly(state) };
 }
 
@@ -168,6 +222,7 @@ export function resetStableVisionPresenceSessionForTests(): void {
   stopVisionWatch?.();
   stopVisionWatch = null;
   clearAbsenceTimer();
+  clearOccupancyCandidate();
   started = false;
   epoch = 0;
   state.value = {

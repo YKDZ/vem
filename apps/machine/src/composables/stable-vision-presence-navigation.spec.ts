@@ -54,6 +54,7 @@ describe("stable Vision presence navigation", () => {
   it("submits one navigation intent from the stable departure edge", async () => {
     installStableVisionPresenceDepartureNavigation();
     emitPresence(true, "PRESENT-1");
+    await vi.advanceTimersByTimeAsync(1_000);
     emitPresence(false, "EMPTY-1");
     await nextTick();
     await vi.advanceTimersByTimeAsync(5_000);

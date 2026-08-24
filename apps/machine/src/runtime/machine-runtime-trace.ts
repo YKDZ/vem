@@ -99,12 +99,34 @@ export type MachineRuntimeCheckoutSubmitTraceEntry = {
   orderNo?: string | null;
 };
 
+export type MachineRuntimeImplicitRecommendationTraceEntry = {
+  type: "implicit_recommendation";
+  id: number;
+  at: string;
+  recordedAt: string;
+  event:
+    | "session_started"
+    | "neutral_presented"
+    | "refined_once"
+    | "manual_size_override"
+    | "multiple_suppressed"
+    | "projected_unavailable"
+    | "ignored_conflicting_profile"
+    | "session_ended";
+  sessionId: string | null;
+  catalogKey: string | null;
+  profileEventId: string | null;
+  canonicalSize: "S" | "M" | "L" | null;
+  latencyMs: number | null;
+};
+
 export type MachineRuntimeTraceEntry =
   | MachineRuntimeNavigationTraceRecord
   | MachineRuntimeAudioTraceEntry
   | MachineRuntimeTransactionSurfaceTraceEntry
   | MachineRuntimeCustomerErrorTraceEntry
-  | MachineRuntimeCheckoutSubmitTraceEntry;
+  | MachineRuntimeCheckoutSubmitTraceEntry
+  | MachineRuntimeImplicitRecommendationTraceEntry;
 
 export type MachineRuntimeTraceSnapshot = {
   runtimeGenerationId: string;
@@ -115,7 +137,8 @@ type MachineRuntimeRecordedEntry =
   | MachineRuntimeAudioTraceEntry
   | MachineRuntimeTransactionSurfaceTraceEntry
   | MachineRuntimeCustomerErrorTraceEntry
-  | MachineRuntimeCheckoutSubmitTraceEntry;
+  | MachineRuntimeCheckoutSubmitTraceEntry
+  | MachineRuntimeImplicitRecommendationTraceEntry;
 
 // Omit must distribute over this discriminated union. A plain Omit collapses
 // the member-specific fields and makes valid trace records fail type checking.

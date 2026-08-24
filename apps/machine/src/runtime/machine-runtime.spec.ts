@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp, defineComponent, nextTick } from "vue";
+import { createApp, defineComponent } from "vue";
 import { createMemoryHistory, createRouter } from "vue-router";
 
 import {
@@ -384,7 +384,7 @@ describe("Machine runtime coordinator", () => {
         },
       },
     });
-    await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
 
     handlers.onEvent({
       type: "vision_changed",
@@ -405,7 +405,9 @@ describe("Machine runtime coordinator", () => {
       },
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(getCurrentTransactionMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
 
     await vi.waitFor(() => {
       expect(getCurrentTransactionMock).toHaveBeenCalledOnce();

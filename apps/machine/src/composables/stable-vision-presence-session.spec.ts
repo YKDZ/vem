@@ -10,7 +10,10 @@ import {
   resetStableVisionPresenceSessionForTests,
 } from "./stable-vision-presence-session";
 
-function present(eventId: string): void {
+function present(
+  eventId: string,
+  occupancyState: "single" | "multiple" = "single",
+): void {
   useVisionStore().applyPresenceStatus({
     source: "top",
     eventId,
@@ -22,7 +25,7 @@ function present(eventId: string): void {
     close: false,
     closeTrigger: null,
     proximity: { present: true, closeNow: false, close: false },
-    occupancy: { state: "single", confidence: 0.91 },
+    occupancy: { state: occupancyState, confidence: 0.91 },
   });
 }
 
@@ -68,7 +71,14 @@ describe("stable Vision presence session", () => {
     const session = getStableVisionPresenceSession();
 
     present("PRESENT-1");
-    await nextTick();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(session.state.value).toMatchObject({
+      present: false,
+      edge: null,
+      edgeId: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(1);
     expect(session.state.value).toMatchObject({
       present: true,
       edge: "arrival",
@@ -94,6 +104,7 @@ describe("stable Vision presence session", () => {
   it("cancels short absence and freezes an established session while Vision is unavailable", async () => {
     const session = getStableVisionPresenceSession();
     present("PRESENT-1");
+    await vi.advanceTimersByTimeAsync(1_000);
     absent("ABSENT-1");
     await vi.advanceTimersByTimeAsync(4_000);
     present("PRESENT-2");
@@ -116,6 +127,43 @@ describe("stable Vision presence session", () => {
     });
   });
 
+  it("confirms single and multiple occupancy for one continuous second without replaying arrival", async () => {
+    const session = getStableVisionPresenceSession();
+
+    present("PRESENT-SINGLE-TRANSIENT", "single");
+    await vi.advanceTimersByTimeAsync(999);
+    present("PRESENT-MULTIPLE", "multiple");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(session.state.value).toMatchObject({
+      present: false,
+      occupancyState: "none",
+      edgeId: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(session.state.value).toMatchObject({
+      present: true,
+      occupancyState: "multiple",
+      edge: "arrival",
+      edgeId: "presence-1:arrival",
+    });
+
+    present("PRESENT-SINGLE", "single");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(session.state.value).toMatchObject({
+      occupancyState: "multiple",
+      edgeId: "presence-1:arrival",
+    });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(session.state.value).toMatchObject({
+      present: true,
+      occupancyState: "single",
+      edge: "arrival",
+      edgeId: "presence-1:arrival",
+    });
+  });
+
   it("requires an available, confident observation and freezes active absence when observation becomes unknown", async () => {
     const session = getStableVisionPresenceSession();
 
@@ -128,6 +176,7 @@ describe("stable Vision presence session", () => {
     });
 
     present("PRESENT-1");
+    await vi.advanceTimersByTimeAsync(1_000);
     absent("ABSENT-1");
     await vi.advanceTimersByTimeAsync(4_000);
     useVisionStore().applyStatus({
