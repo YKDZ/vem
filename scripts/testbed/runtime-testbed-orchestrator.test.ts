@@ -12,6 +12,7 @@ import {
   guestAcceptanceExecutionBudget,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
+  processReplayGuestDirectory,
   powerShellFocusArgument,
   reconstructedAcceptancePasses,
   stageGuestInputs,
@@ -260,6 +261,29 @@ describe("runtime testbed scheduler contract", () => {
         startupPhase: "prepare_reboot",
       }),
       /-StartupPhase 'prepare_reboot'$/,
+    );
+  });
+
+  it("显式过程回放同时支持 fast 与最终 full，并排除 clear_cache", () => {
+    assert.equal(
+      processReplayGuestDirectory({ enabled: true, mode: "fast", pass: 1 }),
+      "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1",
+    );
+    assert.equal(
+      processReplayGuestDirectory({ enabled: true, mode: "full", pass: 2 }),
+      "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-2",
+    );
+    assert.equal(
+      processReplayGuestDirectory({
+        enabled: true,
+        mode: "clear_cache",
+        pass: 1,
+      }),
+      null,
+    );
+    assert.equal(
+      processReplayGuestDirectory({ enabled: false, mode: "full", pass: 1 }),
+      null,
     );
   });
 

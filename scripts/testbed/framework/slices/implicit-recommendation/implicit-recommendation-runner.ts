@@ -7,10 +7,15 @@ import type { ImplicitRecommendationAcceptanceAdapter } from "./implicit-recomme
 
 import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { CdpTestAdapter } from "../../cdp-adapter.ts";
+import {
+  BusinessSetProcessReplay,
+  type ProcessReplaySummary,
+} from "../../process-replay.ts";
 import { InstalledImplicitRecommendationAdapter } from "./implicit-recommendation-cdp-adapter.ts";
 import { runImplicitRecommendationBusinessSet } from "./implicit-recommendation-driver.ts";
 
 type CdpBoundary = {
+  endpoint?: string;
   client: {
     send: (
       method: string,
@@ -30,6 +35,10 @@ interface MainDependencies {
     artifactRoot: string | null;
   }) => ImplicitRecommendationAcceptanceAdapter;
   runBusinessSet?: typeof runImplicitRecommendationBusinessSet;
+  runReplay?: <T>(
+    context: Parameters<typeof BusinessSetProcessReplay.run>[0],
+    operation: () => Promise<T> | T,
+  ) => Promise<T>;
   io?: {
     writeFile(
       path: string,
@@ -64,6 +73,11 @@ export async function main(
   const artifactRoot = outPath
     ? join(dirname(outPath), "implicit-recommendation-artifacts")
     : null;
+  const replayDirectory = process.env.VEM_PROCESS_REPLAY_DIR ?? null;
+  const replayEnabled =
+    process.env.VEM_PROCESS_REPLAY === "1" &&
+    replayDirectory !== null &&
+    outPath !== null;
   const cdp = (dependencies.createCdpAdapter ?? (() => new CdpTestAdapter()))();
   try {
     await cdp.connect({ timeoutMs: 20_000 });
@@ -71,9 +85,34 @@ export async function main(
       dependencies.createAcceptanceAdapter ??
       ((input) => new InstalledImplicitRecommendationAdapter(input))
     )({ boundary: cdp, artifactRoot });
-    const result = await (
-      dependencies.runBusinessSet ?? runImplicitRecommendationBusinessSet
-    )(acceptanceAdapter);
+    let replaySummary: ProcessReplaySummary | null = null;
+    const runBusinessSet = () =>
+      (dependencies.runBusinessSet ?? runImplicitRecommendationBusinessSet)(
+        acceptanceAdapter,
+      );
+    if (replayEnabled && !cdp.endpoint) {
+      throw new Error("implicit recommendation replay requires a CDP endpoint");
+    }
+    const result = replayEnabled
+      ? await (dependencies.runReplay ?? BusinessSetProcessReplay.run)(
+          {
+            endpoint: cdp.endpoint!,
+            outputDirectory: join(replayDirectory!, "implicit-recommendation"),
+            businessSet: "implicitRecommendation",
+            onSummary: (summary) => {
+              replaySummary = summary;
+            },
+          },
+          runBusinessSet,
+        )
+      : await runBusinessSet();
+    const supportingEvidence: unknown[] = [result.evidence];
+    if (replaySummary) {
+      supportingEvidence.push({
+        kind: "business-set-process-replay",
+        summary: replaySummary,
+      });
+    }
     const report = buildAcceptanceReport({
       runId:
         dependencies.runId ??
@@ -85,7 +124,7 @@ export async function main(
         {
           name: "implicitRecommendation",
           assertions: result.assertions,
-          supportingEvidence: [result.evidence],
+          supportingEvidence,
         },
       ],
     });

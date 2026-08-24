@@ -25,6 +25,7 @@ import {
   BUSINESS_CHECK_REGISTRY,
   selectBusinessChecks,
 } from "./business-check-registry.ts";
+import { synthesizeProcessReplayVideos } from "./process-replay-video.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -193,6 +194,22 @@ export function reconstructedAcceptancePasses(
   focus: string[] = [],
 ): number {
   return mode === "full" && focus.length === 0 ? 2 : 1;
+}
+
+export function processReplayGuestDirectory({
+  enabled,
+  mode,
+  pass,
+}: {
+  enabled: boolean;
+  mode: string;
+  pass: number;
+}): string | null {
+  if (!enabled || (mode !== "fast" && mode !== "full")) return null;
+  if (!Number.isSafeInteger(pass) || pass < 1) {
+    throw new Error("process replay pass must be a positive integer");
+  }
+  return `C:\\ProgramData\\VEM\\testbed\\process-replay-pass-${pass}`;
 }
 
 function artifactFile(
@@ -1368,6 +1385,11 @@ async function stageAndRunGuest({
   const remote = `${String(guest.user)}@${String(guest.host)}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
+  const processReplayGuestRoot = processReplayGuestDirectory({
+    enabled: process.env.VEM_PROCESS_REPLAY === "1",
+    mode,
+    pass,
+  });
   const archive = join(runRoot, `source-pass-${pass}.tar.gz`);
   await runProcess("git", [
     `--git-dir=${config.mirrorPath}`,
@@ -1413,6 +1435,11 @@ async function stageAndRunGuest({
     "& tar.exe -xf $archive -C $source",
     "if ($LASTEXITCODE -ne 0) { throw 'source extraction failed' }",
     "Remove-Item -LiteralPath $archive -Force",
+    ...(processReplayGuestRoot
+      ? [
+          `Remove-Item -LiteralPath '${processReplayGuestRoot.replaceAll("'", "''")}' -Recurse -Force -ErrorAction SilentlyContinue`,
+        ]
+      : []),
   ].join("\n");
   await runProcess(
     "ssh",
@@ -1457,17 +1484,13 @@ async function stageAndRunGuest({
     mode,
     focus,
   });
-  const processReplayGuestDirectory =
-    process.env.VEM_PROCESS_REPLAY === "1" && mode === "fast"
-      ? `C:\\ProgramData\\VEM\\testbed\\process-replay-pass-${pass}`
-      : null;
   const guestEnvironment = [
-    ...(processReplayGuestDirectory
+    ...(processReplayGuestRoot
       ? [
           { name: "VEM_PROCESS_REPLAY", value: "1" },
           {
             name: "VEM_PROCESS_REPLAY_DIR",
-            value: processReplayGuestDirectory,
+            value: processReplayGuestRoot,
           },
         ]
       : []),
@@ -1555,22 +1578,32 @@ async function stageAndRunGuest({
       timeoutLabel: "guest evidence transfer",
     },
   ).catch(() => undefined);
-  if (processReplayGuestDirectory) {
+  if (processReplayGuestRoot) {
     const replayRoot = join(runRoot, "process-replay", `pass-${pass}`);
     await mkdir(replayRoot, { recursive: true });
-    await runProcess(
-      "scp",
-      [
-        ...scp,
-        "-r",
-        `${remote}:C:/ProgramData/VEM/testbed/process-replay-pass-${pass}`,
-        replayRoot,
-      ],
-      {
-        timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
-        timeoutLabel: "guest process replay transfer",
-      },
-    ).catch(() => undefined);
+    try {
+      await runProcess(
+        "scp",
+        [
+          ...scp,
+          "-r",
+          `${remote}:C:/ProgramData/VEM/testbed/process-replay-pass-${pass}`,
+          replayRoot,
+        ],
+        {
+          timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+          timeoutLabel: "guest process replay transfer",
+        },
+      );
+      await synthesizeProcessReplayVideos({ root: replayRoot });
+    } catch (error) {
+      // 过程视频是供人工核验的支持证据，不得反向改写业务 verdict。
+      await writeFile(
+        join(replayRoot, "video-synthesis-error.txt"),
+        `${(error instanceof Error ? error.message : String(error)).slice(0, 2_048)}\n`,
+        "utf8",
+      );
+    }
   }
   if (transportError) throw transportError;
   if (guestError) {

@@ -299,15 +299,6 @@ export async function runVisionExperienceSlice({
         assertions.push(...geometry.pixelAssertions);
         supportingEvidence.push(geometry.evidence);
       }
-      if (includeDegradation && stopOwner) {
-        const degradation = await runDegradationScenario(adapter, {
-          stopOwner,
-          timeoutMs,
-          pollMs,
-          acceptanceBinding,
-        });
-        assertions.push(...degradation.assertions);
-      }
       if (includeManualCapture) {
         const manual = await runManualCaptureScenario(adapter, {
           timeoutMs,
@@ -323,6 +314,17 @@ export async function runVisionExperienceSlice({
           acceptanceBinding,
         });
         assertions.push(...departure.assertions);
+      }
+      // 降级检查会按产品边界停止整个 Vision owner，因此必须最后执行，
+      // 不能反向破坏同一轮仍需真实 Vision 的手动采集或离场链路。
+      if (includeDegradation && stopOwner) {
+        const degradation = await runDegradationScenario(adapter, {
+          stopOwner,
+          timeoutMs,
+          pollMs,
+          acceptanceBinding,
+        });
+        assertions.push(...degradation.assertions);
       }
       report = buildAcceptanceReport({
         runId: "slice-vision-experience",
@@ -780,7 +782,7 @@ export async function main(
   const mode = modeIndex >= 0 ? args[modeIndex + 1] : "fast";
   const replayDirectory = process.env.VEM_PROCESS_REPLAY_DIR ?? null;
   const replayEnabled =
-    mode === "fast" &&
+    (mode === "fast" || mode === "full") &&
     process.env.VEM_PROCESS_REPLAY === "1" &&
     outPath !== null &&
     replayDirectory !== null;
@@ -865,7 +867,7 @@ export async function main(
       ? await (dependencies.runReplay ?? BusinessSetProcessReplay.run)(
           {
             endpoint: adapter.endpoint,
-            outputDirectory: replayDirectory!,
+            outputDirectory: join(replayDirectory!, "vision-experience"),
             businessSet: "visionExperience",
             onSummary: (summary) => {
               replaySummary = summary;

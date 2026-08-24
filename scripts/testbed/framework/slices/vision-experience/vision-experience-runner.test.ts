@@ -1370,6 +1370,8 @@ describe("visionExperience slice runner", () => {
     const attemptId = tryOnAttemptId;
     const capturedEvidence = capturedEvidenceFor(attemptId);
     let tryOnEntries = 0;
+    let visionStopped = false;
+    const destructiveOrder: string[] = [];
     const adapter = createFakeTestAdapter({
       files: {
         [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
@@ -1399,6 +1401,9 @@ describe("visionExperience slice runner", () => {
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
         'click [data-test="try-on"]': async () => {
+          if (visionStopped) {
+            throw new Error("interactive scenario ran after Vision owner stop");
+          }
           tryOnEntries += 1;
           if (tryOnEntries === 1) {
             await adapter.writeFile(
@@ -1452,6 +1457,7 @@ describe("visionExperience slice runner", () => {
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
         'click [data-test="try-on-manual-capture"]': async () => {
+          destructiveOrder.push("manual");
           const current = JSON.parse(await adapter.readFile(statePath));
           await adapter.writeFile(
             statePath,
@@ -1482,11 +1488,27 @@ describe("visionExperience slice runner", () => {
       acceptanceBinding: visionAcceptanceBinding,
       includeManualCapture: true,
       includeDeparture: true,
+      includeDegradation: true,
+      stopOwner: async () => {
+        destructiveOrder.push("stop-owner");
+        visionStopped = true;
+        const current = JSON.parse(await adapter.readFile(statePath));
+        await adapter.writeFile(
+          statePath,
+          JSON.stringify({
+            ...current,
+            route: selectedProductRoute,
+            tryOnPresent: false,
+            buyDisabled: false,
+          }),
+        );
+      },
       timeoutMs: 2_000,
       pollMs: 10,
     });
     assert.equal(report.businessSets[0].status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 16);
+    assert.equal(report.businessSets[0].assertionCount, 19);
+    assert.deepEqual(destructiveOrder, ["manual", "stop-owner"]);
   });
 });
 
@@ -1521,7 +1543,7 @@ describe("process replay 轨道集成", () => {
   }
 
   it(
-    "focused fast 显式开启时包装 slice 并把回放摘要写入 supportingEvidence",
+    "最终 full 显式开启时包装 slice 并把回放摘要写入 supportingEvidence",
     withEnv(
       { VEM_PROCESS_REPLAY: "1", VEM_PROCESS_REPLAY_DIR: "/tmp/replay" },
       async () => {
@@ -1538,7 +1560,7 @@ describe("process replay 轨道集成", () => {
           await runVisionExperienceMain(
             [
               "--mode",
-              "fast",
+              "full",
               "--out",
               outPath,
               "--guest-input",
@@ -1558,7 +1580,10 @@ describe("process replay 轨道集成", () => {
           );
           assert.ok(capturedContext.value);
           assert.equal(capturedContext.value.businessSet, "visionExperience");
-          assert.equal(capturedContext.value.outputDirectory, "/tmp/replay");
+          assert.equal(
+            capturedContext.value.outputDirectory,
+            "/tmp/replay/vision-experience",
+          );
           assert.equal(capturedContext.value.endpoint, adapter.endpoint);
           const report = JSON.parse(readFileSync(outPath, "utf8"));
           const evidence = report.businessSets[0].supportingEvidence.find(

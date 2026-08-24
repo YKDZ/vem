@@ -103,4 +103,87 @@ describe("implicit recommendation slice runner", () => {
     );
     assert.deepEqual(events, ["connect", "close"]);
   });
+
+  it("最终 full 显式开启时录制独立推荐回放并写入 supportingEvidence", async () => {
+    const previousReplay = process.env.VEM_PROCESS_REPLAY;
+    const previousReplayDirectory = process.env.VEM_PROCESS_REPLAY_DIR;
+    process.env.VEM_PROCESS_REPLAY = "1";
+    process.env.VEM_PROCESS_REPLAY_DIR = "/tmp/replay";
+    const cdp = {
+      endpoint: "http://127.0.0.1:9222",
+      client: { send: async () => ({}) },
+      async connect() {
+        return this;
+      },
+      async close() {},
+      async run() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    let replayDirectory: string | null = null;
+    try {
+      const report = await main(
+        ["--mode", "full", "--out", "/result/implicit.json"],
+        {
+          createCdpAdapter: () => cdp,
+          createAcceptanceAdapter: () => ({}) as never,
+          runBusinessSet: async () => ({
+            assertions: [
+              businessAssertion({
+                id: "near.neutral-visible-within-500ms",
+                source: "machine.runtime_trace+semantic_dom",
+                expected: true,
+                observed: true,
+              }),
+            ],
+            evidence: {
+              kind: "implicit-recommendation-business-evidence" as const,
+              baselineQuiescent: true,
+              finalRestored: true,
+              scenarios: [],
+            },
+          }),
+          runReplay: async (context, operation) => {
+            replayDirectory = context.outputDirectory;
+            const result = await operation();
+            context.onSummary?.({
+              status: "completed",
+              reason: null,
+              startedAt: "2026-08-24T12:00:00.000Z",
+              finishedAt: "2026-08-24T12:00:01.000Z",
+              durationMs: 1_000,
+              framesReceived: 10,
+              framesWritten: 10,
+              framesDropped: 0,
+              framesSkipped: 0,
+              bytesWritten: 1_000,
+              truncated: false,
+              firstFrameTimestampMs: 1,
+              lastFrameTimestampMs: 1_001,
+              outputDirectory: context.outputDirectory,
+              capturePath: `${context.outputDirectory}/capture.json`,
+              playerPath: `${context.outputDirectory}/player.html`,
+            });
+            return result;
+          },
+          io: { writeFile: async () => undefined },
+          writeStdout: () => undefined,
+        },
+      );
+      assert.equal(replayDirectory, "/tmp/replay/implicit-recommendation");
+      assert.equal(
+        report.businessSets[0]?.supportingEvidence.some(
+          (entry) =>
+            (entry as { kind?: string }).kind === "business-set-process-replay",
+        ),
+        true,
+      );
+    } finally {
+      if (previousReplay === undefined) delete process.env.VEM_PROCESS_REPLAY;
+      else process.env.VEM_PROCESS_REPLAY = previousReplay;
+      if (previousReplayDirectory === undefined)
+        delete process.env.VEM_PROCESS_REPLAY_DIR;
+      else process.env.VEM_PROCESS_REPLAY_DIR = previousReplayDirectory;
+    }
+  });
 });
