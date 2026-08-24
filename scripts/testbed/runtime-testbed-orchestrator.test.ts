@@ -12,9 +12,9 @@ import {
   guestAcceptanceExecutionBudget,
   additionalStartupRebootObservationOrdinals,
   collectStartupRebootObservations,
+  guardedRemovePowerShell,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
-  processReplayCleanupPowerShell,
   processReplayGuestDirectory,
   powerShellFocusArgument,
   reconstructedAcceptancePasses,
@@ -291,14 +291,27 @@ describe("runtime testbed scheduler contract", () => {
   });
 
   it("清理尚不存在的过程回放目录时不污染 Windows PowerShell 退出码", () => {
-    assert.deepEqual(processReplayCleanupPowerShell(null), []);
+    assert.deepEqual(guardedRemovePowerShell(null), []);
     assert.deepEqual(
-      processReplayCleanupPowerShell(
+      guardedRemovePowerShell(
         "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1",
+        { recursive: true },
       ),
       [
-        "$processReplayRoot = 'C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1'",
-        "if (Test-Path -LiteralPath $processReplayRoot) { Remove-Item -LiteralPath $processReplayRoot -Recurse -Force -ErrorAction Stop }",
+        "$guardedRemovePath = 'C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1'",
+        "if (Test-Path -LiteralPath $guardedRemovePath) { Remove-Item -LiteralPath $guardedRemovePath -Recurse -Force -ErrorAction Stop }",
+      ],
+    );
+  });
+
+  it("首次重启观察没有旧文件时也使用无副作用的守卫清理", () => {
+    assert.deepEqual(
+      guardedRemovePowerShell(
+        "C:\\ProgramData\\VEM\\testbed\\startup-reboot-observation.json",
+      ),
+      [
+        "$guardedRemovePath = 'C:\\ProgramData\\VEM\\testbed\\startup-reboot-observation.json'",
+        "if (Test-Path -LiteralPath $guardedRemovePath) { Remove-Item -LiteralPath $guardedRemovePath -Force -ErrorAction Stop }",
       ],
     );
   });

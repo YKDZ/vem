@@ -261,14 +261,16 @@ export function processReplayGuestDirectory({
   return `C:\\ProgramData\\VEM\\testbed\\process-replay-pass-${pass}`;
 }
 
-export function processReplayCleanupPowerShell(
-  directory: string | null,
+export function guardedRemovePowerShell(
+  path: string | null,
+  { recursive = false }: { recursive?: boolean } = {},
 ): string[] {
-  if (!directory) return [];
-  const literal = directory.replaceAll("'", "''");
+  if (!path) return [];
+  const literal = path.replaceAll("'", "''");
+  const recurse = recursive ? " -Recurse" : "";
   return [
-    `$processReplayRoot = '${literal}'`,
-    "if (Test-Path -LiteralPath $processReplayRoot) { Remove-Item -LiteralPath $processReplayRoot -Recurse -Force -ErrorAction Stop }",
+    `$guardedRemovePath = '${literal}'`,
+    `if (Test-Path -LiteralPath $guardedRemovePath) { Remove-Item -LiteralPath $guardedRemovePath${recurse} -Force -ErrorAction Stop }`,
   ];
 }
 
@@ -1495,7 +1497,7 @@ async function stageAndRunGuest({
     "& tar.exe -xf $archive -C $source",
     "if ($LASTEXITCODE -ne 0) { throw 'source extraction failed' }",
     "Remove-Item -LiteralPath $archive -Force",
-    ...processReplayCleanupPowerShell(processReplayGuestRoot),
+    ...guardedRemovePowerShell(processReplayGuestRoot, { recursive: true }),
   ].join("\n");
   await runProcess(
     "ssh",
@@ -1709,8 +1711,9 @@ async function stageAndRunGuest({
         let failedStage = "clear_previous_observation";
         let cycleError: unknown = null;
         try {
-          const clearObservation =
-            "Remove-Item -LiteralPath 'C:\\ProgramData\\VEM\\testbed\\startup-reboot-observation.json' -Force -ErrorAction SilentlyContinue";
+          const clearObservation = guardedRemovePowerShell(
+            "C:\\ProgramData\\VEM\\testbed\\startup-reboot-observation.json",
+          ).join("\n");
           await runProcess(
             "ssh",
             [
