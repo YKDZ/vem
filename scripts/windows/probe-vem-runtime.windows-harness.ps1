@@ -4,6 +4,13 @@ function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
 }
 
+function Get-HarnessCanonicalTimestamp($Value) {
+  if ($Value -is [DateTime]) {
+    return ($Value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture))
+  }
+  return [string]$Value
+}
+
 function Assert-RequireHealthyFailure([string]$ExpectedMessage, [string]$Label) {
   $rejected = $false
   try {
@@ -30,6 +37,7 @@ $global:ProbeHarnessServiceStartMode = "Auto"
 $global:ProbeHarnessServicePath = ""
 $global:ProbeHarnessProcessUser = "VEMKiosk"
 $global:ProbeHarnessListeners = @()
+$global:ProbeHarnessBootedAt = [DateTime]::Parse("2026-08-24T12:05:00.000Z").ToUniversalTime()
 
 function global:Get-ItemProperty {
   param([string]$Path, $ErrorAction)
@@ -51,8 +59,20 @@ function global:Get-ScheduledTask {
   if ([string]::IsNullOrWhiteSpace($TaskName)) { return $tasks }
   return @($tasks | Where-Object { $_.TaskName -eq $TaskName -and $_.TaskPath -eq $TaskPath })
 }
+function global:Get-ScheduledTaskInfo {
+  param([string]$TaskName, [string]$TaskPath, $ErrorAction)
+  $lastRunTime = if ($TaskName -eq "VEMMachineUI") {
+    [DateTime]::Parse("2026-08-24T12:05:08.000Z").ToUniversalTime()
+  } else {
+    [DateTime]::Parse("2026-08-24T12:05:09.000Z").ToUniversalTime()
+  }
+  return [pscustomobject]@{ LastRunTime = $lastRunTime; LastTaskResult = [long]0 }
+}
 function global:Get-CimInstance {
   param([string]$ClassName, [string]$Filter, $ErrorAction)
+  if ($ClassName -eq "Win32_OperatingSystem") {
+    return [pscustomobject]@{ LastBootUpTime = $global:ProbeHarnessBootedAt }
+  }
   if ($ClassName -eq "Win32_Service") {
     $pathName = if ([string]::IsNullOrWhiteSpace($global:ProbeHarnessServicePath)) { '"' + $global:ProbeHarnessDaemon + '" --console --data-dir "' + $global:ProbeHarnessDaemonData + '"' } else { $global:ProbeHarnessServicePath }
     $services = @([pscustomobject]@{ Name = "VemVendingDaemon"; StartName = $global:ProbeHarnessServiceAccount; StartMode = $global:ProbeHarnessServiceStartMode; PathName = $pathName })
@@ -88,6 +108,7 @@ try {
   $visionLauncher = Join-Path $root "bringup\launch-vem-vision.ps1"
   $manifest = [ordered]@{
     schemaVersion = "vem-runtime-owners/v1"
+    installedAt = "2026-08-24T12:00:00.000Z"
     kiosk = [ordered]@{ user = "VEMKiosk" }
     owners = [ordered]@{
       daemon = [ordered]@{ name = "VemVendingDaemon"; executablePath = $global:ProbeHarnessDaemon }
@@ -233,7 +254,7 @@ try {
   $global:ProbeHarnessProcesses = @($baselineFixture.processes)
   $global:ProbeHarnessListeners = @($baselineFixture.listeners)
 
-  [ordered]@{ schemaVersion = "vem-runtime-probe-harness/v1"; visionMainCount = @($baseline.processes.vision).Count; visionWorkerCount = @($baseline.visionWorkers).Count; topologyCases = $topologyCaseResults; baselineFixtureUnchanged = $true; reversedTopologyCases = $orderedTopologyCaseResults; requireHealthyFailures = @("non-localsystem-service", "unexpected-service-path", "missing-password", "missing-logon-trigger", "unexpected-task-action", "task-restart-policy", "legacy-vision-owner", "legacy-runtime-task-owner", "legacy-runtime-service-owner", "non-interactive-session", "unexpected-process-user", "invalid-vision-topology") } | ConvertTo-Json -Compress -Depth 6
+  [ordered]@{ schemaVersion = "vem-runtime-probe-harness/v1"; bootedAt = (Get-HarnessCanonicalTimestamp $($baseline.host.bootedAt)); taskObservations = @($baseline.tasks | ForEach-Object { [ordered]@{ name = [string]$_.name; state = [string]$_.state; lastRunTime = (Get-HarnessCanonicalTimestamp $($_.lastRunTime)); lastTaskResult = [long]$_.lastTaskResult } }); visionMainCount = @($baseline.processes.vision).Count; visionWorkerCount = @($baseline.visionWorkers).Count; topologyCases = $topologyCaseResults; baselineFixtureUnchanged = $true; reversedTopologyCases = $orderedTopologyCaseResults; requireHealthyFailures = @("non-localsystem-service", "unexpected-service-path", "missing-password", "missing-logon-trigger", "unexpected-task-action", "task-restart-policy", "legacy-vision-owner", "legacy-runtime-task-owner", "legacy-runtime-service-owner", "non-interactive-session", "unexpected-process-user", "invalid-vision-topology") } | ConvertTo-Json -Compress -Depth 6
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

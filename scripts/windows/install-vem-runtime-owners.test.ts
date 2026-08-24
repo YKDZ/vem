@@ -175,6 +175,21 @@ test("field probe rejects incomplete or competing installed owner definitions", 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const output = JSON.parse(result.stdout);
   assert.equal(output.schemaVersion, "vem-runtime-probe-harness/v1");
+  assert.equal(output.bootedAt, "2026-08-24T12:05:00.000Z");
+  assert.deepEqual(output.taskObservations, [
+    {
+      name: "VEMMachineUI",
+      state: "Ready",
+      lastRunTime: "2026-08-24T12:05:08.000Z",
+      lastTaskResult: 0,
+    },
+    {
+      name: "VEMVisionRuntime",
+      state: "Ready",
+      lastRunTime: "2026-08-24T12:05:09.000Z",
+      lastTaskResult: 0,
+    },
+  ]);
   assert.equal(output.visionMainCount, 1);
   assert.equal(output.visionWorkerCount, 2);
   assert.deepEqual(output.topologyCases, [

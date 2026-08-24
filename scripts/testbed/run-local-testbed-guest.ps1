@@ -819,7 +819,7 @@ function Convert-TestbedStartupProbeToReadiness(
         sessionId = [int]$VisionEvidence.sessionId
       }
     }
-    modeEvidence = Get-TestbedStartupModeEvidence $sessionId
+    modeEvidence = Get-TestbedStartupModeEvidence $sessionId $Probe
   }
 }
 
@@ -831,10 +831,20 @@ function Convert-TestbedCimDateTimeToUtc($Value) {
   if ($Value -is [DateTime]) {
     return $Value.ToUniversalTime()
   }
-  return [Management.ManagementDateTimeConverter]::ToDateTime([string]$Value).ToUniversalTime()
+  $text = [string]$Value
+  $parsed = [DateTimeOffset]::MinValue
+  if ([DateTimeOffset]::TryParse(
+    $text,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::AssumeUniversal,
+    [ref]$parsed
+  )) {
+    return $parsed.UtcDateTime
+  }
+  return [Management.ManagementDateTimeConverter]::ToDateTime($text).ToUniversalTime()
 }
 
-function Get-TestbedStartupModeEvidence([int]$SessionId) {
+function Get-TestbedStartupModeEvidence([int]$SessionId, [object]$Probe) {
   if ($Mode -ne "full") {
     return [ordered]@{
       mode = $Mode
@@ -842,14 +852,29 @@ function Get-TestbedStartupModeEvidence([int]$SessionId) {
       ownerRestartMarker = "owner-restart:${Commit}:$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
     }
   }
-  $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-  $bootTime = Convert-TestbedCimDateTimeToUtc $os.LastBootUpTime
+  $bootTime = Convert-TestbedCimDateTimeToUtc $($Probe.host.bootedAt)
+  $bootStartedAt = $bootTime.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
   $observedAt = New-TestbedCanonicalUtcTimestamp
+  $machineTask = @($Probe.tasks | Where-Object { [string]$_.name -eq "VEMMachineUI" })[0]
+  $visionTask = @($Probe.tasks | Where-Object { [string]$_.name -eq "VEMVisionRuntime" })[0]
+  $machineTaskLastRun = if ($null -eq $machineTask.lastRunTime) {
+    $null
+  } else {
+    (Convert-TestbedCimDateTimeToUtc $($machineTask.lastRunTime)).ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+  }
+  $visionTaskLastRun = if ($null -eq $visionTask.lastRunTime) {
+    $null
+  } else {
+    (Convert-TestbedCimDateTimeToUtc $($visionTask.lastRunTime)).ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+  }
+  $machineTaskResult = if ($null -eq $machineTask.lastTaskResult) { $null } else { [long]$machineTask.lastTaskResult }
+  $visionTaskResult = if ($null -eq $visionTask.lastTaskResult) { $null } else { [long]$visionTask.lastTaskResult }
   return [ordered]@{
     mode = $Mode
     source = "windows_reboot_logon_probe"
     boot = [ordered]@{
       marker = "boot:${env:COMPUTERNAME}:$($bootTime.ToString("yyyyMMddHHmmssfff'Z'", [Globalization.CultureInfo]::InvariantCulture))"
+      startedAt = $bootStartedAt
       observedAt = $observedAt
     }
     logon = [ordered]@{
@@ -857,6 +882,20 @@ function Get-TestbedStartupModeEvidence([int]$SessionId) {
       user = "VEMKiosk"
       sessionId = $SessionId
       observedAt = $observedAt
+    }
+    tasks = [ordered]@{
+      machineUi = [ordered]@{
+        name = "VEMMachineUI"
+        state = [string]$machineTask.state
+        lastRunTime = $machineTaskLastRun
+        lastTaskResult = $machineTaskResult
+      }
+      vision = [ordered]@{
+        name = "VEMVisionRuntime"
+        state = [string]$visionTask.state
+        lastRunTime = $visionTaskLastRun
+        lastTaskResult = $visionTaskResult
+      }
     }
   }
 }

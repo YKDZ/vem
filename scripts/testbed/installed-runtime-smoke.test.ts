@@ -261,6 +261,14 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /function Get-TestbedStartupModeEvidence/);
     assert.match(guest, /source = "windows_reboot_logon_probe"/);
     assert.match(guest, /source = "installed_owner_stop_start"/);
+    assert.match(guest, /startedAt = \$bootStartedAt/);
+    assert.match(guest, /lastRunTime = \$machineTaskLastRun/);
+    assert.match(
+      guest,
+      /\$machineTaskResult = if \(\$null -eq \$machineTask\.lastTaskResult\)[\s\S]*\[long\]\$machineTask\.lastTaskResult/,
+    );
+    assert.match(guest, /lastTaskResult = \$machineTaskResult/);
+    assert.match(guest, /Get-TestbedStartupModeEvidence \$sessionId \$Probe/);
     assert.match(guest, /Unregister-ScheduledTask -TaskName \$taskSpec\.Name/);
     assert.doesNotMatch(guest, /\$daemonProcess = Start-Process/);
     assert.doesNotMatch(

@@ -10,6 +10,17 @@ const REPORT_SCHEMA = "vem-installed-runtime-startup-acceptance/v1";
 
 type JsonRecord = Record<string, unknown>;
 
+class StartupEvidenceError extends Error {
+  readonly failedStage: string;
+  readonly reasonCode: string;
+
+  constructor(failedStage: string, reasonCode: string, message: string) {
+    super(message);
+    this.failedStage = failedStage;
+    this.reasonCode = reasonCode;
+  }
+}
+
 function recordValue(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -42,8 +53,110 @@ function canonicalTimestamp(value: unknown, label: string): string {
   return value;
 }
 
+function observedTimestamp(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$/.test(value) ||
+    Number.isNaN(Date.parse(value))
+  ) {
+    throw new Error(`${label} must be a UTC timestamp`);
+  }
+  return value;
+}
+
+function failStartup(
+  failedStage: string,
+  reasonCode: string,
+  message: string,
+): never {
+  throw new StartupEvidenceError(failedStage, reasonCode, message);
+}
+
+function validateFullOwnerTask(
+  task: JsonRecord,
+  {
+    key,
+    name,
+    failedStage,
+    bootStartedAt,
+  }: {
+    key: string;
+    name: string;
+    failedStage: string;
+    bootStartedAt: string;
+  },
+): JsonRecord {
+  if (task?.name !== name) {
+    failStartup(
+      failedStage,
+      "task_evidence_invalid",
+      `${key} task name is invalid`,
+    );
+  }
+  if (!taskHasStartedState(task?.state)) {
+    failStartup(
+      failedStage,
+      "task_not_started",
+      `${name} task state does not show a started owner`,
+    );
+  }
+  let lastRunTime: string;
+  try {
+    lastRunTime = canonicalTimestamp(
+      task?.lastRunTime,
+      `${name} task last run time`,
+    );
+  } catch {
+    failStartup(
+      failedStage,
+      "task_not_triggered_after_reboot",
+      `${name} has no canonical post-reboot run time`,
+    );
+  }
+  if (Date.parse(lastRunTime) < Date.parse(bootStartedAt)) {
+    failStartup(
+      failedStage,
+      "task_not_triggered_after_reboot",
+      `${name} last ran before the accepted reboot`,
+    );
+  }
+  const lastTaskResult = Number(task?.lastTaskResult);
+  if (
+    !Number.isSafeInteger(lastTaskResult) ||
+    lastTaskResult < 0 ||
+    lastTaskResult > 0xffffffff
+  ) {
+    failStartup(
+      failedStage,
+      "task_result_unavailable",
+      `${name} task result is unavailable`,
+    );
+  }
+  const runningResult = 0x00041301;
+  if (
+    lastTaskResult !== 0 &&
+    !(task.state === "Running" && lastTaskResult === runningResult)
+  ) {
+    failStartup(
+      failedStage,
+      "task_action_failed",
+      `${name} action failed with 0x${lastTaskResult
+        .toString(16)
+        .toUpperCase()
+        .padStart(8, "0")}`,
+    );
+  }
+  return {
+    name,
+    state: task.state,
+    lastRunTime,
+    lastTaskResult,
+  };
+}
+
 function validateModeEvidence(
   evidence: JsonRecord,
+  manifest: JsonRecord,
   mode: string,
   sessionId: number,
 ): JsonRecord {
@@ -77,9 +190,38 @@ function validateModeEvidence(
       "full startup logon identity must match the active VEMKiosk session",
     );
   }
+  const installedAt = observedTimestamp(
+    manifest?.installedAt,
+    "runtime owner installation",
+  );
+  const bootStartedAt = canonicalTimestamp(
+    boot?.startedAt,
+    "full reboot start",
+  );
+  if (Date.parse(bootStartedAt) <= Date.parse(installedAt)) {
+    failStartup(
+      "boot",
+      "reboot_not_after_owner_install",
+      "full startup requires a reboot after the runtime owners were installed",
+    );
+  }
+  const tasks = recordValue(modeEvidence.tasks);
+  const machineUiTask = validateFullOwnerTask(recordValue(tasks.machineUi), {
+    key: "machineUi",
+    name: "VEMMachineUI",
+    failedStage: "machine_ui_owner",
+    bootStartedAt,
+  });
+  const visionTask = validateFullOwnerTask(recordValue(tasks.vision), {
+    key: "vision",
+    name: "VEMVisionRuntime",
+    failedStage: "vision_owner",
+    bootStartedAt,
+  });
   return {
     source: modeEvidence.source,
     bootMarker: required(boot?.marker, "full reboot boot marker"),
+    bootStartedAt,
     bootObservedAt: canonicalTimestamp(
       boot?.observedAt,
       "full reboot observation",
@@ -89,6 +231,7 @@ function validateModeEvidence(
       logon?.observedAt,
       "full logon observation",
     ),
+    tasks: { machineUi: machineUiTask, vision: visionTask },
   };
 }
 
@@ -198,7 +341,7 @@ export function validateStartupOwnerReadinessEvidence(
     visionTask: visionOwner.name,
     kioskSessionId: sessionId,
     catalogRoute: observationMachineUi.route,
-    modeEvidence: validateModeEvidence(evidence, mode, sessionId),
+    modeEvidence: validateModeEvidence(evidence, manifest, mode, sessionId),
   };
 }
 
@@ -234,10 +377,14 @@ export function runStartupOwnerAcceptance({
       summary: validateStartupOwnerReadinessEvidence(evidence, mode),
     };
   } catch (error) {
+    const startupError =
+      error instanceof StartupEvidenceError ? error : undefined;
     return {
       schemaVersion: REPORT_SCHEMA,
       ok: false,
       mode,
+      failedStage: startupError?.failedStage ?? "evidence",
+      reasonCode: startupError?.reasonCode ?? "startup_evidence_invalid",
       diagnostics: [error instanceof Error ? error.message : String(error)],
     };
   }

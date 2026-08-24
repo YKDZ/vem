@@ -7,6 +7,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Convert-WindowsTimeToCanonicalUtc($Value) {
+  if ($null -eq $Value) { return $null }
+  $timestamp = if ($Value -is [DateTime]) {
+    $Value.ToUniversalTime()
+  } else {
+    [Management.ManagementDateTimeConverter]::ToDateTime([string]$Value).ToUniversalTime()
+  }
+  return ($timestamp.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture))
+}
+
+function Convert-TaskResultToUnsignedLong($Value) {
+  if ($null -eq $Value) { return $null }
+  return [long](([long]$Value) -band 0xFFFFFFFFL)
+}
+
 function Invoke-LocalJsonGet {
   param([string]$Uri, [hashtable]$Headers = @{})
   try {
@@ -104,7 +119,7 @@ function Test-NoTaskRestartPolicy($Settings) {
   return $restartCount -eq 0 -and ($restartInterval -in @("", "PT0S", "P0D", "00:00:00"))
 }
 
-function Get-TaskOwnerDefinition($Task, $Owner, [string]$KioskUser) {
+function Get-TaskOwnerDefinition($Task, $TaskInfo, $Owner, [string]$KioskUser) {
   $issues = [System.Collections.Generic.List[string]]::new()
   if ($null -eq $Task) {
     $issues.Add("scheduled task is missing") | Out-Null
@@ -138,6 +153,8 @@ function Get-TaskOwnerDefinition($Task, $Owner, [string]$KioskUser) {
     hasKioskAtLogonTrigger = $hasLogonTrigger
     hasRestartPolicy = -not (Test-NoTaskRestartPolicy $Task.Settings)
     hasExpectedAction = $hasExpectedAction
+    lastRunTime = if ($null -eq $TaskInfo -or $TaskInfo.LastRunTime.Year -le 1900) { $null } else { (Convert-WindowsTimeToCanonicalUtc $($TaskInfo.LastRunTime)) }
+    lastTaskResult = if ($null -eq $TaskInfo) { $null } else { Convert-TaskResultToUnsignedLong $($TaskInfo.LastTaskResult) }
     issues = @($issues)
   }
 }
@@ -229,7 +246,8 @@ $unexpectedProcesses = @(
 
 $tasks = foreach ($owner in @($owners.owners.machineUi, $owners.owners.vision)) {
   $task = Get-ScheduledTask -TaskName ([string]$owner.name) -TaskPath ([string]$owner.taskPath) -ErrorAction SilentlyContinue
-  Get-TaskOwnerDefinition $task $owner ([string]$owners.kiosk.user)
+  $taskInfo = Get-ScheduledTaskInfo -TaskName ([string]$owner.name) -TaskPath ([string]$owner.taskPath) -ErrorAction SilentlyContinue
+  Get-TaskOwnerDefinition $task $taskInfo $owner ([string]$owners.kiosk.user)
 }
 $service = Get-Service -Name ([string]$owners.owners.daemon.name) -ErrorAction SilentlyContinue
 $serviceConfig = Get-CimInstance Win32_Service -Filter "Name = '$([string]$owners.owners.daemon.name)'" -ErrorAction SilentlyContinue
@@ -275,12 +293,14 @@ if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
   }
 }
 
+$operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
 $result = [ordered]@{
   schemaVersion = "vem-field-probe/v3"
   observedAt = [DateTime]::UtcNow.ToString("o")
   host = [ordered]@{
     computerName = $env:COMPUTERNAME
     user = Get-CurrentIdentityName
+    bootedAt = (Convert-WindowsTimeToCanonicalUtc $($operatingSystem.LastBootUpTime))
   }
   ownerManifest = [ordered]@{ path = $OwnerManifestPath; schemaVersion = [string]$owners.schemaVersion }
   kiosk = [ordered]@{
