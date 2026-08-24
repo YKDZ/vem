@@ -464,17 +464,17 @@ mod tests {
         }
     }
 
-    async fn section() -> PaymentCreationCriticalSection {
+    async fn section() -> (tempfile::TempDir, PaymentCreationCriticalSection) {
         let temp = tempfile::tempdir().expect("temp");
         let state = LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("state");
-        PaymentCreationCriticalSection::new(state)
+        (temp, PaymentCreationCriticalSection::new(state))
     }
 
     #[tokio::test]
     async fn sale_lease_excludes_reconfigure_and_manual_dispense() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let sale = section.try_acquire_sale_start().expect("sale lease");
         assert!(section.try_acquire_reconfigure().is_err());
         assert!(
@@ -492,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn reconfigure_lease_blocks_sale_start_until_released() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let binding = section
             .try_acquire_reconfigure()
             .expect("reconfigure lease");
@@ -510,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn reserve_recovery_marker_writes_and_upgrades_legacy_marker() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let legacy = CheckoutCreationRecovery {
             payment_method: "mock".to_string(),
             payment_provider_code: Some("mock".to_string()),
@@ -538,7 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn reserve_recovery_marker_rejects_mismatched_idempotency_or_request() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         section
             .reserve_recovery_marker(&request(), "checkout:a", Some("PLAN-A".to_string()))
             .await
@@ -561,7 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_recovery_owner_rejects_replaced_generation_and_planogram() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let recovery = section
             .reserve_recovery_marker(&request(), "checkout:owner", Some("PLAN-A".to_string()))
             .await
@@ -602,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_recovery_if_owner_keeps_foreign_marker() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let recovery = section
             .reserve_recovery_marker(&request(), "checkout:owner", None)
             .await
@@ -633,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_recovery_marker_after_terminal_only_on_terminal() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         section
             .reserve_recovery_marker(&request(), "checkout:terminal", None)
             .await
@@ -685,7 +685,7 @@ mod tests {
 
     #[tokio::test]
     async fn owner_flight_clears_marker_on_success_and_deterministic_failure() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let recovery = section
             .reserve_recovery_marker(&request(), "checkout:success", None)
             .await
@@ -733,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn owner_flight_keeps_marker_on_indeterminate_failure() {
-        let section = section().await;
+        let (_temp, section) = section().await;
         let recovery = section
             .reserve_recovery_marker(&request(), "checkout:backend-500", None)
             .await
