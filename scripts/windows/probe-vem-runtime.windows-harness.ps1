@@ -30,6 +30,7 @@ $global:ProbeHarnessLegacyTask = $false
 $global:ProbeHarnessInvalidTrigger = $false
 $global:ProbeHarnessInvalidAction = $false
 $global:ProbeHarnessRestartPolicy = $false
+$global:ProbeHarnessStartWhenAvailable = $false
 $global:ProbeHarnessParallelReentry = $false
 $global:ProbeHarnessLegacyRuntimeTask = $false
 $global:ProbeHarnessLegacyRuntimeService = $false
@@ -132,7 +133,7 @@ try {
       State = "Ready"
       Principal = [pscustomobject]@{ UserId = "VEMKiosk" }
       Triggers = @([pscustomobject]@{ CimClass = [pscustomobject]@{ CimClassName = $triggerClass }; UserId = "VEMKiosk" })
-      Settings = [pscustomobject]@{ RestartCount = $restartCount; RestartInterval = "PT0S"; MultipleInstances = $multipleInstances }
+      Settings = [pscustomobject]@{ RestartCount = $restartCount; RestartInterval = "PT0S"; StartWhenAvailable = $global:ProbeHarnessStartWhenAvailable; MultipleInstances = $multipleInstances }
       Actions = @([pscustomobject]@{ Execute = $actionExecutable; Arguments = ('-NoProfile -File "' + $Launcher + '"'); WorkingDirectory = $WorkingDirectory })
     }
   }
@@ -180,6 +181,11 @@ try {
   & $resetTasks
   Assert-RequireHealthyFailure "task has a restart policy" "Vision restart policy"
   $global:ProbeHarnessRestartPolicy = $false
+  & $resetTasks
+  $global:ProbeHarnessStartWhenAvailable = $true
+  & $resetTasks
+  Assert-RequireHealthyFailure "task replays a missed logon trigger" "missed-logon replay policy"
+  $global:ProbeHarnessStartWhenAvailable = $false
   & $resetTasks
   $global:ProbeHarnessParallelReentry = $true
   & $resetTasks

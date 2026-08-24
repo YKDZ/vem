@@ -61,7 +61,7 @@ function global:sc.exe {
 function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument, [string]$WorkingDirectory) return [pscustomobject]@{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory } }
 function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User) return [pscustomobject]@{ kind = "AtLogon"; UserId = $User } }
 function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) return [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType; RunLevel = $RunLevel } }
-function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$StartWhenAvailable, [string]$MultipleInstances, $ExecutionTimeLimit) return [pscustomobject]@{ MultipleInstances = $MultipleInstances; ExecutionTimeLimit = $ExecutionTimeLimit } }
+function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$StartWhenAvailable, [string]$MultipleInstances, $ExecutionTimeLimit) return [pscustomobject]@{ StartWhenAvailable = [bool]$StartWhenAvailable; MultipleInstances = $MultipleInstances; ExecutionTimeLimit = $ExecutionTimeLimit } }
 function global:Register-ScheduledTask {
   param([string]$TaskName, $Action, $Trigger, $Principal, $Settings, [string]$Description, [switch]$Force)
   $global:OwnerHarnessTasks.Add([pscustomobject]@{ name = $TaskName; action = $Action; trigger = $Trigger; principal = $Principal; settings = $Settings }) | Out-Null
@@ -103,6 +103,7 @@ try {
     Assert-True ($task.action.Execute -eq "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe") "interactive owner action executable"
     Assert-True ($task.trigger.kind -eq "AtLogon") "interactive owner trigger"
     Assert-True ($task.principal.UserId -eq "VEMKiosk") "interactive owner principal"
+    Assert-True (-not [bool]$task.settings.StartWhenAvailable) "interactive owner must not replay a missed logon"
     Assert-True ($task.settings.MultipleInstances -eq "IgnoreNew") "interactive owner multiple-instance policy"
   }
 

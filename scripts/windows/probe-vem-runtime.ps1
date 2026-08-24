@@ -135,6 +135,8 @@ function Get-TaskOwnerDefinition($Task, $TaskInfo, $Owner, [string]$KioskUser) {
   }).Count -gt 0
   if (-not $hasLogonTrigger) { $issues.Add("task does not have a $KioskUser AtLogon trigger") | Out-Null }
   if (-not (Test-NoTaskRestartPolicy $Task.Settings)) { $issues.Add("task has a restart policy") | Out-Null }
+  $startWhenAvailable = [bool]$Task.Settings.StartWhenAvailable
+  if ($startWhenAvailable) { $issues.Add("task replays a missed logon trigger") | Out-Null }
   $multipleInstances = [string]$Task.Settings.MultipleInstances
   if ($multipleInstances -ne "IgnoreNew") { $issues.Add("task does not ignore concurrent reentry") | Out-Null }
 
@@ -154,6 +156,7 @@ function Get-TaskOwnerDefinition($Task, $TaskInfo, $Owner, [string]$KioskUser) {
     user = [string]$Task.Principal.UserId
     hasKioskAtLogonTrigger = $hasLogonTrigger
     hasRestartPolicy = -not (Test-NoTaskRestartPolicy $Task.Settings)
+    startWhenAvailable = $startWhenAvailable
     multipleInstances = $multipleInstances
     hasExpectedAction = $hasExpectedAction
     lastRunTime = if ($null -eq $TaskInfo -or $TaskInfo.LastRunTime.Year -le 1900) { $null } else { (Convert-WindowsTimeToCanonicalUtc $($TaskInfo.LastRunTime)) }

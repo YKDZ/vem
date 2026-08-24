@@ -21,7 +21,7 @@ interface OwnerHarnessOutput {
   registeredTasks: Array<{
     trigger: { kind: string };
     principal: { UserId: string };
-    settings: { MultipleInstances: string };
+    settings: { StartWhenAvailable: boolean; MultipleInstances: string };
   }>;
   missingPasswordRejected: boolean;
   aclCalls: string[];
@@ -96,6 +96,16 @@ test("interactive owner launchers converge reentry without replacing a healthy o
   assert.doesNotMatch(installer, /Register-ObjectEvent/);
   assert.doesNotMatch(installer, /RestartOnFailure/);
   assert.doesNotMatch(installer, /while \(\$true\)/);
+});
+
+test("registering an owner does not replay an already-missed logon", () => {
+  const installer = source(installerPath);
+  const registration = installer.slice(
+    installer.indexOf("function Register-InteractiveOwnerTask"),
+    installer.indexOf("function Assert-NoDuplicateRuntimeProcesses"),
+  );
+
+  assert.doesNotMatch(registration, /-StartWhenAvailable/);
 });
 
 test("runtime owner probe consumes the installed owner manifest", () => {
@@ -177,6 +187,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.deepEqual(
     output.registeredTasks.map((task) => task.settings.MultipleInstances),
     ["IgnoreNew", "IgnoreNew"],
+  );
+  assert.deepEqual(
+    output.registeredTasks.map((task) => task.settings.StartWhenAvailable),
+    [false, false],
   );
   assert.ok(
     output.scCalls.some(

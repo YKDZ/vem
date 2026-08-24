@@ -434,7 +434,6 @@ function Register-InteractiveOwnerTask(
   $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
   Register-ScheduledTask `
