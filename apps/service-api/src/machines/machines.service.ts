@@ -59,6 +59,7 @@ import {
   updateMachineSchema,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
+  type MachineEnvironmentHeartbeatPayload,
   type MachineHeartbeatStatusPayload,
   type MachineClaimRequest,
   type GenerateMachineClaimCodeRequest,
@@ -445,6 +446,26 @@ function parseLatestHeartbeatStatus(
 ): MachineHeartbeatStatusPayload | null {
   const parsed = machineHeartbeatStatusPayloadSchema.safeParse(statusPayload);
   return parsed.success ? parsed.data : null;
+}
+
+function projectLatestEnvironment(
+  environment: MachineEnvironmentHeartbeatPayload | undefined,
+  heartbeatTimeoutSeconds: number,
+  now = new Date(),
+): MachineEnvironmentHeartbeatPayload | null {
+  if (!environment) return null;
+  if (!environment.control) return environment;
+  const observedAt = Date.parse(environment.control.observedAt);
+  const stale =
+    !Number.isFinite(observedAt) ||
+    observedAt <= now.getTime() - heartbeatTimeoutSeconds * 1_000;
+  return {
+    ...environment,
+    control: {
+      ...environment.control,
+      stale,
+    },
+  };
 }
 
 function machineGeoLocationFromRow(
@@ -839,7 +860,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           latestHeartbeatReportedAt: latestHeartbeat?.reportedAt
             ? toIso(latestHeartbeat.reportedAt)
             : null,
-          latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
+          latestEnvironment: projectLatestEnvironment(
+            latestHeartbeat?.statusPayload.environment,
+            this.config.machineHeartbeatTimeoutSeconds,
+          ),
           reportedRuntimeConfiguration:
             latestHeartbeat?.statusPayload.reportedRuntimeConfiguration ?? null,
           latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
@@ -925,7 +949,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       latestHeartbeatReportedAt: latestHeartbeat?.reportedAt
         ? toIso(latestHeartbeat.reportedAt)
         : null,
-      latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
+      latestEnvironment: projectLatestEnvironment(
+        latestHeartbeat?.statusPayload.environment,
+        this.config.machineHeartbeatTimeoutSeconds,
+      ),
       reportedRuntimeConfiguration:
         latestHeartbeat?.statusPayload.reportedRuntimeConfiguration ?? null,
       latestEnvironmentCommand,
@@ -1057,25 +1084,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         .for("update");
       if (!machine) {
         throw new NotFoundException("Machine not found");
-      }
-
-      const [activeEnvironmentCommand] = await tx
-        .select({ id: machineCommands.id })
-        .from(machineCommands)
-        .where(
-          and(
-            eq(machineCommands.machineId, machine.id),
-            eq(machineCommands.type, "environment-control"),
-            inArray(machineCommands.status, [
-              "pending",
-              "sent",
-              "acknowledged",
-            ]),
-          ),
-        )
-        .limit(1);
-      if (activeEnvironmentCommand) {
-        throw new ConflictException("ENVIRONMENT_COMMAND_IN_PROGRESS");
       }
 
       const commandValues = mapEnvironmentControlDtoToCommandInsert({
@@ -1549,7 +1557,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           .set({
             status: "timeout",
             resultAt: now,
-            lastError: "machine command timeout",
+            lastError: "acceptance_unknown",
             updatedAt: new Date(),
           })
           .where(
@@ -2076,7 +2084,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             .set({
               status: "timeout",
               resultAt: now,
-              lastError: "machine command timeout",
+              lastError: "acceptance_unknown",
               updatedAt: now,
             })
             .where(
@@ -2092,17 +2100,24 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           return;
         }
 
+        const admissionAccepted =
+          verified.payload.outcome === "accepted" ||
+          verified.payload.outcome === "deduplicated";
+        const commandStatus = admissionAccepted
+          ? "succeeded"
+          : verified.payload.outcome === "acceptance_unknown"
+            ? "timeout"
+            : "failed";
+
         await tx
           .update(machineCommands)
           .set({
-            status: verified.payload.success ? "succeeded" : "failed",
+            status: commandStatus,
             resultJson: { ...verified.payload },
             resultAt: new Date(verified.payload.reportedAt),
-            lastError: verified.payload.success
+            lastError: admissionAccepted
               ? null
-              : (verified.payload.message ??
-                verified.payload.errorCode ??
-                "environment control failed"),
+              : (verified.payload.message ?? verified.payload.reasonCode),
             updatedAt: new Date(),
           })
           .where(

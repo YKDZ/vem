@@ -92,13 +92,17 @@ describe("Machine Operations admin contract mappers", () => {
       status: "pending",
       payloadJson: {
         commandNo: "MCMD202607050001",
-        ventSpeed: 2,
+        action: {
+          actionId: "MCMD202607050001",
+          source: "remote_operator",
+          action: { type: "set_base_vent_speed", ventSpeed: 2 },
+        },
         timeoutSeconds: 30,
       },
       timeoutAt: new Date("2026-07-05T00:00:30.000Z"),
       requestedByAdminUserId: "550e8400-e29b-41d4-a716-446655440002",
     });
-    expect(insert.payloadJson).not.toHaveProperty("airConditionerOn");
+    expect(insert.payloadJson).not.toHaveProperty("ventSpeed");
   });
 
   it("maps database-shaped machine rows into strict admin machine responses", () => {

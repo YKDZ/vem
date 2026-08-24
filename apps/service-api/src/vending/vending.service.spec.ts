@@ -490,7 +490,17 @@ describe("VendingService environment control isolation", () => {
 
     await service.handleMachineMessage(
       "vem/machines/M001/events/environment-control-result",
-      JSON.stringify({ payload: { commandNo: "MCMD-1", success: true } }),
+      JSON.stringify({
+        payload: {
+          commandNo: "MCMD-1",
+          outcome: "accepted",
+          acceptedRevision: 1,
+          convergence: "applied",
+          reasonCode: "hardware_confirmed",
+          message: null,
+          reportedAt: "2026-08-24T00:00:00.000Z",
+        },
+      }),
     );
 
     expect(verifyFromTopic).not.toHaveBeenCalled();

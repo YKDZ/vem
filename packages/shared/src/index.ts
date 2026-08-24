@@ -14,6 +14,7 @@ export * from "./schemas/audit";
 export * from "./schemas/auth";
 export * from "./schemas/dashboard";
 export * from "./schemas/daemon-ipc";
+export * from "./schemas/environment-control";
 export * from "./schemas/inventory";
 export * from "./schemas/hardware-error-policies";
 export * from "./schemas/installed-kiosk-sale-acceptance";

@@ -2,13 +2,17 @@ import {
   type ClearHardwareBindingRequest,
   type ConfirmHardwareBindingRequest,
   type EffectiveMachineRuntimeConfiguration,
-  type MachineEnvironmentControlRequest,
+  type EnvironmentControlAction,
+  type EnvironmentControlAdmission,
+  type EnvironmentControlSnapshot,
   type SetAudioPreferencesRequest,
   type SetScannerProtocolParametersRequest,
   clearHardwareBindingRequestSchema,
   confirmHardwareBindingRequestSchema,
   effectiveMachineRuntimeConfigurationSchema,
-  machineEnvironmentControlRequestSchema,
+  environmentControlActionSchema,
+  environmentControlAdmissionSchema,
+  environmentControlSnapshotSchema,
   setAudioPreferencesRequestSchema,
   setScannerProtocolParametersRequestSchema,
   isManagedMediaReference,
@@ -36,7 +40,6 @@ import {
   deviceBindingActivationSchema,
   deviceBindingSnapshotSchema,
   deviceBindingTestResultSchema,
-  environmentControlResultSchema,
   healthSnapshotSchema,
   paymentProviderEnvironmentDiagnosticSchema,
   saleStartCapabilitySnapshotSchema,
@@ -60,7 +63,6 @@ import {
   type DeviceBindingActivation,
   type DeviceBindingSnapshot,
   type DeviceBindingTestResult,
-  type EnvironmentControlResult,
   type SaleStartCapabilitySnapshot,
   type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
@@ -584,23 +586,19 @@ export class DaemonApiClient {
     );
   }
 
-  async submitAutomaticVentIntent(input: {
-    edgeId: string;
-    ventSpeed: 0 | 3;
-  }): Promise<unknown> {
-    return this.request("/v1/intents/automatic-vent", {
-      method: "POST",
-      body: input,
-    });
+  async getEnvironmentControlSnapshot(): Promise<EnvironmentControlSnapshot> {
+    return environmentControlSnapshotSchema.parse(
+      await this.request("/v1/environment-control"),
+    );
   }
 
-  async submitLocalEnvironmentControl(
-    input: MachineEnvironmentControlRequest,
-  ): Promise<EnvironmentControlResult> {
-    return environmentControlResultSchema.parse(
-      await this.request("/v1/maintenance/environment-control", {
+  async submitEnvironmentControlAction(
+    input: EnvironmentControlAction,
+  ): Promise<EnvironmentControlAdmission> {
+    return environmentControlAdmissionSchema.parse(
+      await this.request("/v1/environment-control/actions", {
         method: "POST",
-        body: machineEnvironmentControlRequestSchema.parse(input),
+        body: environmentControlActionSchema.parse(input),
       }),
     );
   }

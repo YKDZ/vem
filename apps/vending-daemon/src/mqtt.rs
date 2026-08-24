@@ -1,10 +1,4 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use rumqttc::{AsyncClient, ClientError, Event, EventLoop, MqttOptions, Outgoing, Packet, QoS};
@@ -15,16 +9,17 @@ use uuid::Uuid;
 
 use crate::events::{DaemonEvent, PickupProgressProjection};
 use crate::{
-    automatic_vent::AutomaticVentController,
+    environment_control::{
+        EnvironmentControlAdmissionOutcome, EnvironmentControlRuntime,
+        RemoteEnvironmentControlCommand, RemoteEnvironmentControlOutcome,
+        RemoteEnvironmentControlResult,
+    },
     hardware::HardwareSupervisor,
     state::{LocalStateStore, StoreError},
 };
 use vending_core::{
     environment::EnvironmentHeartbeatCache,
-    hardware::{
-        DispenseCommandPayload, DispenseProgressObserver, EnvironmentControlCommandPayload,
-        EnvironmentControlResultPayload,
-    },
+    hardware::{DispenseCommandPayload, DispenseProgressObserver},
     mqtt::sign_envelope,
     serial::EnvironmentSample,
 };
@@ -100,8 +95,6 @@ pub enum CommandHandlingResult {
     Processed { command_no: String },
 }
 
-type EnvironmentCommandTask = tokio::task::JoinHandle<Result<CommandHandlingResult, String>>;
-
 #[derive(Clone)]
 pub struct MqttSyncRuntime {
     machine_code: String,
@@ -109,14 +102,13 @@ pub struct MqttSyncRuntime {
     state: LocalStateStore,
     hardware: HardwareSupervisor,
     readiness_context: Option<crate::ipc::IpcContext>,
-    automatic_vent: Option<AutomaticVentController>,
+    environment_control: Option<EnvironmentControlRuntime>,
     environment: Arc<RwLock<EnvironmentHeartbeatCache>>,
     events: broadcast::Sender<DaemonEvent>,
     shutdown: CancellationToken,
     mqtt_client: Option<Arc<RwLock<AsyncClient>>>,
     outbox_flush: Arc<Mutex<()>>,
     pending_mqtt_outbox: Arc<Mutex<PendingMqttOutbox>>,
-    environment_command_in_progress: Arc<AtomicBool>,
 }
 
 impl MqttSyncRuntime {
@@ -134,14 +126,13 @@ impl MqttSyncRuntime {
             state,
             hardware,
             readiness_context: None,
-            automatic_vent: None,
+            environment_control: None,
             environment: Arc::new(RwLock::new(EnvironmentHeartbeatCache::default())),
             events,
             shutdown,
             mqtt_client: None,
             outbox_flush: Arc::new(Mutex::new(())),
             pending_mqtt_outbox: Arc::new(Mutex::new(PendingMqttOutbox::default())),
-            environment_command_in_progress: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -152,15 +143,14 @@ impl MqttSyncRuntime {
 
     pub fn with_readiness_context(mut self, context: crate::ipc::IpcContext) -> Self {
         self.environment = context.ui.status_cache.environment.clone();
-        self.automatic_vent = Some(context.automatic_vent.clone());
-        self.environment_command_in_progress = context.environment_command_in_progress.clone();
+        self.environment_control = Some(context.environment_control.clone());
         self.readiness_context = Some(context);
         self
     }
 
     #[cfg(test)]
-    fn with_automatic_vent(mut self, automatic_vent: AutomaticVentController) -> Self {
-        self.automatic_vent = Some(automatic_vent);
+    fn with_environment_control(mut self, environment_control: EnvironmentControlRuntime) -> Self {
+        self.environment_control = Some(environment_control);
         self
     }
 
@@ -577,321 +567,9 @@ impl MqttSyncRuntime {
         payload_text: &str,
     ) -> Result<CommandHandlingResult, String> {
         let envelope = self.parse_and_verify_envelope(payload_text)?;
-        let command: EnvironmentControlCommandPayload = serde_json::from_value(envelope.payload)
+        let command: RemoteEnvironmentControlCommand = serde_json::from_value(envelope.payload)
             .map_err(|error| format!("parse environment control command failed: {error}"))?;
-        validate_environment_control_command(&command)?;
-
-        if command.vent_speed.is_some() {
-            if let Some(automatic_vent) = self.automatic_vent.as_ref() {
-                // Receipt is the single Admin supersession boundary. A stable
-                // edge observed after this point must remain armed while the
-                // one-shot command waits for B3 ownership.
-                automatic_vent.supersede_by_admin().await;
-            }
-        }
-
-        let mut ack_event =
-            crate::state::store::OutboxInput::command_ack(&self.machine_code, &command.command_no);
-        ack_event.payload_json = match self.sign_outbox_payload(
-            format!("ack:{}", command.command_no),
-            ack_event.payload_json,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => {
-                self.cancel_automatic_vent_admin(&command).await;
-                return Err(error);
-            }
-        };
-        if let Err(error) = self.state.enqueue_outbox(&ack_event).await {
-            self.cancel_automatic_vent_admin(&command).await;
-            return Err(error.to_string());
-        }
-
-        let deadline =
-            match environment_command_deadline(&envelope.issued_at, command.timeout_seconds) {
-                Ok(deadline) => deadline,
-                Err(error) => {
-                    self.cancel_automatic_vent_admin(&command).await;
-                    return Err(error);
-                }
-            };
-        if command_deadline_elapsed(&deadline) {
-            self.cancel_automatic_vent_admin(&command).await;
-            self.enqueue_environment_control_result(
-                &command,
-                false,
-                Some("COMMAND_EXPIRED".to_string()),
-                Some("environment control command expired before execution".to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return Ok(CommandHandlingResult::Processed {
-                command_no: command.command_no,
-            });
-        }
-
-        let dispense_in_progress = match self.is_dispense_in_progress().await {
-            Ok(value) => value,
-            Err(error) => {
-                self.cancel_automatic_vent_admin(&command).await;
-                return Err(error);
-            }
-        };
-        if dispense_in_progress {
-            self.cancel_automatic_vent_admin(&command).await;
-            self.enqueue_environment_control_result(
-                &command,
-                false,
-                Some("DISPENSE_IN_PROGRESS".to_string()),
-                Some("a dispense operation is in progress".to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return Ok(CommandHandlingResult::Processed {
-                command_no: command.command_no,
-            });
-        }
-
-        let environment_guard = match self.acquire_environment_command_lock() {
-            Ok(guard) => guard,
-            Err(error) => {
-                self.cancel_automatic_vent_admin(&command).await;
-                self.enqueue_environment_control_result(
-                    &command,
-                    false,
-                    Some(error),
-                    Some("another environment control command is in progress".to_string()),
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(CommandHandlingResult::Processed {
-                    command_no: command.command_no,
-                });
-            }
-        };
-
-        let Some(remaining) = command_deadline_remaining(&deadline) else {
-            self.cancel_automatic_vent_admin(&command).await;
-            self.enqueue_environment_control_result(
-                &command,
-                false,
-                Some("COMMAND_EXPIRED".to_string()),
-                Some("environment control command deadline elapsed".to_string()),
-                None,
-                None,
-                None,
-            )
-            .await?;
-            return Ok(CommandHandlingResult::Processed {
-                command_no: command.command_no,
-            });
-        };
-        let hardware = if command.vent_speed.is_none() {
-            Some(
-                match tokio::time::timeout(remaining, self.hardware.acquire_environment_hardware())
-                    .await
-                {
-                    Ok(hardware) => hardware,
-                    Err(_) => {
-                        self.enqueue_environment_control_result(
-                            &command,
-                            false,
-                            Some("COMMAND_EXPIRED".to_string()),
-                            Some("environment control command deadline elapsed".to_string()),
-                            None,
-                            None,
-                            None,
-                        )
-                        .await?;
-                        return Ok(CommandHandlingResult::Processed {
-                            command_no: command.command_no,
-                        });
-                    }
-                },
-            )
-        } else {
-            None
-        };
-
-        let mut confirmed_target = None;
-        let mut confirmed_switch = None;
-        let mut confirmed_vent_speed = None;
-        let mut failure = None;
-
-        if let Some(target) = command.target_temperature_celsius {
-            if let Some(remaining) = command_deadline_remaining(&deadline) {
-                match tokio::time::timeout(
-                    remaining,
-                    hardware
-                        .as_ref()
-                        .expect("non-B3 command has hardware ownership")
-                        .set_target_temperature(target),
-                )
-                .await
-                {
-                    Err(_) => {
-                        failure = Some((
-                            "COMMAND_EXPIRED".to_string(),
-                            "environment control command deadline elapsed".to_string(),
-                        ))
-                    }
-                    Ok(Ok(())) => confirmed_target = Some(target),
-                    Ok(Err(error)) => {
-                        failure = Some(("target_temperature_failed".to_string(), error))
-                    }
-                }
-            } else {
-                failure = Some((
-                    "COMMAND_EXPIRED".to_string(),
-                    "environment control command deadline elapsed".to_string(),
-                ));
-            };
-        }
-
-        if failure.is_none() {
-            if let Some(enabled) = command.air_conditioner_on {
-                if let Some(remaining) = command_deadline_remaining(&deadline) {
-                    match tokio::time::timeout(
-                        remaining,
-                        hardware
-                            .as_ref()
-                            .expect("non-B3 command has hardware ownership")
-                            .set_air_conditioner_enabled(enabled),
-                    )
-                    .await
-                    {
-                        Err(_) => {
-                            failure = Some((
-                                "COMMAND_EXPIRED".to_string(),
-                                "environment control command deadline elapsed".to_string(),
-                            ))
-                        }
-                        Ok(Ok(())) => confirmed_switch = Some(enabled),
-                        Ok(Err(error)) => {
-                            failure = Some(("air_conditioner_switch_failed".to_string(), error))
-                        }
-                    }
-                } else {
-                    failure = Some((
-                        "COMMAND_EXPIRED".to_string(),
-                        "environment control command deadline elapsed".to_string(),
-                    ));
-                };
-            }
-        }
-
-        if failure.is_none() {
-            if let Some(speed) = command.vent_speed {
-                if let Some(remaining) = command_deadline_remaining(&deadline) {
-                    let automatic_vent = self.automatic_vent.clone();
-                    let set_vent_speed = async {
-                        if let Some(automatic_vent) = automatic_vent.as_ref() {
-                            automatic_vent.execute_admin_one_shot(speed).await
-                        } else {
-                            let hardware = self.hardware.acquire_environment_hardware().await;
-                            hardware.set_vent_speed(speed).await
-                        }
-                    };
-                    let result = tokio::time::timeout(remaining, set_vent_speed).await;
-                    if let Some(automatic_vent) = automatic_vent {
-                        automatic_vent.cancel_admin_one_shot().await;
-                    }
-                    match result {
-                        Err(_) => {
-                            failure = Some((
-                                "COMMAND_EXPIRED".to_string(),
-                                "environment control command deadline elapsed".to_string(),
-                            ))
-                        }
-                        Ok(Ok(())) => confirmed_vent_speed = Some(speed),
-                        Ok(Err(error)) => failure = Some(("vent_speed_failed".to_string(), error)),
-                    }
-                } else {
-                    failure = Some((
-                        "COMMAND_EXPIRED".to_string(),
-                        "environment control command deadline elapsed".to_string(),
-                    ));
-                };
-            }
-        }
-
-        let (mut success, mut error_code, mut message) = match failure {
-            Some((error_code, message)) => (false, Some(error_code), Some(message)),
-            None => (
-                true,
-                None,
-                Some("environment control completed".to_string()),
-            ),
-        };
-
-        if success && command_deadline_elapsed(&deadline) {
-            success = false;
-            error_code = Some("COMMAND_EXPIRED".to_string());
-            message = Some("environment control command deadline elapsed".to_string());
-        }
-
-        // A terminal result means the physical command no longer owns the
-        // controller. Release both guards before making that result observable.
-        drop(hardware);
-        drop(environment_guard);
-
-        if success {
-            let remaining = command_deadline_remaining(&deadline)
-                .ok_or_else(|| "environment control command deadline elapsed".to_string())?;
-            tokio::time::timeout(
-                remaining,
-                self.enqueue_environment_control_result(
-                    &command,
-                    success,
-                    error_code,
-                    message,
-                    confirmed_switch,
-                    confirmed_target,
-                    confirmed_vent_speed,
-                ),
-            )
-            .await
-            .map_err(|_| "environment control command deadline elapsed".to_string())??;
-        } else {
-            self.enqueue_environment_control_result(
-                &command,
-                success,
-                error_code,
-                message,
-                confirmed_switch,
-                confirmed_target,
-                confirmed_vent_speed,
-            )
-            .await?;
-        }
-
-        Ok(CommandHandlingResult::Processed {
-            command_no: command.command_no,
-        })
-    }
-
-    async fn cancel_automatic_vent_admin(&self, command: &EnvironmentControlCommandPayload) {
-        if command.vent_speed.is_some() {
-            if let Some(automatic_vent) = self.automatic_vent.as_ref() {
-                automatic_vent.cancel_admin_one_shot().await;
-            }
-        }
-    }
-
-    async fn reject_environment_command_while_slot_occupied(
-        &self,
-        payload_text: &str,
-    ) -> Result<CommandHandlingResult, String> {
-        let envelope = self.parse_and_verify_envelope(payload_text)?;
-        let command: EnvironmentControlCommandPayload = serde_json::from_value(envelope.payload)
-            .map_err(|error| format!("parse environment control command failed: {error}"))?;
-        validate_environment_control_command(&command)?;
+        command.validate()?;
 
         let mut ack_event =
             crate::state::store::OutboxInput::command_ack(&self.machine_code, &command.command_no);
@@ -903,68 +581,92 @@ impl MqttSyncRuntime {
             .enqueue_outbox(&ack_event)
             .await
             .map_err(|error| error.to_string())?;
-        self.enqueue_environment_control_result(
-            &command,
-            false,
-            Some("ENVIRONMENT_COMMAND_IN_PROGRESS".to_string()),
-            Some("another environment control command is in progress".to_string()),
-            None,
-            None,
-            None,
-        )
-        .await?;
+
+        let deadline = environment_command_deadline(&envelope.issued_at, command.timeout_seconds)?;
+        let result = if command_deadline_elapsed(&deadline) {
+            RemoteEnvironmentControlResult {
+                command_no: command.command_no.clone(),
+                outcome: RemoteEnvironmentControlOutcome::Rejected,
+                accepted_revision: None,
+                convergence: None,
+                reason_code: "command_expired".to_string(),
+                message: Some("environment control command expired before admission".to_string()),
+                reported_at: crate::state::store::now_iso(),
+            }
+        } else if let Some(runtime) = self.environment_control.as_ref() {
+            let remaining = command_deadline_remaining(&deadline)
+                .expect("non-expired environment command has remaining time");
+            match tokio::time::timeout(remaining, runtime.submit(command.action.clone())).await {
+                Ok(Ok(admission)) => RemoteEnvironmentControlResult {
+                    command_no: command.command_no.clone(),
+                    outcome: match admission.outcome {
+                        EnvironmentControlAdmissionOutcome::Accepted => {
+                            RemoteEnvironmentControlOutcome::Accepted
+                        }
+                        EnvironmentControlAdmissionOutcome::Deduplicated => {
+                            RemoteEnvironmentControlOutcome::Deduplicated
+                        }
+                    },
+                    accepted_revision: Some(admission.accepted_revision),
+                    convergence: Some(admission.snapshot.convergence),
+                    reason_code: admission.snapshot.reason_code,
+                    message: admission.snapshot.message,
+                    reported_at: crate::state::store::now_iso(),
+                },
+                Ok(Err(error)) => RemoteEnvironmentControlResult {
+                    command_no: command.command_no.clone(),
+                    outcome: RemoteEnvironmentControlOutcome::Rejected,
+                    accepted_revision: None,
+                    convergence: None,
+                    reason_code: if error.contains("idempotency conflict") {
+                        "action_id_conflict"
+                    } else if error.contains("runtime is closed") {
+                        "runtime_closed"
+                    } else {
+                        "action_not_accepted"
+                    }
+                    .to_string(),
+                    message: Some(error),
+                    reported_at: crate::state::store::now_iso(),
+                },
+                Err(_) => RemoteEnvironmentControlResult {
+                    command_no: command.command_no.clone(),
+                    outcome: RemoteEnvironmentControlOutcome::AcceptanceUnknown,
+                    accepted_revision: None,
+                    convergence: None,
+                    reason_code: "admission_deadline_elapsed".to_string(),
+                    message: Some(
+                        "environment control admission was not observed before the deadline"
+                            .to_string(),
+                    ),
+                    reported_at: crate::state::store::now_iso(),
+                },
+            }
+        } else {
+            RemoteEnvironmentControlResult {
+                command_no: command.command_no.clone(),
+                outcome: RemoteEnvironmentControlOutcome::Rejected,
+                accepted_revision: None,
+                convergence: None,
+                reason_code: "environment_control_runtime_unavailable".to_string(),
+                message: Some("environment control runtime is unavailable".to_string()),
+                reported_at: crate::state::store::now_iso(),
+            }
+        };
+
+        self.enqueue_environment_control_result(&result).await?;
         Ok(CommandHandlingResult::Processed {
             command_no: command.command_no,
         })
     }
 
-    async fn dispatch_environment_command(
-        self: &Arc<Self>,
-        payload_text: String,
-        task_slot: &mut Option<EnvironmentCommandTask>,
-    ) -> Result<CommandHandlingResult, String> {
-        if task_slot.is_some() {
-            return self
-                .reject_environment_command_while_slot_occupied(&payload_text)
-                .await;
-        }
-
-        let runtime = self.clone();
-        *task_slot = Some(tokio::spawn(async move {
-            runtime
-                .handle_environment_control_command(&payload_text)
-                .await
-        }));
-        Ok(CommandHandlingResult::Processed {
-            command_no: String::new(),
-        })
-    }
-
     async fn enqueue_environment_control_result(
         &self,
-        command: &EnvironmentControlCommandPayload,
-        // Kept for now: keep caller-specific timeout checks in the single command
-        // handler so no queueing policy leaks into this helper.
-        success: bool,
-        error_code: Option<String>,
-        message: Option<String>,
-        confirmed_switch: Option<bool>,
-        confirmed_target: Option<i8>,
-        confirmed_vent_speed: Option<u8>,
+        result: &RemoteEnvironmentControlResult,
     ) -> Result<(), String> {
-        let result = EnvironmentControlResultPayload {
-            command_no: command.command_no.clone(),
-            success,
-            error_code,
-            message,
-            air_conditioner_on: confirmed_switch,
-            target_temperature_celsius: confirmed_target,
-            vent_speed: confirmed_vent_speed,
-            reported_at: crate::state::store::now_iso(),
-        };
         let mut result_event = crate::state::store::OutboxInput::environment_control_result(
             &self.machine_code,
-            &result,
+            result,
         );
         result_event.payload_json = self.sign_outbox_payload(
             format!("environment-control-result:{}", result.command_no),
@@ -974,32 +676,7 @@ impl MqttSyncRuntime {
             .enqueue_outbox(&result_event)
             .await
             .map_err(|error| error.to_string())?;
-
         Ok(())
-    }
-
-    async fn is_dispense_in_progress(&self) -> Result<bool, String> {
-        let snapshot = self.state.current_transaction_snapshot().await?;
-        Ok(snapshot.is_some_and(|snapshot| {
-            snapshot.next_action.is_some_and(|status| {
-                status == vending_core::domain::InternalCheckoutFlowAction::Dispensing
-            }) || snapshot
-                .order_status
-                .as_deref()
-                .is_some_and(|status| status == "dispensing")
-        }))
-    }
-
-    fn acquire_environment_command_lock(
-        &self,
-    ) -> Result<EnvironmentCommandInProgressGuard, String> {
-        self.environment_command_in_progress
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "ENVIRONMENT_COMMAND_IN_PROGRESS".to_string())?;
-
-        Ok(EnvironmentCommandInProgressGuard {
-            in_progress: self.environment_command_in_progress.clone(),
-        })
     }
 
     pub async fn record_environment_query_result(
@@ -1038,7 +715,23 @@ impl MqttSyncRuntime {
 
     pub async fn enqueue_heartbeat(&self) -> Result<(), String> {
         let reported_at = crate::state::store::now_iso();
-        let environment = self.environment.read().await.heartbeat_payload();
+        let mut environment =
+            serde_json::to_value(self.environment.read().await.heartbeat_payload())
+                .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?;
+        if let Some(runtime) = self.environment_control.as_ref() {
+            if let Ok(snapshot) = runtime.snapshot().await {
+                if let Some(environment) = environment.as_object_mut() {
+                    environment.insert(
+                        "control".to_string(),
+                        serde_json::json!({
+                            "snapshot": snapshot,
+                            "observedAt": reported_at.clone(),
+                            "stale": false,
+                        }),
+                    );
+                }
+            }
+        }
         let hardware_status = self.hardware.self_check().await;
         let heartbeat_hardware_status = if hardware_status.online {
             "ok"
@@ -1080,8 +773,7 @@ impl MqttSyncRuntime {
                 "hardwareMessage": hardware_status.message,
                 "wholeMachineMaintenanceLock": whole_machine_lock,
                 "physicalStockAttestation": physical_stock_attestation,
-                "environment": serde_json::to_value(environment)
-                    .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
+                "environment": environment,
             },
         });
         let mut heartbeat =
@@ -1324,25 +1016,10 @@ impl MqttSyncRuntime {
         });
 
         let mut acknowledged_subscriptions = 0_u8;
-        let mut environment_task = None;
         let result = loop {
             tokio::select! {
                 _ = self.shutdown.cancelled() => {
                     break Ok(());
-                }
-                completed = async {
-                    environment_task.as_mut().expect("guarded environment task").await
-                }, if environment_task.is_some() => {
-                    environment_task = None;
-                    match completed {
-                        Ok(Ok(_)) => self.schedule_due_outbox(),
-                        Ok(Err(error)) => {
-                            self.set_connected(false, Some(format!("publish handle failed: {error}"))).await;
-                        }
-                        Err(error) => {
-                            self.set_connected(false, Some(format!("environment task failed: {error}"))).await;
-                        }
-                    }
                 }
                 event = event_loop.poll() => {
                     match event {
@@ -1394,20 +1071,7 @@ impl MqttSyncRuntime {
                             let handling_result = if publish.topic == dispense_topic {
                                 self.handle_dispense_command(&text).await
                             } else if publish.topic == environment_control_topic {
-                                if environment_task.as_ref().is_some_and(|task: &EnvironmentCommandTask| {
-                                    task.is_finished()
-                                        || !self.environment_command_in_progress.load(Ordering::Acquire)
-                                }) {
-                                    let completed = environment_task.take().expect("finished environment task").await;
-                                    if let Ok(Err(error)) = completed {
-                                        self.set_connected(false, Some(format!("publish handle failed: {error}"))).await;
-                                    }
-                                }
-                                if environment_task.is_some() {
-                                    self.reject_environment_command_while_slot_occupied(&text).await
-                                } else {
-                                    self.dispatch_environment_command(text, &mut environment_task).await
-                                }
+                                self.handle_environment_control_command(&text).await
                             } else {
                                 Ok(CommandHandlingResult::Processed {
                                     command_no: String::new(),
@@ -1441,9 +1105,6 @@ impl MqttSyncRuntime {
         heartbeat_task.abort();
         sampler_task.abort();
         recovery_task.abort();
-        if let Some(task) = environment_task {
-            task.abort();
-        }
         result
     }
 }
@@ -1451,16 +1112,6 @@ impl MqttSyncRuntime {
 impl From<StoreError> for String {
     fn from(error: StoreError) -> Self {
         error.to_string()
-    }
-}
-
-struct EnvironmentCommandInProgressGuard {
-    in_progress: Arc<AtomicBool>,
-}
-
-impl Drop for EnvironmentCommandInProgressGuard {
-    fn drop(&mut self) {
-        self.in_progress.store(false, Ordering::Release);
     }
 }
 
@@ -1499,34 +1150,6 @@ fn parse_command_log_time(value: Option<&str>) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value?)
         .ok()
         .map(|at| at.with_timezone(&Utc))
-}
-
-pub(crate) fn validate_environment_control_command(
-    command: &EnvironmentControlCommandPayload,
-) -> Result<(), String> {
-    let action_count = command.air_conditioner_on.is_some() as u8
-        + command.target_temperature_celsius.is_some() as u8
-        + command.vent_speed.is_some() as u8;
-    if action_count != 1 {
-        return Err("environment control command must request exactly one action".to_string());
-    }
-    if command.timeout_seconds == 0 {
-        return Err("environment control command timeoutSeconds must be positive".to_string());
-    }
-    if let Some(target) = command.target_temperature_celsius {
-        if !(18..=30).contains(&target) {
-            return Err(
-                "environment control targetTemperatureCelsius must be between 18 and 30"
-                    .to_string(),
-            );
-        }
-    }
-    if let Some(speed) = command.vent_speed {
-        if speed > 4 {
-            return Err("environment control ventSpeed must be between 0 and 4".to_string());
-        }
-    }
-    Ok(())
 }
 
 fn environment_command_deadline(
@@ -1572,7 +1195,10 @@ fn map_mqtt_error(error: ClientError) -> String {
 mod tests {
     use super::*;
     use crate::{
-        automatic_vent::AutomaticVentController,
+        environment_control::{
+            EnvironmentControlAction, EnvironmentControlActionKind, EnvironmentControlConvergence,
+            EnvironmentControlSource, ENVIRONMENT_CONTROL_SCHEMA_VERSION,
+        },
         hardware::HardwareSupervisor,
         state::{
             store::{MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput},
@@ -1591,10 +1217,7 @@ mod tests {
         time::Duration as StdDuration,
     };
     use vending_core::{
-        hardware::{
-            DispenseCommandPayload, EnvironmentControlCommandPayload, HardwareAdapter,
-            HardwareStatus, SlotPayload,
-        },
+        hardware::{DispenseCommandPayload, HardwareAdapter, HardwareStatus, SlotPayload},
         serial::EnvironmentSample,
     };
 
@@ -1838,16 +1461,17 @@ mod tests {
 
     fn environment_control_command(
         command_no: &str,
-        air: Option<bool>,
-        target: Option<i8>,
-        vent: Option<u8>,
+        action_id: &str,
+        action: EnvironmentControlActionKind,
         timeout_seconds: u64,
-    ) -> EnvironmentControlCommandPayload {
-        EnvironmentControlCommandPayload {
+    ) -> RemoteEnvironmentControlCommand {
+        RemoteEnvironmentControlCommand {
             command_no: command_no.to_string(),
-            air_conditioner_on: air,
-            target_temperature_celsius: target,
-            vent_speed: vent,
+            action: EnvironmentControlAction {
+                action_id: action_id.to_string(),
+                source: EnvironmentControlSource::RemoteOperator,
+                kind: action,
+            },
             timeout_seconds,
         }
     }
@@ -1935,7 +1559,7 @@ mod tests {
         machine_code: &str,
         secret: &str,
         message_id: &str,
-        command: &EnvironmentControlCommandPayload,
+        command: &RemoteEnvironmentControlCommand,
         issued_at: Option<&str>,
     ) -> String {
         let payload = serde_json::to_value(command).expect("command payload");
@@ -2115,66 +1739,128 @@ mod tests {
         assert_eq!(commands[0].slot.cell_no, 1);
     }
 
-    #[tokio::test]
-    async fn environment_control_requires_exactly_one_action() {
+    async fn environment_test_runtime() -> (
+        tempfile::TempDir,
+        LocalStateStore,
+        HardwareSupervisor,
+        Arc<EnvironmentCommandCalls>,
+        CancellationToken,
+        MqttSyncRuntime,
+    ) {
         let temp = tempfile::tempdir().expect("temp");
         let state = LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("state");
         let (hardware, calls) = TrackingEnvironmentHardware::new(0);
-        let runtime = Arc::new(MqttSyncRuntime::new(
+        let supervisor = HardwareSupervisor::from_adapter(Arc::new(hardware));
+        let shutdown = CancellationToken::new();
+        let events = broadcast::channel(16).0;
+        let environment_control = EnvironmentControlRuntime::start(
+            state.clone(),
+            supervisor.clone(),
+            shutdown.clone(),
+            events.clone(),
+        )
+        .await
+        .expect("environment runtime");
+        environment_control
+            .wait_for_convergence(
+                0,
+                EnvironmentControlConvergence::Applied,
+                StdDuration::from_secs(1),
+            )
+            .await
+            .expect("initial convergence");
+        calls.target_temperature_calls.store(0, Ordering::SeqCst);
+        calls.air_conditioner_calls.store(0, Ordering::SeqCst);
+        calls.vent_speed_calls.store(0, Ordering::SeqCst);
+        calls.vent_speeds.lock().expect("vent speeds").clear();
+        let mqtt = MqttSyncRuntime::new(
             "MACHINE-ENV".to_string(),
             "mqtt-signing-secret-for-env".to_string(),
             state.clone(),
-            HardwareSupervisor::from_adapter(Arc::new(hardware)),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
-        ));
-        let command = environment_control_command("ENV-ONE", Some(true), Some(24), None, 5);
+            supervisor.clone(),
+            events,
+            shutdown.clone(),
+        )
+        .with_environment_control(environment_control);
+        (temp, state, supervisor, calls, shutdown, mqtt)
+    }
 
-        let envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-ONE-MSG",
-            &command,
-            None,
-        );
-        let error = runtime
-            .handle_environment_control_command(&envelope)
-            .await
-            .expect_err("invalid action combination must fail");
-        assert_eq!(
-            error,
-            "environment control command must request exactly one action"
-        );
+    #[tokio::test]
+    async fn heartbeat_projects_the_authoritative_environment_snapshot() {
+        let (_temp, state, _supervisor, _calls, shutdown, runtime) =
+            environment_test_runtime().await;
+
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
 
         let events = state
             .list_due_outbox(chrono::Utc::now())
             .await
-            .expect("environment outbox");
-        assert!(events.is_empty());
-        assert_eq!(calls.target_temperature_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(calls.vent_speed_calls.load(Ordering::SeqCst), 0);
+            .expect("outbox");
+        let heartbeat = events
+            .iter()
+            .find(|event| {
+                event.topic.as_deref() == Some("vem/machines/MACHINE-ENV/events/heartbeat")
+            })
+            .expect("heartbeat event");
+        let control = &heartbeat.payload_json["payload"]["statusPayload"]["environment"]["control"];
+        assert_eq!(
+            control["snapshot"]["schemaVersion"],
+            ENVIRONMENT_CONTROL_SCHEMA_VERSION
+        );
+        assert_eq!(control["snapshot"]["revision"], 0);
+        assert_eq!(
+            control["observedAt"],
+            heartbeat.payload_json["payload"]["reportedAt"]
+        );
+        assert_eq!(control["stale"], false);
+        shutdown.cancel();
     }
 
     #[tokio::test]
-    async fn environment_control_rejects_expired_command_before_hardware_call() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let (hardware, calls) = TrackingEnvironmentHardware::new(0);
-        let runtime = MqttSyncRuntime::new(
-            "MACHINE-ENV".to_string(),
-            "mqtt-signing-secret-for-env".to_string(),
-            state.clone(),
-            HardwareSupervisor::from_adapter(Arc::new(hardware)),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
-        );
+    async fn environment_control_rejects_the_retired_direct_field_contract_before_ack() {
+        let (_temp, state, _supervisor, _calls, shutdown, runtime) =
+            environment_test_runtime().await;
+        let legacy_payload = serde_json::json!({
+            "commandNo": "ENV-LEGACY",
+            "airConditionerOn": true,
+            "timeoutSeconds": 5,
+        });
+        let envelope = serde_json::to_string(&sign_envelope(
+            "MACHINE-ENV",
+            "mqtt-signing-secret-for-env",
+            "ENV-LEGACY-MSG",
+            legacy_payload,
+        ))
+        .expect("envelope");
 
-        let command = environment_control_command("ENV-EXPIRED", Some(true), None, None, 2);
+        let error = runtime
+            .handle_environment_control_command(&envelope)
+            .await
+            .expect_err("legacy command must not be decoded");
+        assert!(error.contains("parse environment control command failed"));
+        assert!(
+            state
+                .list_due_outbox(chrono::Utc::now())
+                .await
+                .expect("outbox")
+                .is_empty(),
+            "invalid commands are not acknowledged"
+        );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn expired_environment_action_is_known_rejected_without_state_change() {
+        let (_temp, state, _supervisor, calls, shutdown, runtime) =
+            environment_test_runtime().await;
+        let command = environment_control_command(
+            "ENV-EXPIRED",
+            "remote-expired",
+            EnvironmentControlActionKind::SetAirConditioner { enabled: true },
+            2,
+        );
         let issued_at = (chrono::Utc::now() - chrono::Duration::seconds(10))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let envelope = environment_control_envelope(
@@ -2184,10 +1870,11 @@ mod tests {
             &command,
             Some(&issued_at),
         );
+
         runtime
             .handle_environment_control_command(&envelope)
             .await
-            .expect("environment command");
+            .expect("expired command result");
 
         let events = state
             .list_due_outbox(chrono::Utc::now())
@@ -2195,123 +1882,28 @@ mod tests {
             .expect("environment outbox");
         let result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-EXPIRED")
             .expect("environment command result");
-        assert_eq!(result["payload"]["success"], false);
-        assert_eq!(
-            result["payload"]["errorCode"],
-            serde_json::Value::String("COMMAND_EXPIRED".to_string()),
-        );
+        assert_eq!(result["payload"]["outcome"], "rejected");
+        assert_eq!(result["payload"]["reasonCode"], "command_expired");
+        let snapshot = state
+            .environment_control_snapshot()
+            .await
+            .expect("environment snapshot");
+        assert_eq!(snapshot.revision, 0);
+        assert!(!snapshot.settings.air_conditioner_enabled);
         assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 0);
+        shutdown.cancel();
     }
 
     #[tokio::test]
-    async fn environment_control_cancels_before_hardware_write_after_deadline() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let (hardware, calls) = TrackingEnvironmentHardware::new(500);
-        let runtime = MqttSyncRuntime::new(
-            "MACHINE-ENV".to_string(),
-            "mqtt-signing-secret-for-env".to_string(),
-            state.clone(),
-            HardwareSupervisor::from_adapter(Arc::new(hardware)),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
+    async fn remote_action_is_admitted_during_hardware_ownership_and_converges_later() {
+        let (_temp, state, supervisor, calls, shutdown, runtime) = environment_test_runtime().await;
+        let occupied = supervisor.acquire_environment_hardware().await;
+        let command = environment_control_command(
+            "ENV-BUSY",
+            "remote-speed-2",
+            EnvironmentControlActionKind::SetBaseVentSpeed { vent_speed: 2 },
+            5,
         );
-        let command = environment_control_command("ENV-DEADLINE", Some(true), None, None, 1);
-        let issued_at = (chrono::Utc::now() - chrono::Duration::milliseconds(800))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-DEADLINE-MSG",
-            &command,
-            Some(&issued_at),
-        );
-
-        runtime
-            .handle_environment_control_command(&envelope)
-            .await
-            .expect("environment command");
-
-        let events = state
-            .list_due_outbox(chrono::Utc::now())
-            .await
-            .expect("environment outbox");
-        let result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-DEADLINE")
-            .expect("environment command result");
-        assert_eq!(result["payload"]["errorCode"], "COMMAND_EXPIRED");
-        assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn environment_control_rejects_during_dispense_command() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        state
-            .upsert_order_session(order_session_in_dispense("ENV-DISP-1"))
-            .await
-            .expect("seed dispensing order");
-
-        let (hardware, calls) = TrackingEnvironmentHardware::new(0);
-        let runtime = MqttSyncRuntime::new(
-            "MACHINE-ENV".to_string(),
-            "mqtt-signing-secret-for-env".to_string(),
-            state.clone(),
-            HardwareSupervisor::from_adapter(Arc::new(hardware)),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
-        );
-
-        let command = environment_control_command("ENV-DISP", Some(true), None, None, 5);
-        let envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-DISP-MSG",
-            &command,
-            None,
-        );
-        runtime
-            .handle_environment_control_command(&envelope)
-            .await
-            .expect("environment command");
-
-        let events = state
-            .list_due_outbox(chrono::Utc::now())
-            .await
-            .expect("environment outbox");
-        let result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-DISP")
-            .expect("environment command result");
-        assert_eq!(result["payload"]["success"], false);
-        assert_eq!(
-            result["payload"]["errorCode"],
-            serde_json::Value::String("DISPENSE_IN_PROGRESS".to_string()),
-        );
-        assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn environment_control_waits_for_background_sample_ownership() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let (hardware, calls) = TrackingEnvironmentHardware::new(500);
-        let supervisor = HardwareSupervisor::from_adapter(Arc::new(hardware));
-        let runtime = MqttSyncRuntime::new(
-            "MACHINE-ENV".to_string(),
-            "mqtt-signing-secret-for-env".to_string(),
-            state.clone(),
-            supervisor.clone(),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
-        );
-        let occupied = tokio::spawn(async move { supervisor.query_environment_sample().await });
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
-
-        let command = environment_control_command("ENV-BUSY", Some(true), None, None, 5);
         let envelope = environment_control_envelope(
             "MACHINE-ENV",
             "mqtt-signing-secret-for-env",
@@ -2319,12 +1911,13 @@ mod tests {
             &command,
             None,
         );
+
         tokio::time::timeout(
-            StdDuration::from_secs(2),
+            StdDuration::from_millis(100),
             runtime.handle_environment_control_command(&envelope),
         )
         .await
-        .expect("environment command must complete within its deadline")
+        .expect("admission must not wait for hardware ownership")
         .expect("environment command");
 
         let events = state
@@ -2333,209 +1926,86 @@ mod tests {
             .expect("environment outbox");
         let result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-BUSY")
             .expect("environment command result");
-        assert_eq!(result["payload"]["success"], true);
-        assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 1);
-        occupied
+        assert_eq!(result["payload"]["outcome"], "accepted");
+        assert_eq!(result["payload"]["acceptedRevision"], 1);
+        assert_eq!(result["payload"]["convergence"], "pending");
+        let pending = state
+            .environment_control_snapshot()
             .await
-            .expect("background sample task")
-            .expect("sample");
+            .expect("pending snapshot");
+        assert_eq!(pending.settings.base_vent_speed, 2);
+        assert_eq!(pending.desired.vent_speed, 2);
+        assert_eq!(calls.vent_speed_calls.load(Ordering::SeqCst), 0);
+
+        drop(occupied);
+        runtime
+            .environment_control
+            .as_ref()
+            .expect("environment runtime")
+            .wait_for_convergence(
+                1,
+                EnvironmentControlConvergence::Applied,
+                StdDuration::from_secs(1),
+            )
+            .await
+            .expect("deferred convergence");
+        assert_eq!(calls.vent_speed_calls.load(Ordering::SeqCst), 1);
+        shutdown.cancel();
     }
 
     #[tokio::test]
-    async fn environment_control_command_lock_prevents_overlap() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let (hardware, calls) = TrackingEnvironmentHardware::new(120);
-        let runtime = MqttSyncRuntime::new(
-            "MACHINE-ENV".to_string(),
-            "mqtt-signing-secret-for-env".to_string(),
-            state.clone(),
-            HardwareSupervisor::from_adapter(Arc::new(hardware)),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
+    async fn mqtt_redelivery_deduplicates_the_same_domain_action_revision() {
+        let (_temp, state, _supervisor, _calls, shutdown, runtime) =
+            environment_test_runtime().await;
+        let first = environment_control_command(
+            "ENV-FIRST",
+            "remote-temperature-24",
+            EnvironmentControlActionKind::SetTargetTemperature {
+                temperature_celsius: 24,
+            },
+            5,
         );
-
-        let first_command = environment_control_command("ENV-RACE-1", None, None, Some(2), 5);
-        let second_command = environment_control_command("ENV-RACE-2", None, None, Some(3), 5);
-        let first_envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-RACE-1-MSG",
-            &first_command,
-            None,
+        let duplicate = environment_control_command(
+            "ENV-REDRIVE",
+            "remote-temperature-24",
+            EnvironmentControlActionKind::SetTargetTemperature {
+                temperature_celsius: 24,
+            },
+            5,
         );
-        let second_envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-RACE-2-MSG",
-            &second_command,
-            None,
-        );
-
-        let first = tokio::spawn({
-            let runtime = runtime.clone();
-            let envelope = first_envelope;
-            async move { runtime.handle_environment_control_command(&envelope).await }
-        });
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
-        let second = tokio::spawn({
-            let runtime = runtime.clone();
-            let envelope = second_envelope;
-            async move { runtime.handle_environment_control_command(&envelope).await }
-        });
-
-        first
-            .await
-            .expect("first command panicked")
-            .expect("first command");
-        second
-            .await
-            .expect("second command panicked")
-            .expect("second command");
+        for (message_id, command) in [("ENV-FIRST-MSG", &first), ("ENV-REDRIVE-MSG", &duplicate)] {
+            runtime
+                .handle_environment_control_command(&environment_control_envelope(
+                    "MACHINE-ENV",
+                    "mqtt-signing-secret-for-env",
+                    message_id,
+                    command,
+                    None,
+                ))
+                .await
+                .expect("environment command");
+        }
 
         let events = state
             .list_due_outbox(chrono::Utc::now())
             .await
             .expect("environment outbox");
-        let first_result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-RACE-1")
-            .expect("first environment result");
-        let second_result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-RACE-2")
-            .expect("second environment result");
-        assert_eq!(first_result["payload"]["success"], true);
-        assert_eq!(second_result["payload"]["success"], false);
+        let first_result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-FIRST")
+            .expect("first result");
+        let duplicate_result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-REDRIVE")
+            .expect("duplicate result");
+        assert_eq!(first_result["payload"]["outcome"], "accepted");
+        assert_eq!(duplicate_result["payload"]["outcome"], "deduplicated");
+        assert_eq!(first_result["payload"]["acceptedRevision"], 1);
+        assert_eq!(duplicate_result["payload"]["acceptedRevision"], 1);
         assert_eq!(
-            second_result["payload"]["errorCode"],
-            serde_json::Value::String("ENVIRONMENT_COMMAND_IN_PROGRESS".to_string()),
+            state
+                .environment_control_snapshot()
+                .await
+                .expect("snapshot")
+                .revision,
+            1
         );
-        assert_eq!(calls.vent_speed_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn mqtt_admin_b3_receipt_keeps_a_new_stable_edge_armed_until_execution_completes() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let (hardware, calls) = TrackingEnvironmentHardware::new(80);
-        let supervisor = HardwareSupervisor::from_adapter(Arc::new(hardware));
-        let automatic_vent = AutomaticVentController::new_with_guard(
-            supervisor.clone(),
-            CancellationToken::new(),
-            StdDuration::from_millis(1),
-        );
-        let runtime = Arc::new(
-            MqttSyncRuntime::new(
-                "MACHINE-ENV".to_string(),
-                "mqtt-signing-secret-for-env".to_string(),
-                state.clone(),
-                supervisor,
-                broadcast::channel(1).0,
-                CancellationToken::new(),
-            )
-            .with_automatic_vent(automatic_vent.clone()),
-        );
-        let command = environment_control_command("ENV-ADMIN-B3", None, None, Some(3), 5);
-        let envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-ADMIN-B3-MSG",
-            &command,
-            None,
-        );
-        let mut task_slot = None;
-
-        runtime
-            .dispatch_environment_command(envelope, &mut task_slot)
-            .await
-            .expect("MQTT dispatch");
-
-        tokio::time::timeout(StdDuration::from_secs(1), async {
-            loop {
-                if !state
-                    .list_due_outbox(chrono::Utc::now())
-                    .await
-                    .expect("outbox")
-                    .is_empty()
-                {
-                    return;
-                }
-                tokio::time::sleep(StdDuration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("Admin receipt must enqueue its acknowledgement before execution");
-
-        automatic_vent
-            .request("presence-2:departure", 0)
-            .await
-            .expect("new stable edge after Admin receipt");
-
-        task_slot
-            .take()
-            .expect("environment task")
-            .await
-            .expect("environment task panicked")
-            .expect("Admin B3 command");
-
-        tokio::time::timeout(StdDuration::from_secs(1), async {
-            loop {
-                if *calls.vent_speeds.lock().expect("tracking vent speeds") == vec![3, 0] {
-                    return;
-                }
-                tokio::time::sleep(StdDuration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the next stable intent must run once after Admin B3 without an immediate rebound");
-        assert_eq!(
-            *calls.vent_speeds.lock().expect("tracking vent speeds"),
-            vec![3, 0]
-        );
-    }
-
-    #[tokio::test]
-    async fn mqtt_environment_dispatch_does_not_wait_for_hardware_task() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let (hardware, calls) = TrackingEnvironmentHardware::new(500);
-        let runtime = Arc::new(MqttSyncRuntime::new(
-            "MACHINE-ENV".to_string(),
-            "mqtt-signing-secret-for-env".to_string(),
-            state,
-            HardwareSupervisor::from_adapter(Arc::new(hardware)),
-            broadcast::channel(1).0,
-            CancellationToken::new(),
-        ));
-        let command = environment_control_command("ENV-POLL", None, None, Some(2), 5);
-        let envelope = environment_control_envelope(
-            "MACHINE-ENV",
-            "mqtt-signing-secret-for-env",
-            "ENV-POLL-MSG",
-            &command,
-            None,
-        );
-        let mut task_slot = None;
-
-        tokio::time::timeout(
-            StdDuration::from_millis(100),
-            runtime.dispatch_environment_command(envelope, &mut task_slot),
-        )
-        .await
-        .expect("MQTT dispatch must return before environment hardware completes")
-        .expect("dispatch environment command");
-
-        let task = task_slot.as_ref().expect("fixed environment task slot");
-        assert!(!task.is_finished());
-        task_slot
-            .take()
-            .expect("environment task")
-            .await
-            .expect("environment task panicked")
-            .expect("environment command");
-        assert_eq!(calls.vent_speed_calls.load(Ordering::SeqCst), 1);
+        shutdown.cancel();
     }
 }

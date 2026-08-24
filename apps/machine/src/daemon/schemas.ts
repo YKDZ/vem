@@ -10,7 +10,6 @@ import {
   daemonIpcSaleStartCapabilitySnapshotSchema,
   daemonIpcManagedMediaSnapshotSchema,
   daemonIpcScannerStatusSchema,
-  environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
   paymentProviderEnvironmentDiagnosticSchema,
@@ -383,9 +382,6 @@ export const manualDispenseDiagnosticResultSchema = z.object({
   replayed: z.boolean(),
 });
 
-export const environmentControlResultSchema =
-  environmentControlResultPayloadSchema;
-
 export const catalogSnapshotSchema = z.object({
   items: z.array(machineCatalogItemSchema),
   cached: z.boolean(),
@@ -437,9 +433,6 @@ export type NaturalContextSnapshot = z.infer<
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
 export type ManualDispenseDiagnosticResult = z.infer<
   typeof manualDispenseDiagnosticResultSchema
->;
-export type EnvironmentControlResult = z.infer<
-  typeof environmentControlResultSchema
 >;
 export type SaleStartCapabilitySnapshot = z.infer<
   typeof saleStartCapabilitySnapshotSchema

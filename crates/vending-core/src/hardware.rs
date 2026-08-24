@@ -93,29 +93,6 @@ pub type DispenseProgressObserver = Arc<dyn Fn(DispenseProgressEvent) + Send + S
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct EnvironmentControlCommandPayload {
-    pub command_no: String,
-    pub air_conditioner_on: Option<bool>,
-    pub target_temperature_celsius: Option<i8>,
-    pub vent_speed: Option<u8>,
-    pub timeout_seconds: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvironmentControlResultPayload {
-    pub command_no: String,
-    pub success: bool,
-    pub error_code: Option<String>,
-    pub message: Option<String>,
-    pub air_conditioner_on: Option<bool>,
-    pub target_temperature_celsius: Option<i8>,
-    pub vent_speed: Option<u8>,
-    pub reported_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct HardwareStatus {
     pub adapter: String,
     pub online: bool,

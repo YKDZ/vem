@@ -1,5 +1,4 @@
 pub mod audio_output;
-pub mod automatic_vent;
 pub mod backend;
 pub mod device_binding;
 pub mod environment_control;

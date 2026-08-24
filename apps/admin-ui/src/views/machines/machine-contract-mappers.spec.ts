@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  environmentControlFormFromProjection,
   mapEnvironmentControlFormToContract,
   mapMachineBasicsFormToUpdateContract,
   mapMachineFormToContract,
@@ -8,6 +9,51 @@ import {
 } from "./machine-contract-mappers";
 
 describe("Machine Operations form contract mappers", () => {
+  it("initializes controls only from the daemon heartbeat projection", () => {
+    expect(
+      environmentControlFormFromProjection({
+        sensorStatus: "ok",
+        control: {
+          snapshot: {
+            schemaVersion: "vem-environment-control/v1",
+            revision: 7,
+            settings: {
+              airConditionerEnabled: true,
+              targetTemperatureCelsius: 26,
+              baseVentSpeed: 3,
+            },
+            desired: {
+              airConditionerEnabled: true,
+              targetTemperatureCelsius: 26,
+              ventSpeed: 0,
+            },
+            confirmed: {
+              airConditionerEnabled: true,
+              targetTemperatureCelsius: 26,
+              ventSpeed: 0,
+            },
+            convergence: "applied",
+            reasonCode: "hardware_confirmed",
+            message: null,
+            lastAction: null,
+            updatedAt: "2026-08-24T10:00:00.000Z",
+            lastAttemptAt: "2026-08-24T10:00:00.000Z",
+            confirmedAt: "2026-08-24T10:00:00.000Z",
+          },
+          observedAt: "2026-08-24T10:00:05.000Z",
+          stale: false,
+        },
+      }),
+    ).toEqual({
+      airConditionerOn: true,
+      targetTemperatureCelsius: 26,
+      ventSpeed: 3,
+    });
+    expect(
+      environmentControlFormFromProjection({ sensorStatus: "unknown" }),
+    ).toBeNull();
+  });
+
   it("maps machine form fields into the shared admin machine contract", () => {
     expect(
       mapMachineFormToContract({

@@ -632,6 +632,11 @@ describe("Daemon IPC Contract Area", () => {
       },
       {
         ...eventEnvelope,
+        type: "environment_control_changed",
+        revision: 7,
+      },
+      {
+        ...eventEnvelope,
         type: "mqtt_changed",
         connected: true,
         lastError: null,
@@ -667,11 +672,17 @@ describe("Daemon IPC Contract Area", () => {
       "scanner_health_changed",
       "scanner_code",
       "transaction_changed",
+      "environment_control_changed",
       "mqtt_changed",
       "vision_changed",
       "runtime_reconfigure_requested",
       "remote_op_result",
     ]);
+    expect(
+      currentRustEvents.every(
+        (event) => !("known" in daemonIpcEventNotificationSchema.parse(event)),
+      ),
+    ).toBe(true);
 
     expect(() =>
       daemonIpcEventNotificationSchema.parse({

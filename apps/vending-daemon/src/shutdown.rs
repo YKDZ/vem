@@ -148,21 +148,15 @@ async fn run_console_cycle(
         lower_port,
         Some(data_dir.join("logs").join("serial-protocol.jsonl")),
     )?;
-    let automatic_vent = crate::automatic_vent::AutomaticVentController::new(
-        hardware.clone(),
-        runtime.shutdown_token(),
-    )
-    .with_evidence(
-        state.clone(),
-        data_dir.join("logs").join("machine-events.jsonl"),
-    );
-    // Close the B3 vent before exposing this runtime. Failure is preserved as
-    // environment evidence and does not turn an optional customer experience
-    // capability into a sale-start gate.
-    let _ = automatic_vent.close_for_lifecycle("runtime-startup").await;
-
     let (tx_raw, rx_raw) = mpsc::channel::<ArmedPaymentCode>(16);
     let (events_tx, _) = broadcast::channel(64);
+    let environment_control = crate::environment_control::EnvironmentControlRuntime::start(
+        state.clone(),
+        hardware.clone(),
+        runtime.shutdown_token(),
+        events_tx.clone(),
+    )
+    .await?;
     let payment_code_scan_armer = PaymentCodeScanArmer::default();
     let scanner_runtime = ScannerRuntimeController::new(
         tx_raw.clone(),
@@ -240,14 +234,13 @@ async fn run_console_cycle(
         runtime_sources: runtime_sources.clone(),
         state: state.clone(),
         hardware: hardware.clone(),
-        automatic_vent: automatic_vent.clone(),
+        environment_control: environment_control.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw,
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         critical_section,
-        environment_command_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
@@ -380,11 +373,9 @@ async fn run_console_cycle(
             if external_shutdown.is_cancelled() { ConsoleCycleExit::Stop } else { ConsoleCycleExit::Reconfigure }
         }
     };
-    // The runtime shutdown token is cancelled by runtime.stop(). Close B3
-    // first so the controller can still claim the shared serial owner and
-    // obey the protocol guard.
-    let _ = automatic_vent.close_for_lifecycle("runtime-shutdown").await;
-    automatic_vent.close().await;
+    // Stop B3 before cancelling the runtime so the environment owner can
+    // still claim the shared serial boundary without changing persisted desire.
+    let _ = environment_control.stop_hardware_for_shutdown().await;
     runtime.stop().await?;
     scanner_runtime.stop().await?;
     ipc_handle.shutdown.cancel();

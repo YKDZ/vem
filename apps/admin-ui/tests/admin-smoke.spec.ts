@@ -146,6 +146,36 @@ test.describe("admin-smoke", () => {
           humidityRh: 51,
           sampledAt: ENVIRONMENT_NOW,
           sensorStatus: "ok",
+          control: {
+            snapshot: {
+              schemaVersion: "vem-environment-control/v1",
+              revision: 7,
+              settings: {
+                airConditionerEnabled: false,
+                targetTemperatureCelsius: 24,
+                baseVentSpeed: 2,
+              },
+              desired: {
+                airConditionerEnabled: false,
+                targetTemperatureCelsius: 24,
+                ventSpeed: 2,
+              },
+              confirmed: {
+                airConditionerEnabled: false,
+                targetTemperatureCelsius: 24,
+                ventSpeed: 2,
+              },
+              convergence: "applied",
+              reasonCode: "hardware_confirmed",
+              message: null,
+              lastAction: null,
+              updatedAt: ENVIRONMENT_NOW,
+              lastAttemptAt: ENVIRONMENT_NOW,
+              confirmedAt: ENVIRONMENT_NOW,
+            },
+            observedAt: ENVIRONMENT_NOW,
+            stale: false,
+          },
         },
         latestEnvironmentCommand: null,
       };
@@ -194,7 +224,13 @@ test.describe("admin-smoke", () => {
                 type: "environment-control",
                 status: failed ? "failed" : "succeeded",
                 payloadJson,
-                ...(failed ? { resultJson: { errorCode: "E4" } } : {}),
+                resultJson: failed
+                  ? {
+                      outcome: "rejected",
+                      reasonCode: "runtime_closed",
+                      message: "environment control runtime is closed",
+                    }
+                  : { convergence: "applied" },
               },
             }),
           });
@@ -211,14 +247,16 @@ test.describe("admin-smoke", () => {
       await expect(drawer).toBeVisible();
       await drawer.getByRole("button", { name: "开启" }).click();
       await expect(
-        page.getByRole("alert").filter({ hasText: "空调控制已完成" }),
+        page.getByRole("alert").filter({
+          hasText: "空调设置已保存并应用",
+        }),
       ).toBeVisible();
 
       await drawer.locator("select").selectOption("3");
       await drawer.getByRole("button", { name: "设定" }).last().click();
       await expect(
         page.getByRole("alert").filter({
-          hasText: "出风口与风速控制失败：控制器操作过于频繁，请稍后重试（E4）",
+          hasText: "出风口与风速控制失败：设备环境控制服务暂不可用",
         }),
       ).toBeVisible();
       await expect(drawer).not.toContainText("失败：");

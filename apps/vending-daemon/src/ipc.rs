@@ -3,10 +3,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -31,9 +28,9 @@ use tokio_util::{io::ReaderStream, sync::CancellationToken};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
-    automatic_vent::AutomaticVentController,
     backend::BackendClient,
     device_binding::{self, DeviceRoleRuntimeReadiness, LocalDeviceRole, LocalSerialRoleBinding},
+    environment_control::{EnvironmentControlAction, EnvironmentControlRuntime},
     events::{scanner_runtime_status_contract, DaemonEvent},
     hardware::HardwareSupervisor,
     local_runtime_settings::{
@@ -60,8 +57,6 @@ use crate::{
     stock_upload::StockMovementUploadRuntime,
     transaction::TransactionStateMachine,
 };
-use vending_core::hardware::{EnvironmentControlCommandPayload, EnvironmentControlResultPayload};
-
 const SCANNER_READY_STALE_AFTER_SECONDS: i64 = 30;
 const PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE: &str =
     "扫码器暂不可用，请选择其他支付方式";
@@ -91,23 +86,6 @@ struct CreateOrder {
 struct CancelOrder {
     order_no: String,
 }
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AutomaticVentIntentRequest {
-    edge_id: String,
-    vent_speed: u8,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LocalEnvironmentControlRequest {
-    air_conditioner_on: Option<bool>,
-    target_temperature_celsius: Option<i8>,
-    vent_speed: Option<u8>,
-}
-
-const LOCAL_ENVIRONMENT_CONTROL_TIMEOUT_SECONDS: u64 = 10;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -378,7 +356,7 @@ pub struct IpcContext {
     pub runtime_sources: Arc<RuntimeSources>,
     pub state: LocalStateStore,
     pub hardware: HardwareSupervisor,
-    pub automatic_vent: AutomaticVentController,
+    pub environment_control: EnvironmentControlRuntime,
     pub events: broadcast::Sender<DaemonEvent>,
     pub runtime_tx: mpsc::Sender<crate::transaction::ArmedPaymentCode>,
     pub scanner_runtime: ScannerRuntimeController,
@@ -386,22 +364,11 @@ pub struct IpcContext {
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
     pub(crate) critical_section:
         Arc<crate::payment_creation_critical_section::PaymentCreationCriticalSection>,
-    pub(crate) environment_command_in_progress: Arc<AtomicBool>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
     pub media_cache: ManagedMediaCache,
     pub background_shutdown: CancellationToken,
-}
-
-struct LocalEnvironmentCommandInProgressGuard {
-    in_progress: Arc<AtomicBool>,
-}
-
-impl Drop for LocalEnvironmentCommandInProgressGuard {
-    fn drop(&mut self) {
-        self.in_progress.store(false, Ordering::Release);
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -487,7 +454,11 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order))
         .route("/v1/intents/cancel-order", post(cancel_order))
-        .route("/v1/intents/automatic-vent", post(automatic_vent_intent))
+        .route("/v1/environment-control", get(environment_control_snapshot))
+        .route(
+            "/v1/environment-control/actions",
+            post(environment_control_action),
+        )
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(current_transaction))
         .route("/v1/stock/planogram", post(apply_planogram))
@@ -514,10 +485,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route(
             "/v1/maintenance/manual-dispense-diagnostic",
             post(manual_dispense_diagnostic),
-        )
-        .route(
-            "/v1/maintenance/environment-control",
-            post(local_environment_control),
         )
         .route("/v1/hardware/self-check", post(hardware_self_check))
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
@@ -674,310 +641,44 @@ async fn serve_media(
     }
 }
 
-async fn automatic_vent_intent(
+async fn environment_control_snapshot(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
-    Json(request): Json<AutomaticVentIntentRequest>,
 ) -> impl IntoResponse {
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    if request.edge_id.trim().is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "automatic_vent_edge_required",
-            "automatic vent intent requires a stable presence edge id".to_string(),
-        );
-    }
-    match ctx
-        .automatic_vent
-        .request(&request.edge_id, request.vent_speed)
-        .await
-    {
-        Ok(outcome) => Json(serde_json::json!({
-            "edgeId": request.edge_id,
-            "outcome": outcome,
-        }))
-        .into_response(),
-        Err(error) => error_response(StatusCode::BAD_REQUEST, "automatic_vent_invalid", error),
-    }
-}
-
-fn local_environment_control_command(
-    request: LocalEnvironmentControlRequest,
-) -> Result<EnvironmentControlCommandPayload, String> {
-    let command = EnvironmentControlCommandPayload {
-        command_no: format!("LOCAL-ENV-{}", uuid::Uuid::new_v4().simple()),
-        air_conditioner_on: request.air_conditioner_on,
-        target_temperature_celsius: request.target_temperature_celsius,
-        vent_speed: request.vent_speed,
-        timeout_seconds: LOCAL_ENVIRONMENT_CONTROL_TIMEOUT_SECONDS,
-    };
-    crate::mqtt::validate_environment_control_command(&command)?;
-    Ok(command)
-}
-
-fn local_environment_control_result(
-    command: &EnvironmentControlCommandPayload,
-    success: bool,
-    error_code: Option<String>,
-    message: Option<String>,
-    air_conditioner_on: Option<bool>,
-    target_temperature_celsius: Option<i8>,
-    vent_speed: Option<u8>,
-) -> EnvironmentControlResultPayload {
-    EnvironmentControlResultPayload {
-        command_no: command.command_no.clone(),
-        success,
-        error_code,
-        message,
-        air_conditioner_on,
-        target_temperature_celsius,
-        vent_speed,
-        reported_at: crate::state::store::now_iso(),
-    }
-}
-
-async fn local_environment_control(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(request): Json<LocalEnvironmentControlRequest>,
-) -> impl IntoResponse {
-    if let Err(error) = require_token(&headers, &ctx.token).await {
-        return error.into_response();
-    }
-    let command = match local_environment_control_command(request) {
-        Ok(command) => command,
-        Err(error) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "local_environment_control_invalid",
-                error,
-            )
-        }
-    };
-
-    let dispense_in_progress = match ctx.state.current_transaction_snapshot().await {
-        Ok(snapshot) => snapshot.is_some_and(|snapshot| {
-            snapshot.next_action.is_some_and(|status| {
-                status == vending_core::domain::InternalCheckoutFlowAction::Dispensing
-            }) || snapshot
-                .order_status
-                .as_deref()
-                .is_some_and(|status| status == "dispensing")
-        }),
-        Err(error) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "local_environment_control_status_unavailable",
-                error,
-            )
-        }
-    };
-    if dispense_in_progress {
-        return Json(local_environment_control_result(
-            &command,
-            false,
-            Some("DISPENSE_IN_PROGRESS".to_string()),
-            Some("a dispense operation is in progress".to_string()),
-            None,
-            None,
-            None,
-        ))
-        .into_response();
-    }
-
-    let _environment_guard = match ctx.environment_command_in_progress.compare_exchange(
-        false,
-        true,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
-        Ok(_) => LocalEnvironmentCommandInProgressGuard {
-            in_progress: ctx.environment_command_in_progress.clone(),
-        },
-        Err(_) => {
-            return Json(local_environment_control_result(
-                &command,
-                false,
-                Some("ENVIRONMENT_COMMAND_IN_PROGRESS".to_string()),
-                Some("another environment control command is in progress".to_string()),
-                None,
-                None,
-                None,
-            ))
-            .into_response()
-        }
-    };
-
-    if command.vent_speed.is_some() {
-        ctx.automatic_vent.supersede_by_admin().await;
-    }
-
-    let deadline = Instant::now() + Duration::from_secs(command.timeout_seconds);
-    let mut confirmed_switch = None;
-    let mut confirmed_target = None;
-    let mut confirmed_vent_speed = None;
-    let mut failure: Option<(String, String)> = None;
-
-    let hardware = if command.vent_speed.is_none() {
-        match tokio::time::timeout(
-            Duration::from_secs(command.timeout_seconds),
-            ctx.hardware.acquire_environment_hardware(),
-        )
-        .await
-        {
-            Ok(hardware) => Some(hardware),
-            Err(_) => {
-                failure = Some((
-                    "COMMAND_EXPIRED".to_string(),
-                    "environment control command deadline elapsed".to_string(),
-                ));
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    if failure.is_none() {
-        if let Some(target) = command.target_temperature_celsius {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                failure = Some((
-                    "COMMAND_EXPIRED".to_string(),
-                    "environment control command deadline elapsed".to_string(),
-                ));
-                return Json(EnvironmentControlResultPayload {
-                    command_no: command.command_no,
-                    success: false,
-                    error_code: failure.as_ref().map(|value| value.0.clone()),
-                    message: failure.as_ref().map(|value| value.1.clone()),
-                    air_conditioner_on: confirmed_switch,
-                    target_temperature_celsius: confirmed_target,
-                    vent_speed: confirmed_vent_speed,
-                    reported_at: crate::state::store::now_iso(),
-                })
-                .into_response();
-            };
-            match tokio::time::timeout(
-                remaining,
-                hardware
-                    .as_ref()
-                    .expect("non-B3 local command has hardware ownership")
-                    .set_target_temperature(target),
-            )
-            .await
-            {
-                Err(_) => {
-                    failure = Some((
-                        "COMMAND_EXPIRED".to_string(),
-                        "environment control command deadline elapsed".to_string(),
-                    ))
-                }
-                Ok(Ok(())) => confirmed_target = Some(target),
-                Ok(Err(error)) => failure = Some(("target_temperature_failed".to_string(), error)),
-            }
-        }
-    }
-
-    if failure.is_none() {
-        if let Some(enabled) = command.air_conditioner_on {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                failure = Some((
-                    "COMMAND_EXPIRED".to_string(),
-                    "environment control command deadline elapsed".to_string(),
-                ));
-                return Json(EnvironmentControlResultPayload {
-                    command_no: command.command_no,
-                    success: false,
-                    error_code: failure.as_ref().map(|value| value.0.clone()),
-                    message: failure.as_ref().map(|value| value.1.clone()),
-                    air_conditioner_on: confirmed_switch,
-                    target_temperature_celsius: confirmed_target,
-                    vent_speed: confirmed_vent_speed,
-                    reported_at: crate::state::store::now_iso(),
-                })
-                .into_response();
-            };
-            match tokio::time::timeout(
-                remaining,
-                hardware
-                    .as_ref()
-                    .expect("non-B3 local command has hardware ownership")
-                    .set_air_conditioner_enabled(enabled),
-            )
-            .await
-            {
-                Err(_) => {
-                    failure = Some((
-                        "COMMAND_EXPIRED".to_string(),
-                        "environment control command deadline elapsed".to_string(),
-                    ))
-                }
-                Ok(Ok(())) => confirmed_switch = Some(enabled),
-                Ok(Err(error)) => {
-                    failure = Some(("air_conditioner_switch_failed".to_string(), error))
-                }
-            }
-        }
-    }
-
-    if failure.is_none() {
-        if let Some(speed) = command.vent_speed {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                failure = Some((
-                    "COMMAND_EXPIRED".to_string(),
-                    "environment control command deadline elapsed".to_string(),
-                ));
-                return Json(EnvironmentControlResultPayload {
-                    command_no: command.command_no,
-                    success: false,
-                    error_code: failure.as_ref().map(|value| value.0.clone()),
-                    message: failure.as_ref().map(|value| value.1.clone()),
-                    air_conditioner_on: confirmed_switch,
-                    target_temperature_celsius: confirmed_target,
-                    vent_speed: confirmed_vent_speed,
-                    reported_at: crate::state::store::now_iso(),
-                })
-                .into_response();
-            };
-            let result =
-                tokio::time::timeout(remaining, ctx.automatic_vent.execute_admin_one_shot(speed))
-                    .await;
-            ctx.automatic_vent.cancel_admin_one_shot().await;
-            match result {
-                Err(_) => {
-                    failure = Some((
-                        "COMMAND_EXPIRED".to_string(),
-                        "environment control command deadline elapsed".to_string(),
-                    ))
-                }
-                Ok(Ok(())) => confirmed_vent_speed = Some(speed),
-                Ok(Err(error)) => failure = Some(("vent_speed_failed".to_string(), error)),
-            }
-        }
-    }
-
-    let (success, error_code, message) = match failure {
-        Some((error_code, message)) => (false, Some(error_code), Some(message)),
-        None => (
-            true,
-            None,
-            Some("environment control completed".to_string()),
+    match ctx.environment_control.snapshot().await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "environment_control_snapshot_unavailable",
+            error,
         ),
-    };
+    }
+}
 
-    Json(EnvironmentControlResultPayload {
-        command_no: command.command_no,
-        success,
-        error_code,
-        message,
-        air_conditioner_on: confirmed_switch,
-        target_temperature_celsius: confirmed_target,
-        vent_speed: confirmed_vent_speed,
-        reported_at: crate::state::store::now_iso(),
-    })
-    .into_response()
+async fn environment_control_action(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(action): Json<EnvironmentControlAction>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    match ctx.environment_control.submit(action).await {
+        Ok(admission) => Json(admission).into_response(),
+        Err(error) if error.contains("idempotency conflict") => error_response(
+            StatusCode::CONFLICT,
+            "environment_control_action_conflict",
+            error,
+        ),
+        Err(error) => error_response(
+            StatusCode::BAD_REQUEST,
+            "environment_control_action_invalid",
+            error,
+        ),
+    }
 }
 
 pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {
@@ -1082,17 +783,17 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
             message: scanner.message,
             updated_at: scanner.updated_at,
         });
-    let automatic_vent = ctx.automatic_vent.health_component().await;
+    let environment_control = ctx.environment_control.health_component().await;
     if matches!(
-        automatic_vent.level,
-        vending_core::health::HealthLevel::Degraded
+        environment_control.level,
+        vending_core::health::HealthLevel::Degraded | vending_core::health::HealthLevel::Error
     ) {
         snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
         if snapshot.operator_reason.is_empty() {
-            snapshot.operator_reason = automatic_vent.code.clone();
+            snapshot.operator_reason = environment_control.code.clone();
         }
     }
-    snapshot.components.push(automatic_vent);
+    snapshot.components.push(environment_control);
     if !hardware.online {
         snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
         snapshot.operator_reason = "LOWER_CONTROLLER_UNAVAILABLE".to_string();
@@ -5420,39 +5121,6 @@ mod tests {
     }
 
     #[test]
-    fn local_environment_control_request_reuses_environment_validation() {
-        let command = local_environment_control_command(LocalEnvironmentControlRequest {
-            air_conditioner_on: None,
-            target_temperature_celsius: None,
-            vent_speed: Some(3),
-        })
-        .expect("local B3 command");
-
-        assert!(command.command_no.starts_with("LOCAL-ENV-"));
-        assert_eq!(command.vent_speed, Some(3));
-        assert_eq!(
-            command.timeout_seconds,
-            LOCAL_ENVIRONMENT_CONTROL_TIMEOUT_SECONDS
-        );
-        assert!(
-            command.timeout_seconds > 5,
-            "local B3 commands must outlive the automatic vent guard window"
-        );
-    }
-
-    #[test]
-    fn local_environment_control_rejects_multiple_actions() {
-        let error = local_environment_control_command(LocalEnvironmentControlRequest {
-            air_conditioner_on: Some(true),
-            target_temperature_celsius: None,
-            vent_speed: Some(3),
-        })
-        .expect_err("local command must contain exactly one action");
-
-        assert!(error.contains("exactly one action"));
-    }
-
-    #[test]
     fn manual_dispense_accepts_only_online_bound_serial_runtime() {
         let status = vending_core::hardware::HardwareStatus {
             adapter: "serial".to_string(),
@@ -5488,40 +5156,128 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_environment_control_rejects_when_shared_environment_lock_is_held() {
+    async fn environment_control_action_endpoint_returns_the_authoritative_snapshot() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (ctx, _secrets) = test_context(
             temp.path().to_path_buf(),
             "https://platform.example/api".to_string(),
         )
         .await;
-        ctx.environment_command_in_progress
-            .store(true, Ordering::Release);
+        let router = build_router(ctx);
 
-        let response = build_router(ctx)
+        let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/maintenance/environment-control")
+                    .uri("/v1/environment-control/actions")
                     .header(AUTHORIZATION, "Bearer test-token")
                     .header(CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"ventSpeed":3}"#))
+                    .body(Body::from(
+                        r#"{
+                          "actionId":"local-speed-zero",
+                          "source":"local_operator",
+                          "action":{"type":"set_base_vent_speed","ventSpeed":0}
+                        }"#,
+                    ))
                     .expect("request"),
             )
             .await
             .expect("response");
-
         assert_eq!(response.status(), StatusCode::OK);
-        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let payload: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("json response");
+        assert_eq!(payload["outcome"], "accepted");
+        assert_eq!(payload["acceptedRevision"], 1);
+        assert_eq!(payload["snapshot"]["settings"]["baseVentSpeed"], 0);
+        assert_eq!(payload["snapshot"]["desired"]["ventSpeed"], 0);
+
+        let snapshot = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/environment-control")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
             .await
-            .expect("body");
-        let payload: serde_json::Value =
-            serde_json::from_slice(&response_body).expect("json response");
-        assert_eq!(payload["success"], serde_json::Value::Bool(false));
-        assert_eq!(
-            payload["errorCode"],
-            serde_json::Value::String("ENVIRONMENT_COMMAND_IN_PROGRESS".to_string()),
-        );
+            .expect("snapshot response");
+        assert_eq!(snapshot.status(), StatusCode::OK);
+        let snapshot: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(snapshot.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("snapshot json");
+        assert_eq!(snapshot["revision"], 1);
+        assert_eq!(snapshot["settings"]["baseVentSpeed"], 0);
+    }
+
+    #[tokio::test]
+    async fn environment_control_action_endpoint_deduplicates_and_rejects_extra_facts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ctx, _secrets) = test_context(
+            temp.path().to_path_buf(),
+            "https://platform.example/api".to_string(),
+        )
+        .await;
+        let router = build_router(ctx);
+        let request_body = r#"{
+          "actionId":"presence-edge-1",
+          "source":"stable_presence",
+          "action":{"type":"temporarily_stop_vent"}
+        }"#;
+
+        for expected_outcome in ["accepted", "deduplicated"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/environment-control/actions")
+                        .header(AUTHORIZATION, "Bearer test-token")
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Body::from(request_body))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let payload: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+            )
+            .expect("json response");
+            assert_eq!(payload["outcome"], expected_outcome);
+            assert_eq!(payload["acceptedRevision"], 1);
+        }
+
+        let rejected = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/environment-control/actions")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{
+                          "actionId":"presence-edge-extra",
+                          "source":"stable_presence",
+                          "personPresent":false,
+                          "action":{"type":"temporarily_stop_vent"}
+                        }"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     async fn test_context(
@@ -5555,6 +5311,14 @@ mod tests {
         );
         let hardware =
             HardwareSupervisor::from_adapter(Arc::new(vending_core::hardware::MockHardwareAdapter));
+        let environment_control = EnvironmentControlRuntime::start(
+            state.clone(),
+            hardware.clone(),
+            CancellationToken::new(),
+            events.clone(),
+        )
+        .await
+        .expect("environment control runtime");
         (
             IpcContext {
                 data_dir: data_dir.clone(),
@@ -5562,7 +5326,7 @@ mod tests {
                 runtime_sources: sources,
                 state,
                 hardware: hardware.clone(),
-                automatic_vent: AutomaticVentController::new(hardware, CancellationToken::new()),
+                environment_control,
                 events: events.clone(),
                 runtime_tx: raw_tx.clone(),
                 scanner_runtime: ScannerRuntimeController::new(
@@ -5573,7 +5337,6 @@ mod tests {
                 serial_device_platform: Arc::new(device_binding::WindowsSerialDevicePlatform),
                 device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
                 critical_section,
-                environment_command_in_progress: Arc::new(AtomicBool::new(false)),
                 disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::new(0)),
                 network_adapter: crate::network::adapter_from_env(),
                 ui: UiRuntimeServices {

@@ -7,6 +7,7 @@ import {
   type AdminUpdateMachineRequest,
   type AdminCreateMachineSlotRequest,
   type MachineEnvironmentControlRequest,
+  type MachineEnvironmentHeartbeatPayload,
   type MachineSlotStatus,
 } from "@vem/shared";
 import { z } from "zod";
@@ -33,6 +34,18 @@ export type EnvironmentControlAction =
   | "airConditionerOn"
   | "targetTemperatureCelsius"
   | "ventSpeed";
+
+export function environmentControlFormFromProjection(
+  environment: MachineEnvironmentHeartbeatPayload | null | undefined,
+): EnvironmentControlForm | null {
+  const settings = environment?.control?.snapshot.settings;
+  if (!settings) return null;
+  return {
+    airConditionerOn: settings.airConditionerEnabled,
+    targetTemperatureCelsius: settings.targetTemperatureCelsius,
+    ventSpeed: settings.baseVentSpeed,
+  };
+}
 
 export type SlotForm = {
   rowNo: number;

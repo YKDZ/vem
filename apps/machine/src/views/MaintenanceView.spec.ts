@@ -40,8 +40,8 @@ const client = vi.hoisted(() => ({
   submitStockMaintenanceBatch: vi.fn(),
   runHardwareSelfCheck: vi.fn(),
   runManualDispenseDiagnostic: vi.fn(),
-  submitLocalEnvironmentControl: vi.fn(),
-  submitAutomaticVentIntent: vi.fn(),
+  getEnvironmentControlSnapshot: vi.fn(),
+  submitEnvironmentControlAction: vi.fn(),
 }));
 
 vi.mock("@/daemon/client", () => ({
@@ -401,12 +401,54 @@ beforeEach(() => {
     reconciliationStatus: "open",
     replayed: false,
   });
-  client.submitLocalEnvironmentControl.mockResolvedValue({
-    success: true,
-    message: "environment control completed",
-    reportedAt: "2026-07-17T00:00:00.000Z",
-  });
-  client.submitAutomaticVentIntent.mockResolvedValue({ outcome: "accepted" });
+  const environmentSnapshot = {
+    schemaVersion: "vem-environment-control/v1",
+    revision: 1,
+    settings: {
+      airConditionerEnabled: false,
+      targetTemperatureCelsius: 26,
+      baseVentSpeed: 3,
+    },
+    desired: {
+      airConditionerEnabled: false,
+      targetTemperatureCelsius: 26,
+      ventSpeed: 3,
+    },
+    confirmed: {
+      airConditionerEnabled: false,
+      targetTemperatureCelsius: 26,
+      ventSpeed: 3,
+    },
+    convergence: "applied",
+    reasonCode: "hardware_confirmed",
+    message: null,
+    lastAction: null,
+    updatedAt: "2026-07-17T00:00:00.000Z",
+    lastAttemptAt: "2026-07-17T00:00:00.000Z",
+    confirmedAt: "2026-07-17T00:00:00.000Z",
+  } as const;
+  client.getEnvironmentControlSnapshot.mockResolvedValue(environmentSnapshot);
+  client.submitEnvironmentControlAction.mockImplementation(async (input) => ({
+    outcome: "accepted",
+    acceptedRevision: 2,
+    snapshot: {
+      ...environmentSnapshot,
+      revision: 2,
+      settings: {
+        ...environmentSnapshot.settings,
+        ...(input.action.type === "set_air_conditioner"
+          ? { airConditionerEnabled: input.action.enabled }
+          : input.action.type === "set_target_temperature"
+            ? { targetTemperatureCelsius: input.action.temperatureCelsius }
+            : input.action.type === "set_base_vent_speed"
+              ? { baseVentSpeed: input.action.ventSpeed }
+              : {}),
+      },
+      convergence: "pending",
+      reasonCode: "action_accepted",
+      confirmedAt: null,
+    },
+  }));
 });
 
 afterEach(() => {
@@ -669,27 +711,38 @@ describe("Local Operations", () => {
     expect(client.setScannerProtocolParameters).not.toHaveBeenCalled();
   });
 
-  it("submits a local air-conditioner one-shot control through daemon IPC only", async () => {
+  it("loads authoritative settings and submits a local air-conditioner action", async () => {
     const host = await render();
 
     button(host, "环境控制").click();
     await flush();
 
-    expect(host.textContent).toContain("调整空调、目标温度和出风口风速。");
+    expect(host.textContent).toContain(
+      "设置先由本机保存，再持续同步到下位机。",
+    );
     expect(host.textContent).not.toContain("daemon IPC");
     expect(host.textContent).not.toContain("environment control");
+    expect(
+      host.querySelector<HTMLInputElement>("input[aria-label='目标温度']")
+        ?.value,
+    ).toBe("26");
+    expect(
+      host.querySelector<HTMLSelectElement>("select[aria-label='风速']")?.value,
+    ).toBe("3");
 
     button(host, "空调开").click();
     await flush();
 
-    expect(client.submitLocalEnvironmentControl).toHaveBeenCalledWith({
-      airConditionerOn: true,
+    expect(client.submitEnvironmentControlAction).toHaveBeenCalledWith({
+      actionId: expect.stringMatching(/^local-environment-/),
+      source: "local_operator",
+      action: { type: "set_air_conditioner", enabled: true },
     });
-    expect(client.submitAutomaticVentIntent).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("空调已开启。");
+    expect(host.textContent).toContain("设置已保存，正在同步");
+    expect(host.textContent).not.toContain("空调已开启。");
   });
 
-  it("submits a local target-temperature one-shot payload without bundling other environment fields", async () => {
+  it("submits a local target-temperature action without bundling other axes", async () => {
     const host = await render();
 
     button(host, "环境控制").click();
@@ -706,12 +759,17 @@ describe("Local Operations", () => {
     button(host, "应用目标温度").click();
     await flush();
 
-    expect(client.submitLocalEnvironmentControl).toHaveBeenCalledWith({
-      targetTemperatureCelsius: 26,
+    expect(client.submitEnvironmentControlAction).toHaveBeenCalledWith({
+      actionId: expect.stringMatching(/^local-environment-/),
+      source: "local_operator",
+      action: {
+        type: "set_target_temperature",
+        temperatureCelsius: 26,
+      },
     });
   });
 
-  it("submits a local vent-speed one-shot payload through the local maintenance control", async () => {
+  it("submits a durable base-vent action through local maintenance", async () => {
     const host = await render();
 
     button(host, "环境控制").click();
@@ -728,8 +786,30 @@ describe("Local Operations", () => {
     button(host, "应用风速").click();
     await flush();
 
-    expect(client.submitLocalEnvironmentControl).toHaveBeenCalledWith({
-      ventSpeed: 3,
+    expect(client.submitEnvironmentControlAction).toHaveBeenCalledWith({
+      actionId: expect.stringMatching(/^local-environment-/),
+      source: "local_operator",
+      action: { type: "set_base_vent_speed", ventSpeed: 3 },
+    });
+  });
+
+  it("shows the complete authoritative diagnostic and explicitly retries the current desire", async () => {
+    const host = await render();
+
+    button(host, "环境控制").click();
+    await flush();
+
+    expect(host.textContent).toContain("空调关 / 26°C / 风速 3 档");
+    expect(host.textContent).toContain("hardware_confirmed");
+    expect(host.textContent).toContain("2026-07-17T00:00:00.000Z");
+
+    button(host, "重试当前期望").click();
+    await flush();
+
+    expect(client.submitEnvironmentControlAction).toHaveBeenCalledWith({
+      actionId: expect.stringMatching(/^local-environment-/),
+      source: "local_operator",
+      action: { type: "retry_current_desired" },
     });
   });
 

@@ -300,7 +300,53 @@ async function mountView(
   return { app, root };
 }
 
+function environmentControlProjection() {
+  return {
+    snapshot: {
+      schemaVersion: "vem-environment-control/v1",
+      revision: 7,
+      settings: {
+        airConditionerEnabled: false,
+        targetTemperatureCelsius: 24,
+        baseVentSpeed: 2,
+      },
+      desired: {
+        airConditionerEnabled: false,
+        targetTemperatureCelsius: 24,
+        ventSpeed: 2,
+      },
+      confirmed: {
+        airConditionerEnabled: false,
+        targetTemperatureCelsius: 24,
+        ventSpeed: 2,
+      },
+      convergence: "applied",
+      reasonCode: "hardware_confirmed",
+      message: null,
+      lastAction: null,
+      updatedAt: "2026-06-04T05:01:00.000Z",
+      lastAttemptAt: "2026-06-04T05:01:00.000Z",
+      confirmedAt: "2026-06-04T05:01:00.000Z",
+    },
+    observedAt: "2026-06-04T05:01:00.000Z",
+    stale: false,
+  };
+}
+
+function environmentReading(overrides: Record<string, unknown> = {}) {
+  return {
+    temperatureCelsius: 23,
+    humidityRh: 51,
+    sampledAt: "2026-06-04T05:01:00.000Z",
+    sensorStatus: "ok",
+    control: environmentControlProjection(),
+    ...overrides,
+  };
+}
+
 function machineFixture(overrides: Record<string, unknown> = {}) {
+  const { latestEnvironment: latestEnvironmentOverride, ...machineOverrides } =
+    overrides;
   return {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
@@ -329,12 +375,12 @@ function machineFixture(overrides: Record<string, unknown> = {}) {
         sensorStatus: "ok",
       },
     },
-    latestEnvironment: {
-      temperatureCelsius: 23,
-      humidityRh: 51,
-      sampledAt: "2026-06-04T05:01:00.000Z",
-      sensorStatus: "ok",
-    },
+    latestEnvironment:
+      latestEnvironmentOverride === null
+        ? null
+        : environmentReading(
+            (latestEnvironmentOverride as Record<string, unknown>) ?? {},
+          ),
     latestEnvironmentCommand: {
       id: "cmd-1",
       machineId: "11111111-1111-4111-8111-111111111111",
@@ -351,7 +397,7 @@ function machineFixture(overrides: Record<string, unknown> = {}) {
       audioVolume: 72,
       visionRecommendationsEnabled: false,
     },
-    ...overrides,
+    ...machineOverrides,
   };
 }
 
@@ -522,6 +568,7 @@ describe("MachineDetailView", () => {
         commandNo: "MCMD-SUCCESS",
         status: "succeeded",
         payloadJson: { targetTemperatureCelsius: 24 },
+        resultJson: { convergence: "applied" },
       })
       .mockResolvedValueOnce({
         id: "cmd-timeout",
@@ -541,7 +588,9 @@ describe("MachineDetailView", () => {
     targetButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
 
-    expect(apiMocks.messageSuccess).toHaveBeenCalledWith("目标温度控制已完成");
+    expect(apiMocks.messageSuccess).toHaveBeenCalledWith(
+      "目标温度设置已保存并应用",
+    );
 
     const ventButton = Array.from(root.querySelectorAll("button")).find(
       (button) =>
@@ -575,6 +624,7 @@ describe("MachineDetailView", () => {
       type: "environment-control",
       status: "succeeded",
       payloadJson: { airConditionerOn: true },
+      resultJson: { convergence: "applied" },
     };
 
     apiMocks.getMachine.mockResolvedValue({
@@ -591,9 +641,11 @@ describe("MachineDetailView", () => {
       openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flushPromises();
 
-      expect(root.textContent).toContain("命令成功");
+      expect(root.textContent).toContain("设置已保存");
       expect(openButton?.disabled).toBe(false);
-      expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
+      expect(apiMocks.messageSuccess).toHaveBeenCalledWith(
+        "空调设置已保存并应用",
+      );
     } finally {
       app.unmount();
     }

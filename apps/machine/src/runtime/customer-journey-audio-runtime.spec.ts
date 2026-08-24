@@ -48,8 +48,10 @@ const { nativePlaybackDriver, nativePlaybackFactory } = vi.hoisted(() => {
   };
 });
 
-const { submitAutomaticVentIntent } = vi.hoisted(() => ({
-  submitAutomaticVentIntent: vi.fn().mockResolvedValue({ outcome: "accepted" }),
+const { submitEnvironmentControlAction } = vi.hoisted(() => ({
+  submitEnvironmentControlAction: vi
+    .fn()
+    .mockResolvedValue({ outcome: "accepted" }),
 }));
 
 vi.mock("@/audio-playback/machine-audio-playback", () => ({
@@ -58,7 +60,7 @@ vi.mock("@/audio-playback/machine-audio-playback", () => ({
 }));
 
 vi.mock("@/daemon/client", () => ({
-  daemonClient: { submitAutomaticVentIntent },
+  daemonClient: { submitEnvironmentControlAction },
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -333,11 +335,12 @@ describe("Customer journey audio runtime", () => {
             entry.transitionId.endsWith(":welcome"),
         ),
     ).toHaveLength(1);
-    expect(submitAutomaticVentIntent).toHaveBeenCalledWith({
-      edgeId: "presence-1:arrival",
-      ventSpeed: 3,
+    expect(submitEnvironmentControlAction).toHaveBeenCalledWith({
+      actionId: "presence-1:arrival",
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
     });
-    expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(1);
+    expect(submitEnvironmentControlAction).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 
@@ -388,9 +391,9 @@ describe("Customer journey audio runtime", () => {
     document.body.removeChild(operatorRoot);
   });
 
-  it("retries a transient automatic-vent IPC failure with the same stable edge and submits departure once", async () => {
+  it("retries a transient environment-action IPC failure with the same stable edge and submits departure once", async () => {
     vi.useFakeTimers();
-    submitAutomaticVentIntent
+    submitEnvironmentControlAction
       .mockRejectedValueOnce(new Error("daemon starting"))
       .mockResolvedValue({ outcome: "accepted" });
     runtime = createCustomerJourneyAudioRuntime(pinia);
@@ -412,13 +415,15 @@ describe("Customer journey audio runtime", () => {
     await nextTick();
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(250);
-    expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(1, {
-      edgeId: "presence-1:arrival",
-      ventSpeed: 3,
+    expect(submitEnvironmentControlAction).toHaveBeenNthCalledWith(1, {
+      actionId: "presence-1:arrival",
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
     });
-    expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(2, {
-      edgeId: "presence-1:arrival",
-      ventSpeed: 3,
+    expect(submitEnvironmentControlAction).toHaveBeenNthCalledWith(2, {
+      actionId: "presence-1:arrival",
+      source: "stable_presence",
+      action: { type: "restore_base_vent_speed" },
     });
 
     visionStore.applyPersonDeparted({
@@ -429,18 +434,19 @@ describe("Customer journey audio runtime", () => {
       reason: "left_frame",
     });
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(submitAutomaticVentIntent).toHaveBeenLastCalledWith({
-      edgeId: "presence-2:departure",
-      ventSpeed: 0,
+    expect(submitEnvironmentControlAction).toHaveBeenLastCalledWith({
+      actionId: "presence-2:departure",
+      source: "stable_presence",
+      action: { type: "temporarily_stop_vent" },
     });
-    expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(3);
+    expect(submitEnvironmentControlAction).toHaveBeenCalledTimes(3);
     vi.useRealTimers();
   });
 
-  it("does not retry an in-flight automatic-vent request after disposal", async () => {
+  it("does not retry an in-flight environment action after disposal", async () => {
     vi.useFakeTimers();
     const pendingRequest: { reject?: (error: Error) => void } = {};
-    submitAutomaticVentIntent.mockImplementation(
+    submitEnvironmentControlAction.mockImplementation(
       () =>
         new Promise((_resolve, reject) => {
           pendingRequest.reject = reject;
@@ -468,7 +474,7 @@ describe("Customer journey audio runtime", () => {
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(1);
+    expect(submitEnvironmentControlAction).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 

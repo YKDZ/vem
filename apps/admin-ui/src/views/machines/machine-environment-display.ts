@@ -38,10 +38,10 @@ export function commandStatusLabel(
 ): string {
   if (status === "pending") return "命令待发送";
   if (status === "sent") return "命令已发送";
-  if (status === "acknowledged") return "命令已确认";
-  if (status === "succeeded") return "命令成功";
-  if (status === "failed") return "命令失败";
-  if (status === "timeout") return "命令超时";
+  if (status === "acknowledged") return "等待设置接纳";
+  if (status === "succeeded") return "设置已保存";
+  if (status === "failed") return "设置未接受";
+  if (status === "timeout") return "接纳结果未知";
   return "命令状态未知";
 }
 
@@ -49,28 +49,32 @@ export function environmentCommandFailureLabel(
   resultJson: Record<string, unknown> | null | undefined,
   lastError: string | null | undefined,
 ): string | null {
-  const errorCode =
-    typeof resultJson?.errorCode === "string" ? resultJson.errorCode : null;
+  const reasonCode =
+    typeof resultJson?.reasonCode === "string" ? resultJson.reasonCode : null;
   const resultMessage =
     typeof resultJson?.message === "string" ? resultJson.message : null;
-  const sources = [errorCode, resultMessage, lastError].filter(
+  const sources = [reasonCode, resultMessage, lastError].filter(
     (value): value is string => Boolean(value),
   );
-  if (sources.some((value) => value.includes("DISPENSE_IN_PROGRESS"))) {
-    return "设备正在出货，请稍后重试";
+  if (sources.some((value) => value.includes("acceptance_unknown"))) {
+    return "设置接纳结果未知，请先刷新权威状态再决定是否重试";
+  }
+  if (reasonCode === "action_id_conflict") {
+    return "动作编号与已保存内容冲突";
+  }
+  if (reasonCode === "command_expired") {
+    return "命令到达设备前已过期";
   }
   if (
-    sources.some((value) => value.includes("ENVIRONMENT_COMMAND_IN_PROGRESS"))
+    reasonCode === "runtime_closed" ||
+    reasonCode === "environment_control_runtime_unavailable"
   ) {
-    return "上一项设备控制尚未完成，请稍后重试";
+    return "设备环境控制服务暂不可用";
   }
-  if (errorCode === "E1") return "控制器拒绝执行（E1）";
-  if (errorCode === "E4") return "控制器操作过于频繁，请稍后重试（E4）";
-  if (sources.some((value) => value.toLowerCase().includes("timeout"))) {
-    return "设备控制超时，请稍后确认后重试";
+  if (reasonCode === "action_not_accepted") {
+    return "设置未被设备接纳";
   }
-  if (lastError) return lastError;
-  return resultMessage;
+  return resultMessage ?? lastError ?? null;
 }
 
 export function environmentControlActionLabel(
@@ -87,7 +91,23 @@ export function environmentControlFeedback(
 ): { type: "success" | "error"; content: string } | null {
   const actionLabel = environmentControlActionLabel(action);
   if (command.status === "succeeded") {
-    return { type: "success", content: `${actionLabel}控制已完成` };
+    const convergence = command.resultJson?.convergence;
+    if (convergence === "applied") {
+      return { type: "success", content: `${actionLabel}设置已保存并应用` };
+    }
+    if (convergence === "offline") {
+      return {
+        type: "success",
+        content: `${actionLabel}设置已保存，下位机恢复后将自动同步`,
+      };
+    }
+    if (convergence === "failed") {
+      return {
+        type: "error",
+        content: `${actionLabel}设置已保存，但下位机应用失败`,
+      };
+    }
+    return { type: "success", content: `${actionLabel}设置已保存，正在同步` };
   }
   if (command.status !== "failed" && command.status !== "timeout") return null;
 

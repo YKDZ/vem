@@ -2,6 +2,9 @@
 import {
   formatMachineSlotCoordinate,
   type EffectiveMachineRuntimeConfiguration,
+  type EnvironmentControlAction,
+  type EnvironmentControlActionKind,
+  type EnvironmentControlSnapshot,
   type PaymentProviderEnvironmentDiagnostic,
   type StockMaintenanceTask,
 } from "@vem/shared";
@@ -112,7 +115,7 @@ const maintenanceTasks = computed(() => [
   {
     key: "environment" as const,
     label: "环境控制",
-    value: localEnvironmentControl.loadingAction ? "执行中" : "空调与出风",
+    value: environmentControlSummary.value,
   },
   {
     key: "stock" as const,
@@ -613,66 +616,178 @@ async function runManualDispenseDiagnostic(): Promise<void> {
 type LocalEnvironmentControlAction =
   | "airConditionerOn"
   | "targetTemperatureCelsius"
-  | "ventSpeed";
+  | "ventSpeed"
+  | "retry";
 
 const localEnvironmentControl = reactive({
   loadingAction: null as LocalEnvironmentControlAction | null,
+  loadingSnapshot: true,
   message: null as string | null,
-  targetTemperatureCelsius: 24,
-  ventSpeed: 2,
+  snapshot: null as EnvironmentControlSnapshot | null,
+  targetTemperatureCelsius: null as number | null,
+  ventSpeed: null as number | null,
+  retryAction: null as EnvironmentControlAction | null,
 });
+
+const environmentControlSummary = computed(() => {
+  if (localEnvironmentControl.loadingSnapshot) return "读取中";
+  switch (localEnvironmentControl.snapshot?.convergence) {
+    case "applied":
+      return "已应用";
+    case "pending":
+      return "同步中";
+    case "offline":
+      return "下位机离线";
+    case "failed":
+      return "应用失败";
+    default:
+      return "状态不可用";
+  }
+});
+
+function applyEnvironmentControlSnapshot(
+  snapshot: EnvironmentControlSnapshot,
+): void {
+  localEnvironmentControl.snapshot = snapshot;
+  localEnvironmentControl.targetTemperatureCelsius =
+    snapshot.settings.targetTemperatureCelsius;
+  localEnvironmentControl.ventSpeed = snapshot.settings.baseVentSpeed;
+}
+
+async function refreshEnvironmentControl(): Promise<void> {
+  localEnvironmentControl.loadingSnapshot = true;
+  try {
+    applyEnvironmentControlSnapshot(
+      await daemonClient.getEnvironmentControlSnapshot(),
+    );
+  } catch (error) {
+    localEnvironmentControl.message = operatorErrorMessage(
+      "环境控制状态未读取，请检查本机服务后重试。",
+      error,
+      "environment",
+    );
+  } finally {
+    localEnvironmentControl.loadingSnapshot = false;
+  }
+}
 
 const targetTemperatureInvalid = computed(() => {
   return (
+    localEnvironmentControl.targetTemperatureCelsius === null ||
     !Number.isInteger(localEnvironmentControl.targetTemperatureCelsius) ||
     localEnvironmentControl.targetTemperatureCelsius < 18 ||
     localEnvironmentControl.targetTemperatureCelsius > 30
   );
 });
 
-function localEnvironmentSuccessMessage(
+function localEnvironmentActionKind(
   action: LocalEnvironmentControlAction,
   value: boolean | number,
-): string {
+): EnvironmentControlActionKind {
   if (action === "airConditionerOn") {
-    return value ? "空调已开启。" : "空调已关闭。";
+    return { type: "set_air_conditioner", enabled: Boolean(value) };
   }
   if (action === "targetTemperatureCelsius") {
-    return `目标温度已设为 ${Number(value)}°C。`;
+    return {
+      type: "set_target_temperature",
+      temperatureCelsius: Number(value),
+    };
   }
-  const speed = Number(value);
-  return speed === 0 ? "出风口已关闭。" : `出风口风速已设为 ${speed} 档。`;
+  return { type: "set_base_vent_speed", ventSpeed: Number(value) };
 }
 
-async function submitLocalEnvironmentControl(
-  action: LocalEnvironmentControlAction,
-  value: boolean | number,
+let localEnvironmentActionSequence = 0;
+
+function nextLocalEnvironmentActionId(): string {
+  localEnvironmentActionSequence += 1;
+  const randomId = globalThis.crypto?.randomUUID?.();
+  return `local-environment-${randomId ?? `${Date.now()}-${localEnvironmentActionSequence}`}`;
+}
+
+function environmentControlAdmissionMessage(
+  snapshot: EnvironmentControlSnapshot,
+): string {
+  switch (snapshot.convergence) {
+    case "applied":
+      return "设置已保存并由下位机确认。";
+    case "pending":
+      return "设置已保存，正在同步到下位机。";
+    case "offline":
+      return "设置已保存；下位机离线，恢复后会自动同步。";
+    case "failed":
+      return "设置已保存，但下位机应用失败；请查看原因后显式重试。";
+  }
+}
+
+function formatEnvironmentControlValues(values: {
+  airConditionerEnabled: boolean | null;
+  targetTemperatureCelsius: number | null;
+  ventSpeed: number | null;
+}): string {
+  const airConditioner =
+    values.airConditionerEnabled === null
+      ? "空调未确认"
+      : `空调${values.airConditionerEnabled ? "开" : "关"}`;
+  const temperature =
+    values.targetTemperatureCelsius === null
+      ? "温度未确认"
+      : `${values.targetTemperatureCelsius}°C`;
+  const vent =
+    values.ventSpeed === null ? "风速未确认" : `风速 ${values.ventSpeed} 档`;
+  return `${airConditioner} / ${temperature} / ${vent}`;
+}
+
+async function submitEnvironmentControlAction(
+  loadingAction: LocalEnvironmentControlAction,
+  actionKind: EnvironmentControlActionKind,
 ): Promise<void> {
   if (localEnvironmentControl.loadingAction) return;
-  localEnvironmentControl.loadingAction = action;
+  localEnvironmentControl.loadingAction = loadingAction;
   localEnvironmentControl.message = null;
   try {
-    const result = await daemonClient.submitLocalEnvironmentControl(
-      action === "airConditionerOn"
-        ? { airConditionerOn: Boolean(value) }
-        : action === "targetTemperatureCelsius"
-          ? {
-              targetTemperatureCelsius: Number(value),
-            }
-          : { ventSpeed: Number(value) },
+    const retry = localEnvironmentControl.retryAction;
+    const request: EnvironmentControlAction =
+      retry && JSON.stringify(retry.action) === JSON.stringify(actionKind)
+        ? retry
+        : {
+            actionId: nextLocalEnvironmentActionId(),
+            source: "local_operator",
+            action: actionKind,
+          };
+    localEnvironmentControl.retryAction = request;
+    const admission =
+      await daemonClient.submitEnvironmentControlAction(request);
+    localEnvironmentControl.retryAction = null;
+    applyEnvironmentControlSnapshot(admission.snapshot);
+    localEnvironmentControl.message = environmentControlAdmissionMessage(
+      admission.snapshot,
     );
-    localEnvironmentControl.message = result.success
-      ? localEnvironmentSuccessMessage(action, value)
-      : "环境控制未完成，请检查设备后重试。";
   } catch (error) {
     localEnvironmentControl.message = operatorErrorMessage(
-      "环境控制未完成，请检查下位机后重试。",
+      "设置接纳结果未确认；请保持当前值重试，系统会复用同一动作编号。",
       error,
       "environment",
     );
   } finally {
     localEnvironmentControl.loadingAction = null;
   }
+}
+
+async function submitLocalEnvironmentControl(
+  action: LocalEnvironmentControlAction,
+  value: boolean | number,
+): Promise<void> {
+  if (action === "retry") return;
+  await submitEnvironmentControlAction(
+    action,
+    localEnvironmentActionKind(action, value),
+  );
+}
+
+async function retryCurrentEnvironmentControl(): Promise<void> {
+  await submitEnvironmentControlAction("retry", {
+    type: "retry_current_desired",
+  });
 }
 
 const wholeMachineLockMaintenance = reactive({
@@ -907,6 +1022,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       visionStore.refresh(),
       naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
+      refreshEnvironmentControl(),
       refreshPaymentEnvironmentDiagnostic(),
     ]);
   } catch (error) {
@@ -1551,8 +1667,132 @@ async function submitStockMaintenanceTask(): Promise<void> {
           <div class="maintenance-panel-heading">
             <div>
               <h2>环境控制</h2>
-              <p>调整空调、目标温度和出风口风速。</p>
+              <p>设置先由本机保存，再持续同步到下位机。</p>
             </div>
+          </div>
+          <div
+            class="mb-4 grid gap-2 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200"
+            data-test="environment-control-snapshot"
+          >
+            <p class="font-semibold text-white">
+              {{ environmentControlSummary }}
+            </p>
+            <template v-if="localEnvironmentControl.snapshot">
+              <p>
+                长期设置：空调{{
+                  localEnvironmentControl.snapshot.settings
+                    .airConditionerEnabled
+                    ? "开"
+                    : "关"
+                }}，目标温度
+                {{
+                  localEnvironmentControl.snapshot.settings
+                    .targetTemperatureCelsius
+                }}°C，基础风速
+                {{ localEnvironmentControl.snapshot.settings.baseVentSpeed }}
+                档
+              </p>
+              <details>
+                <summary>查看同步诊断</summary>
+                <dl class="mt-2 grid gap-1 text-slate-300">
+                  <div>
+                    <dt class="inline">revision：</dt>
+                    <dd class="inline">
+                      {{ localEnvironmentControl.snapshot.revision }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">当前期望：</dt>
+                    <dd class="inline">
+                      {{
+                        formatEnvironmentControlValues(
+                          localEnvironmentControl.snapshot.desired,
+                        )
+                      }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">最近确认：</dt>
+                    <dd class="inline">
+                      {{
+                        formatEnvironmentControlValues(
+                          localEnvironmentControl.snapshot.confirmed,
+                        )
+                      }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">最近动作：</dt>
+                    <dd class="inline">
+                      <template
+                        v-if="localEnvironmentControl.snapshot.lastAction"
+                      >
+                        {{ localEnvironmentControl.snapshot.lastAction.source }}
+                        /
+                        {{ localEnvironmentControl.snapshot.lastAction.action }}
+                        /
+                        {{
+                          localEnvironmentControl.snapshot.lastAction.actionId
+                        }}
+                        /
+                        {{
+                          localEnvironmentControl.snapshot.lastAction.acceptedAt
+                        }}
+                      </template>
+                      <template v-else>尚无动作</template>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">原因：</dt>
+                    <dd class="inline">
+                      {{ localEnvironmentControl.snapshot.reasonCode }}
+                    </dd>
+                  </div>
+                  <div v-if="localEnvironmentControl.snapshot.message">
+                    <dt class="inline">错误：</dt>
+                    <dd class="inline">
+                      {{ localEnvironmentControl.snapshot.message }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">更新时间：</dt>
+                    <dd class="inline">
+                      {{ localEnvironmentControl.snapshot.updatedAt }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">最近尝试：</dt>
+                    <dd class="inline">
+                      {{
+                        localEnvironmentControl.snapshot.lastAttemptAt ??
+                        "尚未尝试"
+                      }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="inline">最近确认时间：</dt>
+                    <dd class="inline">
+                      {{
+                        localEnvironmentControl.snapshot.confirmedAt ??
+                        "尚未确认"
+                      }}
+                    </dd>
+                  </div>
+                </dl>
+              </details>
+              <button
+                class="justify-self-start"
+                type="button"
+                :disabled="localEnvironmentControl.loadingAction !== null"
+                @click="retryCurrentEnvironmentControl"
+              >
+                {{
+                  localEnvironmentControl.loadingAction === "retry"
+                    ? "重试中"
+                    : "重试当前期望"
+                }}
+              </button>
+            </template>
           </div>
           <div class="grid gap-4">
             <div
@@ -1562,7 +1802,10 @@ async function submitStockMaintenanceTask(): Promise<void> {
               <div class="flex flex-wrap gap-3">
                 <button
                   type="button"
-                  :disabled="localEnvironmentControl.loadingAction !== null"
+                  :disabled="
+                    localEnvironmentControl.loadingAction !== null ||
+                    localEnvironmentControl.loadingSnapshot
+                  "
                   @click="
                     submitLocalEnvironmentControl('airConditionerOn', true)
                   "
@@ -1571,7 +1814,10 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 </button>
                 <button
                   type="button"
-                  :disabled="localEnvironmentControl.loadingAction !== null"
+                  :disabled="
+                    localEnvironmentControl.loadingAction !== null ||
+                    localEnvironmentControl.loadingSnapshot
+                  "
                   @click="
                     submitLocalEnvironmentControl('airConditionerOn', false)
                   "
@@ -1602,12 +1848,13 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 type="button"
                 :disabled="
                   localEnvironmentControl.loadingAction !== null ||
+                  localEnvironmentControl.loadingSnapshot ||
                   targetTemperatureInvalid
                 "
                 @click="
                   submitLocalEnvironmentControl(
                     'targetTemperatureCelsius',
-                    localEnvironmentControl.targetTemperatureCelsius,
+                    Number(localEnvironmentControl.targetTemperatureCelsius),
                   )
                 "
               >
@@ -1634,11 +1881,15 @@ async function submitStockMaintenanceTask(): Promise<void> {
               <button
                 class="self-end"
                 type="button"
-                :disabled="localEnvironmentControl.loadingAction !== null"
+                :disabled="
+                  localEnvironmentControl.loadingAction !== null ||
+                  localEnvironmentControl.loadingSnapshot ||
+                  localEnvironmentControl.ventSpeed === null
+                "
                 @click="
                   submitLocalEnvironmentControl(
                     'ventSpeed',
-                    localEnvironmentControl.ventSpeed,
+                    Number(localEnvironmentControl.ventSpeed),
                   )
                 "
               >

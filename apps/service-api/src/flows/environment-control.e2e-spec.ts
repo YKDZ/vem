@@ -47,6 +47,11 @@ type MachinePayload = {
     temperatureCelsius: number | null;
     humidityRh: number | null;
     sensorStatus: string;
+    control?: {
+      snapshot: { revision: number; convergence: string };
+      observedAt: string;
+      stale: boolean;
+    };
   } | null;
 };
 
@@ -165,13 +170,27 @@ describe("environment-control.e2e", { concurrent: false }, () => {
       signature: string;
       payload: {
         commandNo: string;
-        targetTemperatureCelsius: number;
+        action: {
+          actionId: string;
+          source: string;
+          action: {
+            type: string;
+            temperatureCelsius: number;
+          };
+        };
         timeoutSeconds: number;
       };
     };
     expect(commandEnvelope.payload).toMatchObject({
       commandNo: createdCommand.data.commandNo,
-      targetTemperatureCelsius: 23,
+      action: {
+        actionId: createdCommand.data.commandNo,
+        source: "remote_operator",
+        action: {
+          type: "set_target_temperature",
+          temperatureCelsius: 23,
+        },
+      },
     });
     expect(commandEnvelope.signature).toBe(
       hmacSha256Base64Url(
@@ -211,10 +230,12 @@ describe("environment-control.e2e", { concurrent: false }, () => {
         messageId: `environment-control-result:${createdCommand.data.commandNo}`,
         payload: {
           commandNo: createdCommand.data.commandNo,
-          success: true,
+          outcome: "accepted",
+          acceptedRevision: 1,
+          convergence: "applied",
+          reasonCode: "hardware_confirmed",
+          message: null,
           reportedAt: new Date().toISOString(),
-          airConditionerOn: true,
-          targetTemperatureCelsius: 23,
         },
       }),
     );
@@ -225,9 +246,12 @@ describe("environment-control.e2e", { concurrent: false }, () => {
     );
     expect(succeededCommand.resultJson).toMatchObject({
       commandNo: createdCommand.data.commandNo,
-      success: true,
+      outcome: "accepted",
+      acceptedRevision: 1,
+      convergence: "applied",
     });
 
+    const heartbeatReportedAt = new Date().toISOString();
     await publishMqtt(
       mqttClient,
       `vem/machines/${seeded.machineCode}/events/heartbeat`,
@@ -237,7 +261,7 @@ describe("environment-control.e2e", { concurrent: false }, () => {
         messageId: `heartbeat:${Date.now()}`,
         payload: {
           machineCode: seeded.machineCode,
-          reportedAt: new Date().toISOString(),
+          reportedAt: heartbeatReportedAt,
           statusPayload: {
             appVersion: "0.1.0",
             network: "online",
@@ -248,8 +272,43 @@ describe("environment-control.e2e", { concurrent: false }, () => {
             environment: {
               temperatureCelsius: 22.8,
               humidityRh: 47,
-              sampledAt: new Date().toISOString(),
+              sampledAt: heartbeatReportedAt,
               sensorStatus: "ok",
+              control: {
+                snapshot: {
+                  schemaVersion: "vem-environment-control/v1",
+                  revision: 1,
+                  settings: {
+                    airConditionerEnabled: false,
+                    targetTemperatureCelsius: 23,
+                    baseVentSpeed: 0,
+                  },
+                  desired: {
+                    airConditionerEnabled: false,
+                    targetTemperatureCelsius: 23,
+                    ventSpeed: 0,
+                  },
+                  confirmed: {
+                    airConditionerEnabled: false,
+                    targetTemperatureCelsius: 23,
+                    ventSpeed: 0,
+                  },
+                  convergence: "applied",
+                  reasonCode: "hardware_confirmed",
+                  message: null,
+                  lastAction: {
+                    actionId: createdCommand.data.commandNo,
+                    source: "remote_operator",
+                    action: "set_target_temperature",
+                    acceptedAt: heartbeatReportedAt,
+                  },
+                  updatedAt: heartbeatReportedAt,
+                  lastAttemptAt: heartbeatReportedAt,
+                  confirmedAt: heartbeatReportedAt,
+                },
+                observedAt: heartbeatReportedAt,
+                stale: false,
+              },
             },
           },
         },
@@ -268,6 +327,11 @@ describe("environment-control.e2e", { concurrent: false }, () => {
       temperatureCelsius: 22.8,
       humidityRh: 47,
       sensorStatus: "ok",
+      control: {
+        snapshot: { revision: 1, convergence: "applied" },
+        observedAt: heartbeatReportedAt,
+        stale: false,
+      },
     });
 
     const [environmentResultEventCount] = await db.client

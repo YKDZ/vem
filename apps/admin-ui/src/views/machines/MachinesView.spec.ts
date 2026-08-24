@@ -82,7 +82,53 @@ vi.mock("vue-router", () => ({
   useRouter: () => routerMocks,
 }));
 
+function environmentControlProjection() {
+  return {
+    snapshot: {
+      schemaVersion: "vem-environment-control/v1",
+      revision: 7,
+      settings: {
+        airConditionerEnabled: false,
+        targetTemperatureCelsius: 24,
+        baseVentSpeed: 2,
+      },
+      desired: {
+        airConditionerEnabled: false,
+        targetTemperatureCelsius: 24,
+        ventSpeed: 2,
+      },
+      confirmed: {
+        airConditionerEnabled: false,
+        targetTemperatureCelsius: 24,
+        ventSpeed: 2,
+      },
+      convergence: "applied",
+      reasonCode: "hardware_confirmed",
+      message: null,
+      lastAction: null,
+      updatedAt: "2026-06-04T05:01:00.000Z",
+      lastAttemptAt: "2026-06-04T05:01:00.000Z",
+      confirmedAt: "2026-06-04T05:01:00.000Z",
+    },
+    observedAt: "2026-06-04T05:01:00.000Z",
+    stale: false,
+  };
+}
+
+function environmentReading(overrides: Record<string, unknown> = {}) {
+  return {
+    temperatureCelsius: 23,
+    humidityRh: 51,
+    sampledAt: "2026-06-04T05:01:00.000Z",
+    sensorStatus: "ok",
+    control: environmentControlProjection(),
+    ...overrides,
+  };
+}
+
 function createMachineFixture(overrides: Record<string, unknown> = {}) {
+  const { latestEnvironment: latestEnvironmentOverride, ...machineOverrides } =
+    overrides;
   return {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
@@ -94,7 +140,13 @@ function createMachineFixture(overrides: Record<string, unknown> = {}) {
     lastSeenAt: "2026-06-04T05:00:00.000Z",
     createdAt: "2026-06-04T04:00:00.000Z",
     updatedAt: "2026-06-04T04:00:00.000Z",
-    ...overrides,
+    latestEnvironment:
+      latestEnvironmentOverride === null
+        ? null
+        : environmentReading(
+            (latestEnvironmentOverride as Record<string, unknown>) ?? {},
+          ),
+    ...machineOverrides,
   };
 }
 
@@ -797,11 +849,11 @@ describe("MachinesView environment controls", () => {
       "2026/6/4 05:02:00",
     );
     expect(root.querySelector('[role="dialog"]')?.textContent).toContain(
-      "命令已确认",
+      "等待设置接纳",
     );
   });
 
-  it("allows environment controls when the latest reading is unknown", async () => {
+  it("allows environment controls when the sensor reading is unknown but the authoritative control snapshot is current", async () => {
     listMachines.mockResolvedValue({
       items: [createMachineFixture()],
       total: 1,
@@ -809,7 +861,14 @@ describe("MachinesView environment controls", () => {
       pageSize: 20,
     });
     getMachine.mockResolvedValue(
-      createMachineFixture({ latestEnvironment: null }),
+      createMachineFixture({
+        latestEnvironment: {
+          temperatureCelsius: undefined,
+          humidityRh: undefined,
+          sampledAt: undefined,
+          sensorStatus: "unknown",
+        },
+      }),
     );
     commandEnvironment.mockResolvedValue({
       id: "cmd-unknown",
@@ -824,7 +883,7 @@ describe("MachinesView environment controls", () => {
       "environment dialog",
     );
 
-    expect(dialog.textContent).toContain("环境未知");
+    expect(dialog.textContent).toContain("传感器未知");
     const openButton = Array.from(dialog.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("开启"),
     );
@@ -836,8 +895,31 @@ describe("MachinesView environment controls", () => {
       "11111111-1111-4111-8111-111111111111",
       { airConditionerOn: true },
     );
-    expect(dialog.textContent).toContain("环境未知");
+    expect(dialog.textContent).toContain("传感器未知");
     expect(dialog.textContent).toContain("命令已发送");
+  });
+
+  it("keeps environment controls unavailable until the daemon reports an authoritative snapshot", async () => {
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    getMachine.mockResolvedValue(
+      createMachineFixture({ latestEnvironment: null }),
+    );
+
+    const { root } = await mountMachinesView();
+    await openEnvironmentDrawer(root);
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "environment dialog",
+    );
+
+    expect(dialog.textContent).toContain("daemon 权威设置尚未上报");
+    expect(dialog.querySelector("select")).toBeNull();
+    expect(commandEnvironment).not.toHaveBeenCalled();
   });
 
   it("constrains target temperature control to 18-30 C", async () => {
@@ -1069,8 +1151,12 @@ describe("MachinesView environment controls", () => {
       commandNo: "MCMD-FAILED",
       status: "failed",
       payloadJson: { ventSpeed: 4 },
-      resultJson: { errorCode: "E4" },
-      lastError: "controller rejected command",
+      resultJson: {
+        outcome: "rejected",
+        reasonCode: "runtime_closed",
+        message: "environment control runtime is closed",
+      },
+      lastError: "environment control runtime is closed",
     });
 
     const { root } = await mountMachinesView();
@@ -1091,7 +1177,7 @@ describe("MachinesView environment controls", () => {
     await flushPromises();
 
     expect(apiMocks.messageError).toHaveBeenCalledWith(
-      "出风口与风速控制失败：控制器操作过于频繁，请稍后重试（E4）",
+      "出风口与风速控制失败：设备环境控制服务暂不可用",
     );
     expect(dialog.textContent).not.toContain("请求：");
     expect(dialog.textContent).not.toContain("失败：");
@@ -1110,6 +1196,7 @@ describe("MachinesView environment controls", () => {
       commandNo: "MCMD-SUCCEEDED",
       status: "succeeded",
       payloadJson: { airConditionerOn: true },
+      resultJson: { convergence: "applied" },
     });
 
     const { root } = await mountMachinesView();
@@ -1126,7 +1213,9 @@ describe("MachinesView environment controls", () => {
     ).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
 
-    expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
+    expect(apiMocks.messageSuccess).toHaveBeenCalledWith(
+      "空调设置已保存并应用",
+    );
   });
 
   it("shows command loading and result statuses", async () => {
@@ -1176,10 +1265,11 @@ describe("MachinesView environment controls", () => {
       id: "cmd-2",
       commandNo: "MCMD2",
       status: "succeeded",
+      resultJson: { convergence: "applied" },
     });
     await flushPromises();
     expect(dialog.textContent).toContain("传感器未知");
-    expect(dialog.textContent).toContain("命令成功");
+    expect(dialog.textContent).toContain("设置已保存");
 
     commandEnvironment.mockResolvedValueOnce({
       id: "cmd-3",
@@ -1190,7 +1280,7 @@ describe("MachinesView environment controls", () => {
       new MouseEvent("click", { bubbles: true }),
     );
     await flushPromises();
-    expect(dialog.textContent).toContain("命令失败");
+    expect(dialog.textContent).toContain("设置未接受");
 
     commandEnvironment.mockResolvedValueOnce({
       id: "cmd-4",
@@ -1201,7 +1291,7 @@ describe("MachinesView environment controls", () => {
       new MouseEvent("click", { bubbles: true }),
     );
     await flushPromises();
-    expect(dialog.textContent).toContain("命令超时");
+    expect(dialog.textContent).toContain("接纳结果未知");
   });
 
   it("does not start polling after unmount when a pending command response arrives", async () => {

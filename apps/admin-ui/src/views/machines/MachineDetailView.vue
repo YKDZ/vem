@@ -45,8 +45,10 @@ import {
   type EnvironmentCommandSnapshot,
 } from "./environment-command-poller";
 import {
+  environmentControlFormFromProjection,
   mapEnvironmentControlFormToContract,
   type EnvironmentControlAction,
+  type EnvironmentControlForm,
   mapMachineBasicsFormToUpdateContract,
 } from "./machine-contract-mappers";
 import {
@@ -83,16 +85,7 @@ const ops = ref<MachineOp[]>([]);
 const reconciliationCases = ref<StockReconciliationCaseSummary[]>([]);
 const externalNaturalEnvironment = ref<ExternalNaturalEnvironment | null>(null);
 
-const environmentControlForm = ref({
-  airConditionerOn: false,
-  targetTemperatureCelsius: 24,
-  ventSpeed: 0,
-});
-const defaultEnvironmentControlForm = () => ({
-  airConditionerOn: false,
-  targetTemperatureCelsius: 24,
-  ventSpeed: 0,
-});
+const environmentControlForm = ref<EnvironmentControlForm | null>(null);
 const machineDrawerOpen = ref(false);
 const machineSaving = ref(false);
 const machineForm = ref({
@@ -141,8 +134,8 @@ const reconciliationForm = ref({
 });
 
 const targetTemperatureInvalid = computed(() => {
-  const value = environmentControlForm.value.targetTemperatureCelsius;
-  return value < 18 || value > 30;
+  const value = environmentControlForm.value?.targetTemperatureCelsius;
+  return value === undefined || value < 18 || value > 30;
 });
 
 const environmentMachineCommandLocked = computed(() =>
@@ -154,6 +147,8 @@ const environmentMachineCommandLocked = computed(() =>
 const environmentCommandDisabled = computed(
   () =>
     !canCommand ||
+    environmentControlForm.value === null ||
+    Boolean(machine.value?.latestEnvironment?.control?.stale) ||
     environmentMachineCommandLocked.value ||
     Boolean(environmentSubmittingAction.value),
 );
@@ -343,7 +338,9 @@ async function loadMachine(): Promise<void> {
   environmentCommandStatus.value =
     nextMachine.latestEnvironmentCommand?.status ?? null;
   syncEnvironmentCommandStateFromMachine(nextMachine.latestEnvironmentCommand);
-  environmentControlForm.value = defaultEnvironmentControlForm();
+  environmentControlForm.value = environmentControlFormFromProjection(
+    nextMachine.latestEnvironment,
+  );
 }
 
 async function loadExternalNaturalEnvironment(): Promise<void> {
@@ -430,7 +427,7 @@ async function submitEnvironmentCommand(
   action: EnvironmentControlAction,
   value: boolean | number,
 ): Promise<void> {
-  if (environmentCommandDisabled.value) return;
+  if (environmentCommandDisabled.value || !environmentControlForm.value) return;
 
   const body = mapEnvironmentControlFormToContract(
     environmentControlForm.value,

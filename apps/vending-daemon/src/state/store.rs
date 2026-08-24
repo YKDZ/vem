@@ -30,10 +30,11 @@ use super::schema::{
 use crate::environment_control::{
     EnvironmentControlAction, EnvironmentControlAdmission, EnvironmentControlAdmissionOutcome,
     EnvironmentControlConfirmation, EnvironmentControlConvergence, EnvironmentControlSnapshot,
+    RemoteEnvironmentControlResult,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
-    EnvironmentControlResultPayload, HardwareStatus, LowerControllerFault,
+    HardwareStatus, LowerControllerFault,
 };
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
@@ -662,7 +663,7 @@ impl OutboxInput {
 
     pub fn environment_control_result(
         machine_code: &str,
-        result: &EnvironmentControlResultPayload,
+        result: &RemoteEnvironmentControlResult,
     ) -> Self {
         Self {
             id: format!(

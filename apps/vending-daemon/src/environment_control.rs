@@ -81,8 +81,55 @@ impl EnvironmentControlAction {
         if self.action_id.trim().is_empty() {
             return Err("environment control action id is required".to_string());
         }
+        if self.action_id.len() > 128 {
+            return Err("environment control action id exceeds 128 bytes".to_string());
+        }
         self.kind.validate()
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteEnvironmentControlCommand {
+    pub command_no: String,
+    pub action: EnvironmentControlAction,
+    pub timeout_seconds: u64,
+}
+
+impl RemoteEnvironmentControlCommand {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.command_no.trim().is_empty() || self.command_no.len() > 64 {
+            return Err("environment control command number is invalid".to_string());
+        }
+        if self.timeout_seconds == 0 {
+            return Err("environment control command timeoutSeconds must be positive".to_string());
+        }
+        if self.action.source != EnvironmentControlSource::RemoteOperator {
+            return Err("remote environment control source must be remote_operator".to_string());
+        }
+        self.action.validate()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteEnvironmentControlOutcome {
+    Accepted,
+    Deduplicated,
+    Rejected,
+    AcceptanceUnknown,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteEnvironmentControlResult {
+    pub command_no: String,
+    pub outcome: RemoteEnvironmentControlOutcome,
+    pub accepted_revision: Option<u64>,
+    pub convergence: Option<EnvironmentControlConvergence>,
+    pub reason_code: String,
+    pub message: Option<String>,
+    pub reported_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -345,7 +392,7 @@ struct EnvironmentControlRuntimeInner {
     closed: AtomicBool,
     operation_timeout: Duration,
     retry_interval: Duration,
-    _events: broadcast::Sender<DaemonEvent>,
+    events: broadcast::Sender<DaemonEvent>,
 }
 
 enum EnvironmentControlAttempt {
@@ -402,7 +449,7 @@ impl EnvironmentControlRuntime {
                 closed: AtomicBool::new(false),
                 operation_timeout,
                 retry_interval,
-                _events: events,
+                events,
             }),
         };
         let worker = runtime.clone();
@@ -425,6 +472,19 @@ impl EnvironmentControlRuntime {
             .await
             .map_err(|error| error.to_string())?;
         if admission.outcome == EnvironmentControlAdmissionOutcome::Accepted {
+            if !matches!(
+                action.kind,
+                EnvironmentControlActionKind::RetryCurrentDesired
+            ) {
+                let _ = self
+                    .inner
+                    .events
+                    .send(DaemonEvent::EnvironmentControlChanged {
+                        event_id: uuid::Uuid::new_v4().simple().to_string(),
+                        updated_at: admission.snapshot.updated_at.clone(),
+                        revision: admission.accepted_revision,
+                    });
+            }
             self.inner.wake.notify_one();
         }
         Ok(admission)
@@ -436,6 +496,51 @@ impl EnvironmentControlRuntime {
             .environment_control_snapshot()
             .await
             .map_err(|error| error.to_string())
+    }
+
+    pub async fn health_component(&self) -> vending_core::health::ComponentHealth {
+        match self.snapshot().await {
+            Ok(snapshot) => {
+                let (level, code, fallback_message) = match snapshot.convergence {
+                    EnvironmentControlConvergence::Applied => (
+                        vending_core::health::HealthLevel::Ok,
+                        "ENVIRONMENT_CONTROL_APPLIED",
+                        "environment settings are confirmed",
+                    ),
+                    EnvironmentControlConvergence::Pending => (
+                        vending_core::health::HealthLevel::Degraded,
+                        "ENVIRONMENT_CONTROL_PENDING",
+                        "environment settings are waiting to converge",
+                    ),
+                    EnvironmentControlConvergence::Offline => (
+                        vending_core::health::HealthLevel::Degraded,
+                        "ENVIRONMENT_CONTROL_OFFLINE",
+                        "environment settings are saved while the lower controller is offline",
+                    ),
+                    EnvironmentControlConvergence::Failed => (
+                        vending_core::health::HealthLevel::Degraded,
+                        "ENVIRONMENT_CONTROL_FAILED",
+                        "environment settings are saved but hardware application failed",
+                    ),
+                };
+                vending_core::health::ComponentHealth {
+                    component: "environment_control".to_string(),
+                    level,
+                    code: code.to_string(),
+                    message: snapshot
+                        .message
+                        .unwrap_or_else(|| fallback_message.to_string()),
+                    updated_at: snapshot.updated_at,
+                }
+            }
+            Err(error) => vending_core::health::ComponentHealth {
+                component: "environment_control".to_string(),
+                level: vending_core::health::HealthLevel::Error,
+                code: "ENVIRONMENT_CONTROL_STATE_UNAVAILABLE".to_string(),
+                message: error,
+                updated_at: crate::state::store::now_iso(),
+            },
+        }
     }
 
     pub fn request_reconcile(&self) {
@@ -1068,6 +1173,72 @@ mod tests {
         assert_eq!(adapter.calls(), vec!["vent:0"]);
         assert_eq!(persisted.settings.base_vent_speed, 2);
         assert_eq!(persisted.desired.vent_speed, 2);
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn only_new_revisions_emit_snapshot_invalidation_events() {
+        let adapter = TrackingEnvironmentAdapter::online();
+        let (_directory, runtime, shutdown, mut events) = test_runtime(adapter).await;
+        runtime
+            .wait_for_convergence(
+                0,
+                EnvironmentControlConvergence::Applied,
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("initial convergence");
+        let action = local_action(
+            "event-speed-2",
+            EnvironmentControlActionKind::SetBaseVentSpeed { vent_speed: 2 },
+        );
+
+        let accepted = runtime.submit(action.clone()).await.expect("new action");
+        let event = events.recv().await.expect("revision event");
+        assert!(matches!(
+            event,
+            DaemonEvent::EnvironmentControlChanged { revision, .. }
+                if revision == accepted.accepted_revision
+        ));
+
+        let duplicate = runtime.submit(action).await.expect("duplicate action");
+        assert_eq!(
+            duplicate.outcome,
+            EnvironmentControlAdmissionOutcome::Deduplicated
+        );
+        runtime
+            .submit(local_action(
+                "event-retry",
+                EnvironmentControlActionKind::RetryCurrentDesired,
+            ))
+            .await
+            .expect("explicit retry");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), events.recv())
+                .await
+                .is_err(),
+            "deduplication and retry must not announce a new revision"
+        );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn health_component_exposes_convergence_as_non_blocking_diagnostics() {
+        let adapter = TrackingEnvironmentAdapter::online();
+        let (_directory, runtime, shutdown, _events) = test_runtime(adapter).await;
+        runtime
+            .wait_for_convergence(
+                0,
+                EnvironmentControlConvergence::Applied,
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("initial convergence");
+
+        let health = runtime.health_component().await;
+        assert_eq!(health.component, "environment_control");
+        assert_eq!(health.code, "ENVIRONMENT_CONTROL_APPLIED");
+        assert_eq!(health.level, vending_core::health::HealthLevel::Ok);
         shutdown.cancel();
     }
 }

@@ -322,6 +322,36 @@ describe("MachinesService", () => {
                       humidityRh: 53,
                       sampledAt: "2026-05-05T12:00:00.000Z",
                       sensorStatus: "ok",
+                      control: {
+                        snapshot: {
+                          schemaVersion: "vem-environment-control/v1",
+                          revision: 7,
+                          settings: {
+                            airConditionerEnabled: true,
+                            targetTemperatureCelsius: 24,
+                            baseVentSpeed: 2,
+                          },
+                          desired: {
+                            airConditionerEnabled: true,
+                            targetTemperatureCelsius: 24,
+                            ventSpeed: 0,
+                          },
+                          confirmed: {
+                            airConditionerEnabled: true,
+                            targetTemperatureCelsius: 24,
+                            ventSpeed: 0,
+                          },
+                          convergence: "applied",
+                          reasonCode: "hardware_confirmed",
+                          message: null,
+                          lastAction: null,
+                          updatedAt: "2026-05-05T12:00:00.000Z",
+                          lastAttemptAt: "2026-05-05T12:00:00.000Z",
+                          confirmedAt: "2026-05-05T12:00:00.000Z",
+                        },
+                        observedAt: "2026-05-05T12:00:05.000Z",
+                        stale: false,
+                      },
                     },
                   },
                 },
@@ -371,6 +401,11 @@ describe("MachinesService", () => {
       humidityRh: 53,
       sampledAt: "2026-05-05T12:00:00.000Z",
       sensorStatus: "ok",
+      control: expect.objectContaining({
+        observedAt: "2026-05-05T12:00:05.000Z",
+        stale: true,
+        snapshot: expect.objectContaining({ revision: 7 }),
+      }),
     });
     expect(result.latestEnvironmentCommand).toEqual(
       expect.objectContaining({ status: "succeeded" }),
@@ -1294,7 +1329,11 @@ describe("MachinesService", () => {
       status: "pending",
       payloadJson: {
         commandNo: "MCMD-1",
-        airConditionerOn: true,
+        action: {
+          actionId: "MCMD-1",
+          source: "remote_operator",
+          action: { type: "set_air_conditioner", enabled: true },
+        },
         timeoutSeconds: 5,
       },
     };
@@ -1345,7 +1384,11 @@ describe("MachinesService", () => {
         type: "environment-control",
         status: "pending",
         payloadJson: expect.objectContaining({
-          airConditionerOn: true,
+          action: {
+            actionId: expect.stringMatching(/^MCMD/),
+            source: "remote_operator",
+            action: { type: "set_air_conditioner", enabled: true },
+          },
           timeoutSeconds: 5,
         }),
         requestedByAdminUserId: "admin-1",
@@ -1356,7 +1399,11 @@ describe("MachinesService", () => {
       messageId: "command:MCMD-1",
       payload: {
         commandNo: "MCMD-1",
-        airConditionerOn: true,
+        action: {
+          actionId: "MCMD-1",
+          source: "remote_operator",
+          action: { type: "set_air_conditioner", enabled: true },
+        },
         timeoutSeconds: 5,
       },
     });
@@ -1375,7 +1422,11 @@ describe("MachinesService", () => {
       afterJson: expect.objectContaining({
         commandId: "command-1",
         commandNo: "MCMD-1",
-        payload: expect.objectContaining({ airConditionerOn: true }),
+        payload: expect.objectContaining({
+          action: expect.objectContaining({
+            action: { type: "set_air_conditioner", enabled: true },
+          }),
+        }),
       }),
     });
     expect(result).toEqual(sentCommand);
@@ -1391,7 +1442,11 @@ describe("MachinesService", () => {
       status: "pending",
       payloadJson: {
         commandNo: "MCMD-1",
-        airConditionerOn: true,
+        action: {
+          actionId: "MCMD-1",
+          source: "remote_operator",
+          action: { type: "set_air_conditioner", enabled: true },
+        },
         timeoutSeconds: 5,
       },
       createdAt: new Date("2026-05-05T12:00:00.000Z"),
@@ -1475,7 +1530,11 @@ describe("MachinesService", () => {
       status: "pending",
       payloadJson: {
         commandNo: "MCMD-1",
-        airConditionerOn: true,
+        action: {
+          actionId: "MCMD-1",
+          source: "remote_operator",
+          action: { type: "set_air_conditioner", enabled: true },
+        },
         timeoutSeconds: 5,
       },
     };
@@ -1525,7 +1584,7 @@ describe("MachinesService", () => {
     expect(mockDb.update).toHaveBeenCalledTimes(1);
   });
 
-  it("atomically allows only one concurrent environment command per machine", async () => {
+  it("admits later environment actions without a platform hardware-command lock", async () => {
     const machine = { id: "machine-1", code: "M001", deletedAt: null };
     const commands: Array<Record<string, unknown>> = [];
     let transactionTail = Promise.resolve();
@@ -1600,11 +1659,11 @@ describe("MachinesService", () => {
       "admin-1",
     );
 
-    await expect(second).rejects.toThrow("ENVIRONMENT_COMMAND_IN_PROGRESS");
-    expect(publish).toHaveBeenCalledTimes(1);
+    await expect(second).resolves.toEqual(sentCommand);
+    expect(publish).toHaveBeenCalledTimes(2);
     releasePublish();
     await expect(first).resolves.toEqual(sentCommand);
-    expect(commands).toHaveLength(1);
+    expect(commands).toHaveLength(2);
   });
 
   it("schedules environment command timeout sweeping each second on module init", () => {
@@ -1659,10 +1718,12 @@ describe("MachinesService", () => {
   it("marks an environment control command succeeded from MQTT result", async () => {
     const resultPayload = {
       commandNo: "MCMD-1",
-      success: true,
+      outcome: "accepted",
+      acceptedRevision: 7,
+      convergence: "pending",
+      reasonCode: "action_accepted",
+      message: null,
       reportedAt: "2026-05-05T12:00:00.000Z",
-      airConditionerOn: true,
-      targetTemperatureCelsius: 24,
     };
     const eventValues = vi.fn().mockReturnValue({
       onConflictDoNothing: () => ({
@@ -1749,7 +1810,7 @@ describe("MachinesService", () => {
       expect.objectContaining({
         status: "timeout",
         resultAt: now,
-        lastError: "machine command timeout",
+        lastError: "acceptance_unknown",
       }),
     );
     expect(result).toEqual({ processed: 1 });
@@ -1758,10 +1819,12 @@ describe("MachinesService", () => {
   it("marks an environment control command failed from MQTT result", async () => {
     const resultPayload = {
       commandNo: "MCMD-2",
-      success: false,
+      outcome: "rejected",
+      acceptedRevision: null,
+      convergence: null,
+      reasonCode: "action_id_conflict",
       reportedAt: "2026-05-05T12:00:00.000Z",
-      errorCode: "E1",
-      message: "hardware rejected command",
+      message: "action id conflicts with a different payload",
     };
     const eventValues = vi.fn().mockReturnValue({
       onConflictDoNothing: () => ({
@@ -1807,7 +1870,67 @@ describe("MachinesService", () => {
       expect.objectContaining({
         status: "failed",
         resultJson: resultPayload,
-        lastError: "hardware rejected command",
+        lastError: "action id conflicts with a different payload",
+      }),
+    );
+  });
+
+  it("keeps an unknown environment action admission distinct from rejection", async () => {
+    const resultPayload = {
+      commandNo: "MCMD-3",
+      outcome: "acceptance_unknown",
+      acceptedRevision: null,
+      convergence: null,
+      reasonCode: "admission_deadline_elapsed",
+      reportedAt: "2026-05-05T12:00:00.000Z",
+      message: "environment control admission was not observed",
+    };
+    const eventValues = vi.fn().mockReturnValue({
+      onConflictDoNothing: () => ({
+        returning: async () => [{ id: "event-3" }],
+      }),
+    });
+    const commandSet = vi
+      .fn()
+      .mockReturnValue({ where: async () => undefined });
+    const tx = {
+      insert: vi.fn().mockReturnValue({ values: eventValues }),
+      update: vi.fn().mockReturnValue({ set: commandSet }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                status: "acknowledged",
+                timeoutAt: new Date("2099-05-05T12:00:05.000Z"),
+              },
+            ],
+          }),
+        }),
+      }),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+    verifyFromTopic.mockResolvedValueOnce({
+      machineId: "machine-1",
+      machineCode: "M001",
+      messageId: "result:MCMD-3",
+      payload: resultPayload,
+    });
+
+    await service.handleMachineMessage(
+      "vem/machines/M001/events/environment-control-result",
+      JSON.stringify({}),
+    );
+
+    expect(commandSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "timeout",
+        resultJson: resultPayload,
+        lastError: "environment control admission was not observed",
       }),
     );
   });
@@ -1815,9 +1938,12 @@ describe("MachinesService", () => {
   it("does not apply environment control results to terminal command states", async () => {
     const resultPayload = {
       commandNo: "MCMD-1",
-      success: true,
+      outcome: "deduplicated",
+      acceptedRevision: 7,
+      convergence: "applied",
+      reasonCode: "hardware_confirmed",
+      message: null,
       reportedAt: "2026-05-05T12:00:00.000Z",
-      airConditionerOn: true,
     };
     const eventValues = vi.fn().mockReturnValue({
       onConflictDoNothing: () => ({
@@ -1898,9 +2024,12 @@ describe("MachinesService", () => {
       messageId: "result:MCMD-1",
       payload: {
         commandNo: "MCMD-1",
-        success: true,
+        outcome: "accepted",
+        acceptedRevision: 7,
+        convergence: "pending",
+        reasonCode: "action_accepted",
+        message: null,
         reportedAt: "2026-05-05T12:00:04.000Z",
-        airConditionerOn: true,
       },
     });
 
@@ -1913,7 +2042,7 @@ describe("MachinesService", () => {
       expect.objectContaining({
         status: "timeout",
         resultAt: new Date("2026-05-05T12:00:06.000Z"),
-        lastError: "machine command timeout",
+        lastError: "acceptance_unknown",
       }),
     );
     expect(timeoutWhere).toHaveBeenCalledOnce();

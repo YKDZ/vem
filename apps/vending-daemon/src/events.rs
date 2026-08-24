@@ -47,6 +47,11 @@ pub enum DaemonEvent {
         status: String,
         pickup_progress: Option<PickupProgressProjection>,
     },
+    EnvironmentControlChanged {
+        event_id: String,
+        updated_at: String,
+        revision: u64,
+    },
     MqttChanged {
         event_id: String,
         updated_at: String,

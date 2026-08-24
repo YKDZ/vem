@@ -367,6 +367,7 @@ export const daemonIpcKnownEventNotificationTypeSchema = z.enum([
   "scanner_health_changed",
   "scanner_code",
   "transaction_changed",
+  "environment_control_changed",
   "mqtt_changed",
   "vision_changed",
   "runtime_reconfigure_requested",
@@ -434,6 +435,14 @@ export const daemonIpcTransactionChangedEventSchema =
     })
     .strict();
 
+export const daemonIpcEnvironmentControlChangedEventSchema =
+  daemonIpcKnownEventEnvelopeSchema
+    .extend({
+      type: z.literal("environment_control_changed"),
+      revision: z.number().int().nonnegative(),
+    })
+    .strict();
+
 export const daemonIpcMqttChangedEventSchema = daemonIpcKnownEventEnvelopeSchema
   .extend({
     type: z.literal("mqtt_changed"),
@@ -479,6 +488,7 @@ export const daemonIpcKnownEventNotificationSchema = z.discriminatedUnion(
     daemonIpcScannerHealthChangedEventSchema,
     daemonIpcScannerCodeEventSchema,
     daemonIpcTransactionChangedEventSchema,
+    daemonIpcEnvironmentControlChangedEventSchema,
     daemonIpcMqttChangedEventSchema,
     daemonIpcVisionChangedEventSchema,
     daemonIpcRuntimeReconfigureRequestedEventSchema,

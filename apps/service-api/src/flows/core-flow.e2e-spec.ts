@@ -594,7 +594,18 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineId: seeded.machineId,
       type: "environment-control",
       status: "sent",
-      payloadJson: { targetTemperatureCelsius: 23 },
+      payloadJson: {
+        commandNo,
+        action: {
+          actionId: commandNo,
+          source: "remote_operator",
+          action: {
+            type: "set_target_temperature",
+            temperatureCelsius: 23,
+          },
+        },
+        timeoutSeconds: 30,
+      },
     });
 
     const lock = await holdMachineMutationLock(seeded.machineId);
@@ -736,7 +747,19 @@ describe("core-flow.e2e", { concurrent: false }, () => {
           `insert into machine_commands
              (command_no, machine_id, type, status, payload_json)
            values ($1, $2, 'environment-control', 'sent', $3::jsonb)`,
-          [commandNo, seeded.machineId, JSON.stringify({ ventSpeed: 2 })],
+          [
+            commandNo,
+            seeded.machineId,
+            JSON.stringify({
+              commandNo,
+              action: {
+                actionId: commandNo,
+                source: "remote_operator",
+                action: { type: "set_base_vent_speed", ventSpeed: 2 },
+              },
+              timeoutSeconds: 30,
+            }),
+          ],
         );
         await competitor.query("commit");
       })();

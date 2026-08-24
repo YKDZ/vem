@@ -8,6 +8,7 @@ import {
   machineSlotStatusSchema,
   machineStatusSchema,
 } from "../enums/machine";
+import { environmentControlProjectionSchema } from "./environment-control";
 import {
   addMachineSlotCoordinateIssue,
   machineSlotCellNoSchema,
@@ -242,6 +243,7 @@ export const machineEnvironmentHeartbeatPayloadSchema = z.strictObject({
   humidityRh: z.number().min(0).max(100).optional(),
   sampledAt: z.iso.datetime().optional(),
   sensorStatus: z.enum(["ok", "faulted", "unknown"]),
+  control: environmentControlProjectionSchema.optional(),
 });
 
 export const machineReportedRuntimeConfigurationSchema = z.strictObject({
@@ -435,6 +437,9 @@ export const adminRequestMachineLogExportContract = defineAdminEndpointContract(
 
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
+>;
+export type MachineEnvironmentHeartbeatPayload = z.infer<
+  typeof machineEnvironmentHeartbeatPayloadSchema
 >;
 export type MachineReportedRuntimeConfiguration = z.infer<
   typeof machineReportedRuntimeConfigurationSchema

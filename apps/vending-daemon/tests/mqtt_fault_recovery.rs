@@ -9,9 +9,10 @@ use support::{
     process::DaemonHarness,
     sensitive, sqlite,
 };
-use vending_core::{
-    hardware::{DispenseCommandPayload, EnvironmentControlCommandPayload},
-    mqtt::sign_envelope,
+use vending_core::{hardware::DispenseCommandPayload, mqtt::sign_envelope};
+use vending_daemon::environment_control::{
+    EnvironmentControlAction, EnvironmentControlActionKind, EnvironmentControlSource,
+    RemoteEnvironmentControlCommand,
 };
 use vending_daemon::state::{
     store::{MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput},
@@ -28,12 +29,14 @@ fn mqtt_config(mqtt_url: String) -> serde_json::Value {
     })
 }
 
-fn environment_control_command(command_no: &str) -> EnvironmentControlCommandPayload {
-    EnvironmentControlCommandPayload {
+fn environment_control_command(command_no: &str) -> RemoteEnvironmentControlCommand {
+    RemoteEnvironmentControlCommand {
         command_no: command_no.to_string(),
-        air_conditioner_on: Some(true),
-        target_temperature_celsius: None,
-        vent_speed: None,
+        action: EnvironmentControlAction {
+            action_id: command_no.to_string(),
+            source: EnvironmentControlSource::RemoteOperator,
+            kind: EnvironmentControlActionKind::SetAirConditioner { enabled: true },
+        },
         timeout_seconds: 5,
     }
 }
@@ -120,8 +123,7 @@ async fn prepare_dispense_state(daemon: &DaemonHarness, command: &DispenseComman
 }
 
 #[tokio::test]
-async fn mqtt_environment_control_command_flow_publishes_ack_and_explicit_unbound_hardware_result()
-{
+async fn mqtt_environment_control_command_flow_accepts_durable_intent_while_hardware_is_unbound() {
     let broker = MqttBrokerHarness::start().await;
     let mut daemon = DaemonHarness::start(
         mqtt_config(broker.url()),
@@ -188,11 +190,9 @@ async fn mqtt_environment_control_command_flow_publishes_ack_and_explicit_unboun
         .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
         .expect("environment control result publish");
     assert_eq!(result["payload"]["commandNo"], "ENV-MQTT-1");
-    assert_eq!(result["payload"]["success"], false);
-    assert!(result["payload"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("lowerControllerUsbIdentity"));
+    assert_eq!(result["payload"]["outcome"], "accepted");
+    assert_eq!(result["payload"]["acceptedRevision"], 1);
+    assert_eq!(result["payload"]["convergence"], "pending");
     assert!(result["signature"].as_str().unwrap_or_default().len() >= 32);
 
     daemon.terminate().await;

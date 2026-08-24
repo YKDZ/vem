@@ -1976,18 +1976,18 @@ describe("shared API contract", () => {
     ).toBeUndefined();
   });
 
-  it("accepts environment control failure when confirmed switch state is unknown", () => {
+  it("accepts an explicit unknown remote admission result", () => {
     const parsed = environmentControlResultPayloadSchema.parse({
       commandNo: "MCMD-1",
-      success: false,
-      errorCode: "air_conditioner_switch_failed",
-      message: "no matching lower controller candidate responded to handshake",
-      airConditionerOn: null,
-      targetTemperatureCelsius: null,
+      outcome: "acceptance_unknown",
+      acceptedRevision: null,
+      convergence: null,
+      reasonCode: "admission_deadline_elapsed",
+      message: "admission was not observed before the deadline",
       reportedAt: "2026-06-09T10:25:35.327Z",
     });
 
-    expect(parsed.airConditionerOn).toBeNull();
+    expect(parsed.outcome).toBe("acceptance_unknown");
   });
 
   it("accepts nested machine environment readings in heartbeat payload", () => {
@@ -2000,11 +2000,44 @@ describe("shared API contract", () => {
           humidityRh: 53,
           sampledAt: "2026-05-05T12:00:00.000Z",
           sensorStatus: "ok",
+          control: {
+            snapshot: {
+              schemaVersion: "vem-environment-control/v1",
+              revision: 7,
+              settings: {
+                airConditionerEnabled: true,
+                targetTemperatureCelsius: 24,
+                baseVentSpeed: 2,
+              },
+              desired: {
+                airConditionerEnabled: true,
+                targetTemperatureCelsius: 24,
+                ventSpeed: 0,
+              },
+              confirmed: {
+                airConditionerEnabled: true,
+                targetTemperatureCelsius: 24,
+                ventSpeed: 0,
+              },
+              convergence: "applied",
+              reasonCode: "hardware_confirmed",
+              message: null,
+              lastAction: null,
+              updatedAt: "2026-05-05T12:00:00.000Z",
+              lastAttemptAt: "2026-05-05T12:00:00.000Z",
+              confirmedAt: "2026-05-05T12:00:00.000Z",
+            },
+            observedAt: "2026-05-05T12:00:05.000Z",
+            stale: false,
+          },
         },
       },
     });
 
     expect(parsed.statusPayload.environment?.sensorStatus).toBe("ok");
+    expect(parsed.statusPayload.environment?.control?.snapshot.revision).toBe(
+      7,
+    );
   });
 
   it("rejects removed B0-only legacy actuator fields from heartbeat payload", () => {
@@ -2123,52 +2156,23 @@ describe("shared API contract", () => {
   });
 
   it("validates environment control command payloads", () => {
-    expect(
-      environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-1",
-        airConditionerOn: true,
-        timeoutSeconds: 5,
-      }).targetTemperatureCelsius,
-    ).toBeUndefined();
-    expect(
-      environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-2",
-        targetTemperatureCelsius: 24,
-        timeoutSeconds: 5,
-      }).targetTemperatureCelsius,
-    ).toBe(24);
-    expect(
-      environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-3",
-        ventSpeed: 2,
-        timeoutSeconds: 5,
-      }).ventSpeed,
-    ).toBe(2);
+    const parsed = environmentControlCommandPayloadSchema.parse({
+      commandNo: "MCMD-1",
+      action: {
+        actionId: "MCMD-1",
+        source: "remote_operator",
+        action: { type: "set_base_vent_speed", ventSpeed: 2 },
+      },
+      timeoutSeconds: 5,
+    });
+    expect(parsed.action.action).toEqual({
+      type: "set_base_vent_speed",
+      ventSpeed: 2,
+    });
+
     expect(() =>
       environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-1",
-        timeoutSeconds: 5,
-      }),
-    ).toThrow();
-    expect(() =>
-      environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-1",
-        targetTemperatureCelsius: 31,
-        timeoutSeconds: 5,
-      }),
-    ).toThrow();
-    expect(() =>
-      environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-1",
-        airConditionerOn: true,
-        targetTemperatureCelsius: 24,
-        timeoutSeconds: 5,
-      }),
-    ).toThrow();
-    expect(() =>
-      environmentControlCommandPayloadSchema.parse({
-        commandNo: "MCMD-1",
-        airConditionerOn: true,
+        commandNo: "MCMD-LEGACY",
         ventSpeed: 2,
         timeoutSeconds: 5,
       }),
@@ -2176,8 +2180,11 @@ describe("shared API contract", () => {
     expect(() =>
       environmentControlCommandPayloadSchema.parse({
         commandNo: "MCMD-1",
-        targetTemperatureCelsius: 24,
-        ventSpeed: 2,
+        action: {
+          actionId: "MCMD-1",
+          source: "local_operator",
+          action: { type: "set_air_conditioner", enabled: true },
+        },
         timeoutSeconds: 5,
       }),
     ).toThrow();
@@ -2187,22 +2194,38 @@ describe("shared API contract", () => {
     expect(
       environmentControlResultPayloadSchema.parse({
         commandNo: "MCMD1",
-        success: true,
+        outcome: "accepted",
+        acceptedRevision: 7,
+        convergence: "pending",
+        reasonCode: "action_accepted",
+        message: null,
         reportedAt: "2026-05-05T12:00:00.000Z",
-        airConditionerOn: true,
-        targetTemperatureCelsius: 24,
-      }).success,
-    ).toBe(true);
+      }).acceptedRevision,
+    ).toBe(7);
 
     expect(
       environmentControlResultPayloadSchema.parse({
         commandNo: "MCMD2",
-        success: false,
+        outcome: "rejected",
+        acceptedRevision: null,
+        convergence: null,
+        reasonCode: "action_id_conflict",
+        message: "action id conflicts with a different payload",
         reportedAt: "2026-05-05T12:00:00.000Z",
-        errorCode: "E1",
-        message: "hardware rejected command",
       }).message,
-    ).toBe("hardware rejected command");
+    ).toBe("action id conflicts with a different payload");
+
+    expect(() =>
+      environmentControlResultPayloadSchema.parse({
+        commandNo: "MCMD3",
+        outcome: "accepted",
+        acceptedRevision: null,
+        convergence: null,
+        reasonCode: "action_accepted",
+        message: null,
+        reportedAt: "2026-05-05T12:00:00.000Z",
+      }),
+    ).toThrow();
   });
 
   it("validates machine auth token request", () => {

@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import { hardwareErrorCodeSchema } from "../enums/hardware";
 import {
+  environmentControlActionSchema,
+  environmentControlConvergenceSchema,
+} from "./environment-control";
+import {
   addMachineSlotCoordinateIssue,
   machineSlotCellNoSchema,
   machineSlotRowNoSchema,
@@ -38,27 +42,14 @@ export const dispenseCommandPayloadSchema = z
   .strict();
 
 export const environmentControlCommandPayloadSchema = z
-  .object({
+  .strictObject({
     commandNo: z.string().min(1).max(64),
-    airConditionerOn: z.boolean().optional(),
-    targetTemperatureCelsius: z.number().min(18).max(30).optional(),
-    ventSpeed: z.number().int().min(0).max(4).optional(),
+    action: environmentControlActionSchema,
     timeoutSeconds: z.int().positive(),
   })
-  .superRefine((data, ctx) => {
-    const requestedFieldCount = [
-      data.airConditionerOn,
-      data.targetTemperatureCelsius,
-      data.ventSpeed,
-    ].filter((value) => value !== undefined).length;
-
-    if (requestedFieldCount !== 1) {
-      ctx.addIssue({
-        code: "custom",
-        message:
-          "Exactly one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
-      });
-    }
+  .refine((data) => data.action.source === "remote_operator", {
+    path: ["action", "source"],
+    message: "Remote environment actions must use remote_operator",
   });
 
 export const dispenseResultPayloadSchema = z
@@ -83,17 +74,47 @@ export const dispenseResultPayloadSchema = z
   });
 
 export const environmentControlResultPayloadSchema = z
-  .object({
+  .strictObject({
     commandNo: z.string().min(1).max(64),
-    success: z.boolean(),
-    errorCode: z.string().min(1).max(64).nullable().optional(),
-    message: z.string().max(500).optional(),
-    airConditionerOn: z.boolean().nullable().optional(),
-    targetTemperatureCelsius: z.number().min(18).max(30).nullable().optional(),
-    ventSpeed: z.number().int().min(0).max(4).nullable().optional(),
+    outcome: z.enum([
+      "accepted",
+      "deduplicated",
+      "rejected",
+      "acceptance_unknown",
+    ]),
+    acceptedRevision: z.number().int().nonnegative().nullable(),
+    convergence: environmentControlConvergenceSchema.nullable(),
+    reasonCode: z.string().min(1).max(128),
+    message: z.string().max(500).nullable(),
     reportedAt: z.iso.datetime(),
   })
-  .loose();
+  .superRefine((data, ctx) => {
+    const accepted =
+      data.outcome === "accepted" || data.outcome === "deduplicated";
+    if (accepted && data.acceptedRevision === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["acceptedRevision"],
+        message: "Accepted actions require a revision",
+      });
+    }
+    if (accepted && data.convergence === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["convergence"],
+        message: "Accepted actions require an initial convergence state",
+      });
+    }
+    if (
+      !accepted &&
+      (data.acceptedRevision !== null || data.convergence !== null)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Unaccepted actions cannot report revision convergence",
+      });
+    }
+  });
 
 export const mqttSignedEnvelopeSchema = z.object({
   messageId: z.string().min(1).max(128),

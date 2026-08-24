@@ -3,6 +3,8 @@ import type {
   AdminMachineRemoteOpResponse,
   AdminMachineResponse,
   AdminMachineSlotResponse,
+  EnvironmentControlActionKind,
+  EnvironmentControlCommandPayload,
   MachineEnvironmentControlRequest,
   MachineHeartbeatStatusPayload,
 } from "@vem/shared";
@@ -197,17 +199,32 @@ export function mapEnvironmentControlDtoToCommandInsert(
     ventSpeed: input.input.ventSpeed,
   } satisfies ContractFieldCoverage<MachineEnvironmentControlRequest>;
 
+  let action: EnvironmentControlActionKind;
+  if (dto.airConditionerOn !== undefined) {
+    action = {
+      type: "set_air_conditioner",
+      enabled: dto.airConditionerOn,
+    };
+  } else if (dto.targetTemperatureCelsius !== undefined) {
+    action = {
+      type: "set_target_temperature",
+      temperatureCelsius: dto.targetTemperatureCelsius,
+    };
+  } else if (dto.ventSpeed !== undefined) {
+    action = { type: "set_base_vent_speed", ventSpeed: dto.ventSpeed };
+  } else {
+    throw new Error("environment control action is required");
+  }
+
   const payloadJson = {
     commandNo: input.commandNo,
-    ...(dto.airConditionerOn === undefined
-      ? {}
-      : { airConditionerOn: dto.airConditionerOn }),
-    ...(dto.targetTemperatureCelsius === undefined
-      ? {}
-      : { targetTemperatureCelsius: dto.targetTemperatureCelsius }),
-    ...(dto.ventSpeed === undefined ? {} : { ventSpeed: dto.ventSpeed }),
+    action: {
+      actionId: input.commandNo,
+      source: "remote_operator",
+      action,
+    },
     timeoutSeconds: input.timeoutSeconds,
-  };
+  } satisfies EnvironmentControlCommandPayload;
 
   const insert = {
     commandNo: input.commandNo,
