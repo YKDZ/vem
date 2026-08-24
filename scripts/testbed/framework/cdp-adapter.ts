@@ -820,6 +820,7 @@ export class CdpTestAdapter implements TestAdapter {
   stopTryOnProtocolObserver: (() => void) | null = null;
   selectRecordedVideoFixtureImpl: typeof selectRecordedVideoFixture;
   selectRecommendationVideoFixtureImpl: typeof selectRecommendationVideoFixture;
+  selectDepartureVideoFixtureImpl: typeof selectDepartureVideoFixture;
   restoreRecordedVideoFixturesImpl: typeof restoreRecordedVideoFixtures;
   cdpWebSocketFactory: ((url: string) => unknown) | null;
   diagnosticMilestones: unknown[] = [];
@@ -838,6 +839,7 @@ export class CdpTestAdapter implements TestAdapter {
     sourceGarmentServiceApiOrigin = null,
     selectRecordedVideoFixtureImpl = selectRecordedVideoFixture,
     selectRecommendationVideoFixtureImpl = selectRecommendationVideoFixture,
+    selectDepartureVideoFixtureImpl = selectDepartureVideoFixture,
     restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixtures,
     cdpWebSocketFactory = null,
   }: {
@@ -847,6 +849,7 @@ export class CdpTestAdapter implements TestAdapter {
     sourceGarmentServiceApiOrigin?: unknown;
     selectRecordedVideoFixtureImpl?: typeof selectRecordedVideoFixture;
     selectRecommendationVideoFixtureImpl?: typeof selectRecommendationVideoFixture;
+    selectDepartureVideoFixtureImpl?: typeof selectDepartureVideoFixture;
     restoreRecordedVideoFixturesImpl?: typeof restoreRecordedVideoFixtures;
     cdpWebSocketFactory?: ((url: string) => unknown) | null;
   } = {}) {
@@ -858,6 +861,7 @@ export class CdpTestAdapter implements TestAdapter {
     this.selectRecordedVideoFixtureImpl = selectRecordedVideoFixtureImpl;
     this.selectRecommendationVideoFixtureImpl =
       selectRecommendationVideoFixtureImpl;
+    this.selectDepartureVideoFixtureImpl = selectDepartureVideoFixtureImpl;
     this.restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixturesImpl;
     this.cdpWebSocketFactory = cdpWebSocketFactory;
   }
@@ -1553,6 +1557,12 @@ export class CdpTestAdapter implements TestAdapter {
       }
       return this.restoreRecordedVideoFixturesImpl();
     }
+    if (command === "select-departure-video-fixture") {
+      if (args.length !== 0) {
+        throw new Error("select-departure-video-fixture accepts no arguments");
+      }
+      return this.selectDepartureVideoFixtureImpl();
+    }
     if (command === "stop-vision-role") {
       const roleIndex = args.indexOf("--role");
       const role = roleIndex >= 0 ? args[roleIndex + 1] : args[0];
@@ -1762,7 +1772,7 @@ export class CdpTestAdapter implements TestAdapter {
 
 /** 仅调用生产 PowerShell seam；夹具信任、写入与 owner 生命周期都在同一模块内。 */
 function invokeRecordedVideoFixtureSwitch(
-  mode: "select" | "restore" | "recommendation",
+  mode: "select" | "restore" | "recommendation" | "departure",
   segment?: "far" | "mid" | "near",
 ): CommandResult {
   const segmentArgument = segment ? ` -Segment '${segment}'` : "";
@@ -1797,6 +1807,11 @@ export function selectRecommendationVideoFixture(
   segment: "near" | "far",
 ): CommandResult {
   return invokeRecordedVideoFixtureSwitch("recommendation", segment);
+}
+
+/** 选择有限 top + 不稳定 front，让生产 Vision 自己产生 departure 并保持 attempt 未完成。 */
+export function selectDepartureVideoFixture(): CommandResult {
+  return invokeRecordedVideoFixtureSwitch("departure");
 }
 
 /** 在每条 Vision acceptance 轨道后恢复已安装的默认录播对。 */

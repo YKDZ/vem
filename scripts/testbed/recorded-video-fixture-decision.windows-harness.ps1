@@ -46,6 +46,7 @@ $manifest = [pscustomobject]@{
   recordings = [pscustomobject]@{
     top = [pscustomobject]@{ file = 'top.mp4'; sha256 = $digest; loop = $false }
     frontVertical = [pscustomobject]@{ file = 'front-vertical.mp4'; sha256 = ('b' * 64); loop = $true }
+    frontVerticalUnstable = [pscustomobject]@{ file = 'front-vertical-unstable.mp4'; sha256 = ('6' * 64); loop = $true }
     manFront = [pscustomobject]@{ file = 'man-front.mp4'; sha256 = ('c' * 64); loop = $true }
     geometryFar = [pscustomobject]@{ file = 'far.mp4'; sha256 = ('d' * 64); loop = $true; source = 'person.png'; sourceSha256 = ('e' * 64); generator = 'fixture.py' }
     geometryMid = [pscustomobject]@{ file = 'mid.mp4'; sha256 = ('f' * 64); loop = $true; source = 'person.png'; sourceSha256 = ('e' * 64); generator = 'fixture.py' }
@@ -162,6 +163,7 @@ function New-FixtureSwitchHarnessState(
   $clipByEntry = [ordered]@{
     top = 'top.mp4'
     frontVertical = 'front-vertical.mp4'
+    frontVerticalUnstable = 'front-vertical-unstable.mp4'
     manFront = 'man-front.mp4'
     geometryFar = 'geometry-far.mp4'
     geometryMid = 'geometry-mid.mp4'
@@ -171,7 +173,7 @@ function New-FixtureSwitchHarnessState(
     fieldRecommendationFarTop = 'field-recommendation-far-top.mp4'
     fieldRecommendationFarFront = 'field-recommendation-far-front.mp4'
   }
-  $loopByEntry = @{ top = $false; frontVertical = $true; manFront = $true; geometryFar = $true; geometryMid = $true; geometryNear = $true; fieldRecommendationNearTop = $true; fieldRecommendationNearFront = $true; fieldRecommendationFarTop = $true; fieldRecommendationFarFront = $true }
+  $loopByEntry = @{ top = $false; frontVertical = $true; frontVerticalUnstable = $true; manFront = $true; geometryFar = $true; geometryMid = $true; geometryNear = $true; fieldRecommendationNearTop = $true; fieldRecommendationNearFront = $true; fieldRecommendationFarTop = $true; fieldRecommendationFarFront = $true }
   $files = @{}
   $recordings = [ordered]@{}
   foreach ($entry in $clipByEntry.Keys) {
@@ -358,6 +360,13 @@ $recommendationFarState = New-FixtureSwitchHarnessState
 Invoke-VemRecordedFixtureSwitch -Mode recommendation -Segment far -Dependencies $recommendationFarState.dependencies -ReadyStabilityMs 0 | Out-Null
 $recommendationFarConfig = $recommendationFarState.state.files[$recommendationFarState.sitePath] | ConvertFrom-Json
 Assert-True ($recommendationFarConfig.cameras.top.video_path -eq "$($recommendationFarState.recordedRoot)\field-recommendation-far-top.mp4" -and $recommendationFarConfig.cameras.front.video_path -eq "$($recommendationFarState.recordedRoot)\field-recommendation-far-front.mp4") 'recommendation far did not keep its paired field captures'
+
+$departureState = New-FixtureSwitchHarnessState
+Invoke-VemRecordedFixtureSwitch -Mode departure -Dependencies $departureState.dependencies -ReadyStabilityMs 0 | Out-Null
+$departureConfig = $departureState.state.files[$departureState.sitePath] | ConvertFrom-Json
+Assert-True ($departureConfig.cameras.top.role -eq 'presence' -and $departureConfig.cameras.top.video_path -eq "$($departureState.recordedRoot)\top.mp4" -and $departureConfig.cameras.top.loop -eq $false) 'departure did not write finite top presence camera'
+Assert-True ($departureConfig.cameras.front.role -eq 'profile_try_on' -and $departureConfig.cameras.front.video_path -eq "$($departureState.recordedRoot)\front-vertical-unstable.mp4" -and $departureConfig.cameras.front.loop -eq $true) 'departure did not keep the attempt open with unstable front video'
+Assert-True (($departureState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'departure did not atomically write before restarting the canonical owner'
 
 $restoreState = New-FixtureSwitchHarnessState
 Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $restoreState.dependencies -ReadyStabilityMs 0 | Out-Null

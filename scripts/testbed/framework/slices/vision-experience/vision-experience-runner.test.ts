@@ -1371,6 +1371,7 @@ describe("visionExperience slice runner", () => {
     const capturedEvidence = capturedEvidenceFor(attemptId);
     let tryOnEntries = 0;
     let visionStopped = false;
+    let departureFixturePrepared = false;
     const destructiveOrder: string[] = [];
     const replaySegments: string[] = [];
     const adapter = createFakeTestAdapter({
@@ -1446,15 +1447,38 @@ describe("visionExperience slice runner", () => {
             }, 50);
             return { exitCode: 0, stdout: "ok", stderr: "" };
           }
+          if (tryOnEntries === 2) {
+            await adapter.writeFile(
+              statePath,
+              JSON.stringify({
+                route: "#/try-on?catalogKey=product%3A1",
+                state: "acquiring",
+                manualCaptureAllowed: true,
+                guidance: "请保持不动，3 秒后自动拍摄",
+              }),
+            );
+            return { exitCode: 0, stdout: "ok", stderr: "" };
+          }
+          if (!departureFixturePrepared) {
+            throw new Error("departure attempt started before fixture reset");
+          }
           await adapter.writeFile(
             statePath,
             JSON.stringify({
               route: "#/try-on?catalogKey=product%3A1",
               state: "acquiring",
-              manualCaptureAllowed: true,
-              guidance: "请保持不动，3 秒后自动拍摄",
             }),
           );
+          setTimeout(() => {
+            void adapter.writeFile(
+              statePath,
+              JSON.stringify({
+                route: "#/try-on?catalogKey=product%3A1",
+                state: "canceled",
+                phaseText: "检测到顾客已离开，本次试衣已取消",
+              }),
+            );
+          }, 50);
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
         'click [data-test="try-on-manual-capture"]': async () => {
@@ -1470,16 +1494,9 @@ describe("visionExperience slice runner", () => {
           );
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
-        "simulate-departure": async () => {
-          const current = JSON.parse(await adapter.readFile(statePath));
-          await adapter.writeFile(
-            statePath,
-            JSON.stringify({
-              ...current,
-              state: "canceled",
-              phaseText: "检测到顾客已离开，本次试衣已取消",
-            }),
-          );
+        "select-departure-video-fixture": async () => {
+          destructiveOrder.push("departure-fixture");
+          departureFixturePrepared = true;
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
       },
@@ -1515,7 +1532,11 @@ describe("visionExperience slice runner", () => {
     });
     assert.equal(report.businessSets[0].status, "passed");
     assert.equal(report.businessSets[0].assertionCount, 19);
-    assert.deepEqual(destructiveOrder, ["manual", "stop-owner"]);
+    assert.deepEqual(destructiveOrder, [
+      "manual",
+      "departure-fixture",
+      "stop-owner",
+    ]);
     assert.deepEqual(replaySegments, [
       "automatic-try-on",
       "manual-try-on",

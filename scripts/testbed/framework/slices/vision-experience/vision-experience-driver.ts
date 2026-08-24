@@ -1734,8 +1734,13 @@ export async function runDepartureScenario(
     acceptanceBinding: VisionAcceptanceBinding;
   },
 ) {
+  const prepared = await adapter.run("select-departure-video-fixture");
+  if (prepared.exitCode !== 0) {
+    throw new Error(
+      prepared.stderr || prepared.stdout || "Vision 离场录播准备失败",
+    );
+  }
   await enterTryOn(adapter, acceptanceBinding, { timeoutMs, pollMs });
-  await adapter.run("simulate-departure");
   const canceled = await waitForCondition(
     "departure-canceled",
     async () => {

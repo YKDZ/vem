@@ -315,7 +315,7 @@ function Set-VemRecordedFixtureObjectProperty {
 function Invoke-VemRecordedFixtureSwitch {
   [CmdletBinding()]
   param(
-    [ValidateSet('select', 'restore', 'recommendation')]
+    [ValidateSet('select', 'restore', 'recommendation', 'departure')]
     [string]$Mode,
     [ValidateSet('far', 'mid', 'near')]
     [string]$Segment = 'mid',
@@ -428,6 +428,8 @@ function Invoke-VemRecordedFixtureSwitch {
     }
     $recommendation = $recommendationEntryBySegment[$Segment]
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $recommendation.top $true $recommendation.front $true $false
+  } elseif ($Mode -eq 'departure') {
+    $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'top' $false 'frontVerticalUnstable' $true $false
   } else {
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'top' $false 'frontVertical' $true $false
   }

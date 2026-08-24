@@ -399,6 +399,24 @@ describe("CDP test adapter", () => {
     assert.equal(calls, 1);
   });
 
+  it("通过公开 departure fixture command 恰调用一次真实录播切换 seam", async () => {
+    let calls = 0;
+    const expected = { exitCode: 0, stdout: "departure", stderr: "" };
+    const adapter = new CdpTestAdapter({
+      endpoint: "http://127.0.0.1:1",
+      selectDepartureVideoFixtureImpl: () => {
+        calls += 1;
+        return expected;
+      },
+    });
+
+    assert.deepEqual(
+      await adapter.run("select-departure-video-fixture"),
+      expected,
+    );
+    assert.equal(calls, 1);
+  });
+
   it("通过公开 recommendation fixture command 只选择成对的 near/far 现场素材", async () => {
     const segments: string[] = [];
     const adapter = new CdpTestAdapter({
