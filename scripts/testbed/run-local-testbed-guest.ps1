@@ -4,7 +4,7 @@ param(
   [ValidateRange(1, 2)][int]$Pass = 1,
   [string[]]$Focus = @(),
   [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json",
-  [ValidateSet("single", "prepare_reboot", "resume_reboot")][string]$StartupPhase = "single"
+  [ValidateSet("single", "prepare_reboot", "resume_reboot", "observe_reboot")][string]$StartupPhase = "single"
 )
 
 $ErrorActionPreference = "Stop"
@@ -1053,6 +1053,74 @@ function Get-TestbedInstalledRuntimeOwnerState {
   }
 }
 
+function Get-TestbedPostRebootRuntimeOwnerState {
+  param(
+    [object]$GuestInput,
+    [string]$PreparationPath,
+    [string]$MachinePath
+  )
+  $preparation = Read-TestbedStartupPreparation $PreparationPath $GuestInput
+  $claim = $preparation.state.claim
+  if ($claim.status -ne "provisioned" -or [string]$claim.machineCode -ne [string]$GuestInput.machineCode) {
+    throw "startup preparation claim is not the provisioned machine"
+  }
+  $commissioningSerialSession = $preparation.state.commissioningSerialSession
+  if ([string]::IsNullOrWhiteSpace([string]$commissioningSerialSession.sessionId)) {
+    throw "startup preparation is missing the commissioning serial session"
+  }
+  Write-TestbedPhase "rediscover-simulated-hardware-after-reboot"
+  Write-TestbedSerialDiscoveryAdapter
+  $runtimeReady = Wait-RuntimeReady
+  Initialize-TestbedHardwareBindings
+  $runtimeReady = Wait-RuntimeReady
+  $startupState = Get-TestbedInstalledRuntimeOwnerState `
+    -OwnerManifest $preparation.ownerManifest `
+    -OwnerClaim $claim `
+    -RuntimeReady $runtimeReady `
+    -MachinePath $MachinePath
+  return [ordered]@{
+    preparation = $preparation
+    claim = $claim
+    commissioningSerialSession = $commissioningSerialSession
+    removedUndeclaredCaches = @($preparation.state.removedUndeclaredCaches)
+    runtimeReady = $runtimeReady
+    startupState = $startupState
+  }
+}
+
+function Write-TestbedStartupObservationFailure(
+  [string]$Path,
+  [string]$FailedStage,
+  [string]$Diagnostic
+) {
+  $boundedDiagnostic = if ([string]::IsNullOrWhiteSpace($Diagnostic)) {
+    "startup observation failed"
+  } else {
+    $Diagnostic.Substring(0, [Math]::Min($Diagnostic.Length, 1024))
+  }
+  $report = [ordered]@{
+    schemaVersion = "vem-installed-runtime-startup-acceptance/v1"
+    ok = $false
+    mode = "full"
+    commit = $Commit
+    failedStage = $FailedStage
+    reasonCode = "startup_observation_failed"
+    diagnostics = @($boundedDiagnostic)
+  }
+  $temporaryPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+  try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    [IO.File]::WriteAllText(
+      $temporaryPath,
+      (($report | ConvertTo-Json -Depth 8) + "`n"),
+      [Text.UTF8Encoding]::new($false)
+    )
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force -ErrorAction Stop
+  } finally {
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Start-TestbedInstalledRuntimeOwners {
   param(
     [object]$GuestInput,
@@ -1242,28 +1310,51 @@ $removedUndeclaredCaches = @()
 $runtimeReady = $null
 $startupState = $null
 
+if ($StartupPhase -eq "observe_reboot") {
+  $observationOutPath = Join-Path $handoffRoot "startup-reboot-observation.json"
+  $observationHandoffPath = Join-Path $handoffRoot "startup-reboot-observation-handoff.json"
+  Remove-Item -LiteralPath $observationOutPath, $observationHandoffPath -Force -ErrorAction SilentlyContinue
+  $observationExitCode = 0
+  $observationStage = "post_reboot_owner_observation"
+  try {
+    Write-TestbedPhase "observe-repeated-reboot"
+    $postReboot = Get-TestbedPostRebootRuntimeOwnerState `
+      -GuestInput $guestInput `
+      -PreparationPath $startupPreparationPath `
+      -MachinePath $machineExecutablePath
+    $observationStage = "startup_business_check"
+    [ordered]@{
+      startupOwnerReadiness = $postReboot.startupState.readiness
+    } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $observationHandoffPath -Encoding utf8
+    & node scripts/testbed/startup-owner-acceptance.ts `
+      --mode full `
+      --guest-input $GuestInputPath `
+      --handoff $observationHandoffPath `
+      --out $observationOutPath `
+      --fixture-key startup
+    if ($LASTEXITCODE -ne 0) { $observationExitCode = 1 }
+  } catch {
+    $observationExitCode = 1
+    Write-TestbedStartupObservationFailure `
+      -Path $observationOutPath `
+      -FailedStage $observationStage `
+      -Diagnostic $_.Exception.Message
+  }
+  Get-Content -Raw -LiteralPath $observationOutPath | Write-Output
+  exit $observationExitCode
+}
+
 if ($StartupPhase -eq "resume_reboot") {
   Write-TestbedPhase "resume-after-reboot"
-  $preparation = Read-TestbedStartupPreparation $startupPreparationPath $guestInput
-  $claim = $preparation.state.claim
-  if ($claim.status -ne "provisioned" -or [string]$claim.machineCode -ne [string]$guestInput.machineCode) {
-    throw "startup preparation claim is not the provisioned machine"
-  }
-  $commissioningSerialSession = $preparation.state.commissioningSerialSession
-  if ([string]::IsNullOrWhiteSpace([string]$commissioningSerialSession.sessionId)) {
-    throw "startup preparation is missing the commissioning serial session"
-  }
-  $removedUndeclaredCaches = @($preparation.state.removedUndeclaredCaches)
-  Write-TestbedPhase "rediscover-simulated-hardware-after-reboot"
-  Write-TestbedSerialDiscoveryAdapter
-  $runtimeReady = Wait-RuntimeReady
-  Initialize-TestbedHardwareBindings
-  $runtimeReady = Wait-RuntimeReady
-  $startupState = Get-TestbedInstalledRuntimeOwnerState `
-    -OwnerManifest $preparation.ownerManifest `
-    -OwnerClaim $claim `
-    -RuntimeReady $runtimeReady `
+  $postReboot = Get-TestbedPostRebootRuntimeOwnerState `
+    -GuestInput $guestInput `
+    -PreparationPath $startupPreparationPath `
     -MachinePath $machineExecutablePath
+  $claim = $postReboot.claim
+  $commissioningSerialSession = $postReboot.commissioningSerialSession
+  $removedUndeclaredCaches = @($postReboot.removedUndeclaredCaches)
+  $runtimeReady = $postReboot.runtimeReady
+  $startupState = $postReboot.startupState
 } else {
 if ($Mode -in @("fast", "full")) {
   Clear-TestbedVisionProcesses $guestInput

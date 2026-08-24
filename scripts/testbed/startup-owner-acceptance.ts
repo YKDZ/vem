@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,6 +26,26 @@ function recordValue(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
     : {};
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    const record = value as JsonRecord;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, canonicalJson(record[key])]),
+    );
+  }
+  return value;
+}
+
+function ownerConfigurationSha256(manifest: JsonRecord): string {
+  const { installedAt: _installedAt, ...configuration } = manifest;
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalJson(configuration)))
+    .digest("hex");
 }
 
 function required(value: unknown, label: string): string {
@@ -264,6 +285,10 @@ export function validateStartupOwnerReadinessEvidence(
   if (manifest?.schemaVersion !== MANIFEST_SCHEMA) {
     throw new Error("runtime owner manifest schema is invalid");
   }
+  const ownerInstalledAt = observedTimestamp(
+    manifest.installedAt,
+    "runtime owner installation",
+  );
   const daemonOwner = assertOwner(recordValue(manifest.owners), "daemon", {
     name: "VemVendingDaemon",
     account: "LocalSystem",
@@ -341,6 +366,8 @@ export function validateStartupOwnerReadinessEvidence(
     visionTask: visionOwner.name,
     kioskSessionId: sessionId,
     catalogRoute: observationMachineUi.route,
+    ownerInstalledAt,
+    ownerConfigurationSha256: ownerConfigurationSha256(manifest),
     modeEvidence: validateModeEvidence(evidence, manifest, mode, sessionId),
   };
 }
@@ -349,10 +376,12 @@ export function runStartupOwnerAcceptance({
   mode,
   handoff,
   fixtureKey,
+  commit,
 }: {
   mode: string;
   handoff: JsonRecord;
   fixtureKey: string;
+  commit?: string;
 }): JsonRecord {
   if (!MODES.has(mode)) throw new Error("startup mode must be fast or full");
   if (fixtureKey !== "startup") {
@@ -366,6 +395,7 @@ export function runStartupOwnerAcceptance({
       schemaVersion: REPORT_SCHEMA,
       ok: false,
       mode,
+      ...(commit ? { commit } : {}),
       diagnostics: ["startup owner readiness projection is absent"],
     };
   }
@@ -374,6 +404,7 @@ export function runStartupOwnerAcceptance({
       schemaVersion: REPORT_SCHEMA,
       ok: true,
       mode,
+      ...(commit ? { commit } : {}),
       summary: validateStartupOwnerReadinessEvidence(evidence, mode),
     };
   } catch (error) {
@@ -383,6 +414,7 @@ export function runStartupOwnerAcceptance({
       schemaVersion: REPORT_SCHEMA,
       ok: false,
       mode,
+      ...(commit ? { commit } : {}),
       failedStage: startupError?.failedStage ?? "evidence",
       reasonCode: startupError?.reasonCode ?? "startup_evidence_invalid",
       diagnostics: [error instanceof Error ? error.message : String(error)],
@@ -405,12 +437,27 @@ async function main(): Promise<void> {
   const handoffPath = option(args, "handoff");
   const outPath = option(args, "out");
   const fixtureKey = option(args, "fixture-key");
-  option(args, "guest-input");
+  const guestInputPath = option(args, "guest-input");
   if (!isAbsolute(handoffPath) || !isAbsolute(outPath)) {
     throw new Error("--handoff and --out must be absolute paths");
   }
   const handoff = JSON.parse(await readFile(handoffPath, "utf8")) as JsonRecord;
-  const report = runStartupOwnerAcceptance({ mode, handoff, fixtureKey });
+  const guestInput = JSON.parse(
+    await readFile(guestInputPath, "utf8"),
+  ) as JsonRecord;
+  const commit = required(
+    recordValue(guestInput.workflowIdentity).githubSha,
+    "guest input workflow commit",
+  ).toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(commit)) {
+    throw new Error("guest input workflow commit must be a full Git SHA");
+  }
+  const report = runStartupOwnerAcceptance({
+    mode,
+    handoff,
+    fixtureKey,
+    commit,
+  });
   await mkdir(startupArtifactDirectory(outPath), { recursive: true });
   await writeFile(resolve(outPath), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report)}\n`);

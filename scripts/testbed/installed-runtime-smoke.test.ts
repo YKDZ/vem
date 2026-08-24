@@ -271,7 +271,7 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /Get-TestbedStartupModeEvidence \$sessionId \$Probe/);
     assert.match(
       guest,
-      /ValidateSet\("single", "prepare_reboot", "resume_reboot"\)/,
+      /ValidateSet\("single", "prepare_reboot", "resume_reboot", "observe_reboot"\)/,
     );
     assert.match(guest, /vem-local-testbed-startup-preparation\/v1/);
     assert.match(
@@ -280,7 +280,22 @@ describe("installed production runtime smoke", () => {
     );
     assert.match(
       guest,
-      /\$StartupPhase -eq "resume_reboot"[\s\S]*Read-TestbedStartupPreparation[\s\S]*Get-TestbedInstalledRuntimeOwnerState/,
+      /function Get-TestbedPostRebootRuntimeOwnerState[\s\S]*Read-TestbedStartupPreparation[\s\S]*Get-TestbedInstalledRuntimeOwnerState/,
+    );
+    const observeStart = guest.indexOf(
+      'if ($StartupPhase -eq "observe_reboot")',
+    );
+    const observeExit = guest.indexOf(
+      "exit $observationExitCode",
+      observeStart,
+    );
+    assert.ok(observeStart >= 0 && observeExit > observeStart);
+    const observeBranch = guest.slice(observeStart, observeExit);
+    assert.match(observeBranch, /startup-owner-acceptance\.ts/);
+    assert.match(observeBranch, /startup-reboot-observation\.json/);
+    assert.doesNotMatch(
+      observeBranch,
+      /Start-ScheduledTask|Install-TestbedRuntimeOwnersForAcceptance|machine-build|deploy-runtime|acceptance-tracks/,
     );
     assert.match(guest, /Unregister-ScheduledTask -TaskName \$taskSpec\.Name/);
     assert.doesNotMatch(guest, /\$daemonProcess = Start-Process/);

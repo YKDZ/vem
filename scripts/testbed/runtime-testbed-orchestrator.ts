@@ -25,6 +25,7 @@ import {
   BUSINESS_CHECK_REGISTRY,
   selectBusinessChecks,
 } from "./business-check-registry.ts";
+import { redactSensitiveEvidenceText } from "./failure-evidence-redaction.ts";
 import { synthesizeProcessReplayVideos } from "./process-replay-video.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -126,6 +127,7 @@ const GUEST_TRANSFER_MAX_TIMEOUT_MS = 30 * 60_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
 const GUEST_FAST_ADDITIONAL_FOCUS_TIMEOUT_MS = 5 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
+const GUEST_STARTUP_OBSERVATION_TIMEOUT_MS = 10 * 60_000;
 const GUEST_REBOOT_DISCONNECT_TIMEOUT_MS = 2 * 60_000;
 const GUEST_REBOOT_READY_TIMEOUT_MS = 5 * 60_000;
 const GUEST_REBOOT_POLL_MS = 2_000;
@@ -133,7 +135,11 @@ const GUEST_REBOOT_PROBE_TIMEOUT_MS = 20_000;
 const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
 const GUEST_ACCEPTANCE_INPUT_CACHE = "D:\\runtime-cache\\v1\\acceptance-inputs";
 
-type GuestStartupPhase = "single" | "prepare_reboot" | "resume_reboot";
+type GuestStartupPhase =
+  | "single"
+  | "prepare_reboot"
+  | "resume_reboot"
+  | "observe_reboot";
 
 function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -194,6 +200,49 @@ export function reconstructedAcceptancePasses(
   focus: string[] = [],
 ): number {
   return mode === "full" && focus.length === 0 ? 2 : 1;
+}
+
+export function additionalStartupRebootObservationOrdinals({
+  mode,
+  focus = [],
+  pass,
+}: {
+  mode: string;
+  focus?: string[];
+  pass: number;
+}): number[] {
+  return mode === "full" && focus.length === 0 && pass === 2
+    ? Array.from({ length: 8 }, (_, index) => index + 3)
+    : [];
+}
+
+export async function collectStartupRebootObservations({
+  ordinals,
+  observe,
+}: {
+  ordinals: number[];
+  observe: (ordinal: number) => Promise<{ ok: boolean; reportPath: string }>;
+}): Promise<{
+  ok: boolean;
+  reportPaths: string[];
+  firstFailureOrdinal: number | null;
+}> {
+  const reportPaths: string[] = [];
+  for (const ordinal of ordinals) {
+    if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
+      throw new Error("startup reboot observation ordinal must be positive");
+    }
+    const result = await observe(ordinal);
+    reportPaths.push(required(result.reportPath, "startup observation report"));
+    if (!result.ok) {
+      return {
+        ok: false,
+        reportPaths,
+        firstFailureOrdinal: ordinal,
+      };
+    }
+  }
+  return { ok: true, reportPaths, firstFailureOrdinal: null };
 }
 
 export function processReplayGuestDirectory({
@@ -1515,6 +1564,14 @@ async function stageAndRunGuest({
       `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
       "exit $LASTEXITCODE",
     ].join("\n");
+    const phaseBudget =
+      startupPhase === "observe_reboot"
+        ? {
+            timeoutMs: GUEST_STARTUP_OBSERVATION_TIMEOUT_MS,
+            timeoutLabel:
+              "guest installed-owner reboot observation; no build or business replay",
+          }
+        : executionBudget;
     try {
       await runProcess(
         "ssh",
@@ -1529,8 +1586,8 @@ async function stageAndRunGuest({
           encodedPowerShell(invokePowerShell7),
         ],
         {
-          timeoutMs: executionBudget.timeoutMs,
-          timeoutLabel: executionBudget.timeoutLabel,
+          timeoutMs: phaseBudget.timeoutMs,
+          timeoutLabel: phaseBudget.timeoutLabel,
         },
       );
     } catch (error) {
@@ -1622,6 +1679,144 @@ async function stageAndRunGuest({
       }
     }
     throw guestError;
+  }
+  const startupObservationOrdinals = additionalStartupRebootObservationOrdinals(
+    { mode, focus, pass },
+  );
+  if (startupObservationOrdinals.length > 0) {
+    const observationRoot = join(
+      runRoot,
+      "compact",
+      "startup-reboot-observations",
+    );
+    await mkdir(observationRoot, { recursive: true });
+    const remoteObservationPath =
+      "C:/ProgramData/VEM/testbed/startup-reboot-observation.json";
+    const observationLoop = await collectStartupRebootObservations({
+      ordinals: startupObservationOrdinals,
+      observe: async (ordinal) => {
+        const reportPath = join(
+          observationRoot,
+          `startup-reboot-observation-${ordinal}.json`,
+        );
+        let failedStage = "clear_previous_observation";
+        let cycleError: unknown = null;
+        try {
+          const clearObservation =
+            "Remove-Item -LiteralPath 'C:\\ProgramData\\VEM\\testbed\\startup-reboot-observation.json' -Force -ErrorAction SilentlyContinue";
+          await runProcess(
+            "ssh",
+            [
+              ...ssh,
+              remote,
+              "powershell.exe",
+              "-NoProfile",
+              "-NonInteractive",
+              "-EncodedCommand",
+              encodedPowerShell(clearObservation),
+            ],
+            {
+              timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+              timeoutLabel: `startup reboot observation ${ordinal} cleanup`,
+            },
+          );
+          failedStage = "reboot";
+          await rebootGuestAfterOwnerInstall({ remote, ssh });
+          failedStage = "post_reboot_owner_observation";
+          await runGuestPhase("observe_reboot");
+        } catch (error) {
+          cycleError = error;
+        }
+        try {
+          await runProcess(
+            "scp",
+            [...scp, `${remote}:${remoteObservationPath}`, reportPath],
+            {
+              timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+              timeoutLabel: `startup reboot observation ${ordinal} evidence transfer`,
+            },
+          );
+        } catch (copyError) {
+          const diagnostic = redactSensitiveEvidenceText(
+            cycleError instanceof Error
+              ? cycleError.message
+              : copyError instanceof Error
+                ? copyError.message
+                : String(cycleError ?? copyError),
+          ).slice(0, 1_024);
+          await writeJson(reportPath, {
+            schemaVersion: "vem-installed-runtime-startup-acceptance/v1",
+            ok: false,
+            mode: "full",
+            commit,
+            failedStage,
+            reasonCode: "startup_observation_missing",
+            diagnostics: [diagnostic || "startup observation was not copied"],
+          });
+        }
+        let report: JsonRecord;
+        try {
+          report = JSON.parse(await readFile(reportPath, "utf8")) as JsonRecord;
+        } catch (error) {
+          report = {
+            schemaVersion: "vem-installed-runtime-startup-acceptance/v1",
+            ok: false,
+            mode: "full",
+            commit,
+            failedStage: "evidence",
+            reasonCode: "startup_observation_unreadable",
+            diagnostics: [
+              redactSensitiveEvidenceText(
+                error instanceof Error ? error.message : String(error),
+              ).slice(0, 1_024),
+            ],
+          };
+          await writeJson(reportPath, report);
+        }
+        return {
+          ok: cycleError === null && report.ok === true,
+          reportPath,
+        };
+      },
+    });
+    const passOneStartup = await findFile(
+      join(runRoot, "compact", "pass-1"),
+      "startup-owner-readiness.json",
+    );
+    const passTwoStartup = await findFile(
+      join(runRoot, "compact", "pass-2"),
+      "startup-owner-readiness.json",
+    );
+    if (!passOneStartup || !passTwoStartup) {
+      throw new Error(
+        "release full startup observations are missing reconstructed pass reports",
+      );
+    }
+    try {
+      await runProcess(
+        process.execPath,
+        [
+          "scripts/testbed/startup-reboot-stability.ts",
+          "--commit",
+          commit,
+          "--reconstructed-pass-one",
+          passOneStartup,
+          "--reconstructed-pass-two",
+          passTwoStartup,
+          ...observationLoop.reportPaths.flatMap((reportPath) => [
+            "--same-install-repeat",
+            reportPath,
+          ]),
+          "--out",
+          join(runRoot, "compact", "startup-reboot-stability.json"),
+        ],
+        { cwd: workspace },
+      );
+    } catch (error) {
+      const processError = error as ProcessError;
+      processError.businessFailure = true;
+      throw processError;
+    }
   }
   return {};
 }
@@ -1947,6 +2142,8 @@ async function executeRun(
           passA,
           "--pass-b",
           passB,
+          "--startup-stability",
+          join(compact, "startup-reboot-stability.json"),
           "--out",
           join(compact, "full-workflow-stability-gate.json"),
         ],

@@ -10,6 +10,8 @@ import {
   guestAcceptanceExecuteCommand,
   identicalVisionCoreArtifactSnapshot,
   guestAcceptanceExecutionBudget,
+  additionalStartupRebootObservationOrdinals,
+  collectStartupRebootObservations,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
   processReplayGuestDirectory,
@@ -343,6 +345,63 @@ describe("runtime testbed scheduler contract", () => {
     assert.equal(reconstructedAcceptancePasses("fast", ["startup"]), 1);
   });
 
+  it("adds eight lightweight same-install observations only after release full pass two", () => {
+    assert.deepEqual(
+      additionalStartupRebootObservationOrdinals({
+        mode: "full",
+        focus: [],
+        pass: 2,
+      }),
+      [3, 4, 5, 6, 7, 8, 9, 10],
+    );
+    assert.deepEqual(
+      additionalStartupRebootObservationOrdinals({
+        mode: "full",
+        focus: ["startup"],
+        pass: 1,
+      }),
+      [],
+    );
+    assert.deepEqual(
+      additionalStartupRebootObservationOrdinals({
+        mode: "full",
+        focus: [],
+        pass: 1,
+      }),
+      [],
+    );
+    assert.deepEqual(
+      additionalStartupRebootObservationOrdinals({
+        mode: "fast",
+        focus: [],
+        pass: 1,
+      }),
+      [],
+    );
+  });
+
+  it("stops the homogeneous reboot loop at the first failed observation", async () => {
+    const invoked: number[] = [];
+    const result = await collectStartupRebootObservations({
+      ordinals: [3, 4, 5, 6],
+      observe: async (ordinal) => {
+        invoked.push(ordinal);
+        return {
+          ok: ordinal !== 4,
+          reportPath: `/reports/reboot-${ordinal}.json`,
+        };
+      },
+    });
+
+    assert.deepEqual(invoked, [3, 4]);
+    assert.deepEqual(result.reportPaths, [
+      "/reports/reboot-3.json",
+      "/reports/reboot-4.json",
+    ]);
+    assert.equal(result.ok, false);
+    assert.equal(result.firstFailureOrdinal, 4);
+  });
+
   it("tells the guest which reconstructed pass owns the runtime build", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.ts", import.meta.url),
@@ -609,7 +668,11 @@ describe("runtime testbed scheduler contract", () => {
       /const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 \* 60_000/,
     );
     assert.match(source, /error\.timedOut = true/);
-    assert.match(source, /timeoutLabel: executionBudget\.timeoutLabel/);
+    assert.match(source, /timeoutLabel: phaseBudget\.timeoutLabel/);
+    assert.match(
+      source,
+      /const GUEST_STARTUP_OBSERVATION_TIMEOUT_MS = 10 \* 60_000/,
+    );
     assert.match(source, /child\.kill\("SIGTERM"\)/);
     assert.match(
       source,

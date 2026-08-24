@@ -2219,6 +2219,31 @@ describe("full workflow aggregate validator", () => {
   });
 });
 
+function writeStartupStability(
+  root: string,
+  overrides: JsonRecord = {},
+): string {
+  const path = join(root, "startup-reboot-stability.json");
+  writeFileSync(
+    path,
+    `${JSON.stringify({
+      schemaVersion: "vem-startup-reboot-stability/v1",
+      commit: "c".repeat(40),
+      ok: true,
+      minimumSampleCount: 10,
+      sampleCount: 10,
+      reconstructedPassCount: 2,
+      sameInstallRepeatCount: 8,
+      observationListSha256: "8".repeat(64),
+      observations: [],
+      firstFailure: null,
+      gateFailures: [],
+      ...overrides,
+    })}\n`,
+  );
+  return path;
+}
+
 describe("full workflow stability gate", () => {
   it("compares the registered full business-set order across two reconstructed passes", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-"));
@@ -2247,10 +2272,12 @@ describe("full workflow stability gate", () => {
       const passB = join(root, "pass-b.json");
       writeFileSync(passA, `${JSON.stringify(report("a"))}\n`);
       writeFileSync(passB, `${JSON.stringify(report("b"))}\n`);
+      const startupStabilityPath = writeStartupStability(root);
       const gate = buildStabilityGateReport({
         commit: "c".repeat(40),
         passAPath: passA,
         passBPath: passB,
+        startupStabilityPath,
       });
       assert.equal(gate.ok, true);
       assert.match(
@@ -2260,6 +2287,10 @@ describe("full workflow stability gate", () => {
       assert.equal(
         recordValue(gate.acceptanceReleaseManifest).schemaVersion,
         "vem-runtime-testbed-acceptance-release/v1",
+      );
+      assert.equal(
+        recordValue(gate.startupRebootStability).observationListSha256,
+        "8".repeat(64),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2295,11 +2326,13 @@ describe("full workflow stability gate", () => {
       const passB = join(root, "pass-b.json");
       writeFileSync(passA, `${JSON.stringify(report("a"))}\n`);
       writeFileSync(passB, `${JSON.stringify(report("b"))}\n`);
+      const startupStabilityPath = writeStartupStability(root);
       assert.equal(
         buildStabilityGateReport({
           commit: "c".repeat(40),
           passAPath: passA,
           passBPath: passB,
+          startupStabilityPath,
         }).ok,
         true,
       );
@@ -2338,10 +2371,12 @@ describe("full workflow stability gate", () => {
       const passB = join(root, "pass-b.json");
       writeFileSync(passA, `${JSON.stringify(first)}\n`);
       writeFileSync(passB, `${JSON.stringify(second)}\n`);
+      const startupStabilityPath = writeStartupStability(root);
       const gate = buildStabilityGateReport({
         commit: "c".repeat(40),
         passAPath: passA,
         passBPath: passB,
+        startupStabilityPath,
       });
       assert.equal(gate.ok, false);
       assert.ok(
@@ -2386,10 +2421,12 @@ describe("full workflow stability gate", () => {
       const out = join(root, "full-workflow-stability-gate.json");
       writeFileSync(passA, `${JSON.stringify(first)}\n`);
       writeFileSync(passB, `${JSON.stringify(second)}\n`);
+      const startupStabilityPath = writeStartupStability(root);
       const gate = buildStabilityGateReport({
         commit: "c".repeat(40),
         passAPath: passA,
         passBPath: passB,
+        startupStabilityPath,
       });
       assert.equal(gate.ok, false);
       assert.equal("acceptanceReleaseManifest" in gate, false);
@@ -2405,6 +2442,8 @@ describe("full workflow stability gate", () => {
           passA,
           "--pass-b",
           passB,
+          "--startup-stability",
+          startupStabilityPath,
           "--out",
           out,
         ],
@@ -2415,6 +2454,57 @@ describe("full workflow stability gate", () => {
         existsSync(join(root, "acceptance-release-manifest.json")),
         false,
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("withholds release when the ten-reboot startup gate fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-startup-release-failed-"));
+    try {
+      const descriptors = BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.fullRequired,
+      );
+      const workflow = (reconstruction: string) => ({
+        schemaVersion: "vem-local-testbed-full-workflow/v4",
+        mode: "full",
+        ok: true,
+        businessSets: Object.fromEntries(
+          descriptors.map((descriptor) => [
+            descriptor.name,
+            { status: "passed" },
+          ]),
+        ),
+        execution: {
+          selectedBusinessSets: descriptors.map(
+            (descriptor) => descriptor.name,
+          ),
+        },
+        identity: identity(reconstruction),
+      });
+      const passA = join(root, "pass-a.json");
+      const passB = join(root, "pass-b.json");
+      writeFileSync(passA, `${JSON.stringify(workflow("a"))}\n`);
+      writeFileSync(passB, `${JSON.stringify(workflow("b"))}\n`);
+      const startupStabilityPath = writeStartupStability(root, {
+        ok: false,
+        sampleCount: 4,
+        gateFailures: ["observation 4 failed"],
+      });
+
+      const gate = buildStabilityGateReport({
+        commit: "c".repeat(40),
+        passAPath: passA,
+        passBPath: passB,
+        startupStabilityPath,
+      });
+
+      assert.equal(gate.ok, false);
+      assert.match(
+        String(gate.gateFailures),
+        /startup reboot stability failed/,
+      );
+      assert.equal("acceptanceReleaseManifest" in gate, false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

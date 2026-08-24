@@ -2,6 +2,23 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { runStartupOwnerAcceptance } from "./startup-owner-acceptance.ts";
+import {
+  buildStartupRebootStabilityReport,
+  type StartupRebootObservationInput,
+} from "./startup-reboot-stability.ts";
+
+const commit = "a".repeat(40);
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
 
 function fullEvidence() {
   return {
@@ -81,7 +98,72 @@ function run(evidence = fullEvidence()) {
     mode: "full",
     fixtureKey: "startup",
     handoff: { startupOwnerReadiness: evidence },
+    commit,
   });
+}
+
+function acceptedObservation({
+  ordinal,
+  installedAt,
+  ownerConfigurationSha256 = "b".repeat(64),
+}: {
+  ordinal: number;
+  installedAt: string;
+  ownerConfigurationSha256?: string;
+}): JsonRecord {
+  return {
+    schemaVersion: "vem-installed-runtime-startup-acceptance/v1",
+    ok: true,
+    mode: "full",
+    commit,
+    summary: {
+      ownerInstalledAt: installedAt,
+      ownerConfigurationSha256,
+      modeEvidence: {
+        source: "windows_reboot_logon_probe",
+        bootMarker: `boot:VEM-VM:${ordinal}`,
+        bootStartedAt: `2026-08-24T12:${String(ordinal).padStart(2, "0")}:00.000Z`,
+        bootObservedAt: `2026-08-24T12:${String(ordinal).padStart(2, "0")}:20.000Z`,
+        logonMarker: `logon:VEMKiosk:3:${ordinal}`,
+        logonObservedAt: `2026-08-24T12:${String(ordinal).padStart(2, "0")}:20.000Z`,
+        tasks: {},
+      },
+    },
+  };
+}
+
+function releaseObservations(): StartupRebootObservationInput[] {
+  const passOneInstalledAt = "2026-08-24T11:00:00.0000000Z";
+  const passTwoInstalledAt = "2026-08-24T11:30:00.0000000Z";
+  return [
+    {
+      source: "reconstructed_full_pass",
+      pass: 1,
+      reportPath: "/reports/pass-1/startup-owner-readiness.json",
+      report: acceptedObservation({
+        ordinal: 1,
+        installedAt: passOneInstalledAt,
+      }),
+    },
+    {
+      source: "reconstructed_full_pass",
+      pass: 2,
+      reportPath: "/reports/pass-2/startup-owner-readiness.json",
+      report: acceptedObservation({
+        ordinal: 2,
+        installedAt: passTwoInstalledAt,
+      }),
+    },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      source: "same_install_repeat",
+      pass: 2,
+      reportPath: `/reports/reboot-${index + 3}.json`,
+      report: acceptedObservation({
+        ordinal: index + 3,
+        installedAt: passTwoInstalledAt,
+      }),
+    })),
+  ];
 }
 
 describe("installed runtime startup lifecycle evidence", () => {
@@ -89,6 +171,15 @@ describe("installed runtime startup lifecycle evidence", () => {
     const report = run();
     assert.equal(report.ok, true);
     assert.equal(report.mode, "full");
+    assert.equal(report.commit, commit);
+    assert.equal(
+      recordValue(report.summary).ownerInstalledAt,
+      "2026-08-24T12:00:00.0000000Z",
+    );
+    assert.match(
+      String(recordValue(report.summary).ownerConfigurationSha256),
+      /^[a-f0-9]{64}$/,
+    );
   });
 
   it("rejects a current-boot marker fabricated after warm owner starts", () => {
@@ -123,5 +214,94 @@ describe("installed runtime startup lifecycle evidence", () => {
     assert.equal(report.failedStage, "machine_ui_owner");
     assert.equal(report.reasonCode, "task_action_failed");
     assert.match(String(report.diagnostics), /0xC000013A/);
+  });
+});
+
+describe("startup reboot release stability", () => {
+  it("accepts ten same-commit and same-owner observations without rebuilding repeated samples", () => {
+    const report = buildStartupRebootStabilityReport({
+      commit,
+      observations: releaseObservations(),
+    });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.sampleCount, 10);
+    assert.equal(report.reconstructedPassCount, 2);
+    assert.equal(report.sameInstallRepeatCount, 8);
+    assert.match(String(report.observationListSha256), /^[a-f0-9]{64}$/);
+  });
+
+  it("fails closed on the first failed startup observation", () => {
+    const observations = releaseObservations();
+    observations[4].report = {
+      schemaVersion: "vem-installed-runtime-startup-acceptance/v1",
+      ok: false,
+      mode: "full",
+      commit,
+      failedStage: "vision_owner",
+      reasonCode: "task_action_failed",
+      diagnostics: ["VEMVisionRuntime action failed with 0xC000013A"],
+    };
+
+    const report = buildStartupRebootStabilityReport({
+      commit,
+      observations,
+    });
+
+    assert.equal(report.ok, false);
+    assert.match(
+      String(arrayValue(report.gateFailures)[0]),
+      /observation 5 failed/,
+    );
+    assert.equal(recordValue(report.firstFailure).observation, 5);
+    assert.equal(
+      recordValue(report.firstFailure).reasonCode,
+      "task_action_failed",
+    );
+  });
+
+  it("rejects owner drift, commit drift, duplicate boots, and missing samples", () => {
+    const cases = [
+      {
+        expected: /owner configuration differs/,
+        mutate(observations: ReturnType<typeof releaseObservations>) {
+          recordValue(observations[6].report.summary).ownerConfigurationSha256 =
+            "c".repeat(64);
+        },
+      },
+      {
+        expected: /commit differs/,
+        mutate(observations: ReturnType<typeof releaseObservations>) {
+          observations[6].report.commit = "d".repeat(40);
+        },
+      },
+      {
+        expected: /boot marker is not unique/,
+        mutate(observations: ReturnType<typeof releaseObservations>) {
+          recordValue(
+            recordValue(observations[6].report.summary).modeEvidence,
+          ).bootMarker = recordValue(
+            recordValue(observations[5].report.summary).modeEvidence,
+          ).bootMarker;
+        },
+      },
+      {
+        expected: /at least 10/,
+        mutate(observations: ReturnType<typeof releaseObservations>) {
+          observations.pop();
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const observations = releaseObservations();
+      testCase.mutate(observations);
+      const report = buildStartupRebootStabilityReport({
+        commit,
+        observations,
+      });
+      assert.equal(report.ok, false);
+      assert.match(String(report.gateFailures), testCase.expected);
+    }
   });
 });

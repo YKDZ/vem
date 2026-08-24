@@ -69,6 +69,22 @@ function loadReport(path: string, label: string): JsonRecord {
   }
 }
 
+function loadStartupStabilityReport(path: string): JsonRecord {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
+    if (value?.schemaVersion !== "vem-startup-reboot-stability/v1") {
+      throw new Error("unexpected schema version");
+    }
+    return value;
+  } catch (error) {
+    throw new Error(
+      `startup stability report is unreadable at ${path}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 function sameStringArray(
   actual: unknown,
   expected: readonly unknown[],
@@ -99,13 +115,18 @@ export function buildStabilityGateReport({
   commit,
   passAPath,
   passBPath,
+  startupStabilityPath,
 }: {
   commit?: unknown;
   passAPath?: unknown;
   passBPath?: unknown;
+  startupStabilityPath?: unknown;
 } = {}): JsonRecord {
   const passA = loadReport(String(passAPath), "passA");
   const passB = loadReport(String(passBPath), "passB");
+  const startupStability = loadStartupStabilityReport(
+    String(startupStabilityPath),
+  );
   const gateFailures: string[] = [];
   let acceptanceRelease: JsonRecord | null = null;
   try {
@@ -123,6 +144,29 @@ export function buildStabilityGateReport({
   }
   if (passA.ok !== true) gateFailures.push("pass A did not pass");
   if (passB.ok !== true) gateFailures.push("pass B did not pass");
+  if (startupStability.ok !== true) {
+    const reason = arrayValue(startupStability.gateFailures)[0];
+    gateFailures.push(
+      `startup reboot stability failed${reason ? `: ${String(reason)}` : ""}`,
+    );
+  }
+  if (startupStability.commit !== commit) {
+    gateFailures.push(
+      "startup reboot stability commit does not match gate commit",
+    );
+  }
+  if (
+    Number(startupStability.sampleCount) < 10 ||
+    Number(startupStability.reconstructedPassCount) !== 2 ||
+    Number(startupStability.sameInstallRepeatCount) < 8
+  ) {
+    gateFailures.push("startup reboot stability sample coverage is incomplete");
+  }
+  if (
+    !/^[a-f0-9]{64}$/.test(String(startupStability.observationListSha256 ?? ""))
+  ) {
+    gateFailures.push("startup reboot observation list digest is invalid");
+  }
   const passASets = recordValue(passA.businessSets);
   const passBSets = recordValue(passB.businessSets);
   for (const key of REQUIRED_EXECUTION_ORDER) {
@@ -253,6 +297,15 @@ export function buildStabilityGateReport({
         identity: passB.identity ?? null,
       },
     },
+    startupRebootStability: {
+      ok: startupStability.ok,
+      sampleCount: startupStability.sampleCount ?? null,
+      reconstructedPassCount: startupStability.reconstructedPassCount ?? null,
+      sameInstallRepeatCount: startupStability.sameInstallRepeatCount ?? null,
+      observationListSha256: startupStability.observationListSha256 ?? null,
+      firstFailure: startupStability.firstFailure ?? null,
+      gateFailures: arrayValue(startupStability.gateFailures),
+    },
     gateFailures,
   };
 }
@@ -268,6 +321,7 @@ async function main(): Promise<void> {
     commit: option(args, "commit"),
     passAPath: option(args, "pass-a"),
     passBPath: option(args, "pass-b"),
+    startupStabilityPath: option(args, "startup-stability"),
   });
   const outPath = option(args, "out");
   if (report.ok && report.acceptanceReleaseManifest) {
