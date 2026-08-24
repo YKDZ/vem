@@ -254,6 +254,17 @@ function Get-ObservedOwnerProcesses {
   )
 }
 
+function Get-ConfirmedOwnerProcesses {
+  `$observed = @(Get-ObservedOwnerProcesses)
+  if (@(`$observed | Where-Object { -not (Test-ExpectedExecutable `$_) }).Count -eq 0) {
+    return `$observed
+  }
+  # Win32_Process can retain one just-exited PID for a single snapshot. Confirm
+  # the conflict once before classifying it as a deterministic competing owner.
+  Start-Sleep -Milliseconds 100
+  return @(Get-ObservedOwnerProcesses)
+}
+
 function Test-ExpectedExecutable([object]`$Process) {
   if ([string]::IsNullOrWhiteSpace([string]`$Process.ExecutablePath)) { return `$false }
   try {
@@ -316,7 +327,7 @@ try {
     Stop-OwnerLaunch "validate_artifact" "artifact_missing" "canonical owner executable is missing"
   }
 
-  `$observed = @(Get-ObservedOwnerProcesses)
+  `$observed = @(Get-ConfirmedOwnerProcesses)
   `$unexpected = @(`$observed | Where-Object { -not (Test-ExpectedExecutable `$_) })
   if (`$unexpected.Count -gt 0) {
     Stop-OwnerLaunch "validate_owner" "owner_identity_conflict" "a competing same-name process does not use the canonical executable"
@@ -365,7 +376,7 @@ try {
       if (`$null -ne `$startedProcess -and `$startedProcess.HasExited) {
         Stop-OwnerLaunch "wait_process" "process_exited_early" "canonical owner process exited before readiness"
       }
-      `$observed = @(Get-ObservedOwnerProcesses)
+      `$observed = @(Get-ConfirmedOwnerProcesses)
       if (`$null -eq `$startedProcess -and `$observed.Count -eq 0) {
         Stop-OwnerLaunch "wait_process" "process_exited_early" "existing canonical owner process exited before readiness"
       }

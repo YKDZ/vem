@@ -34,6 +34,11 @@ interface OwnerHarnessOutput {
     processId: number;
     invocationId: string;
   }>;
+  transientReentry: {
+    status: string;
+    reasonCode: string;
+    processId: number;
+  };
 }
 
 function source(path: string): string {
@@ -229,6 +234,18 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.notEqual(
     output.reentryResults[0].invocationId,
     output.reentryResults[1].invocationId,
+  );
+  assert.deepEqual(
+    {
+      status: output.transientReentry.status,
+      reasonCode: output.transientReentry.reasonCode,
+      processId: output.transientReentry.processId,
+    },
+    {
+      status: "ready",
+      reasonCode: "owner_already_ready",
+      processId: 4101,
+    },
   );
 });
 

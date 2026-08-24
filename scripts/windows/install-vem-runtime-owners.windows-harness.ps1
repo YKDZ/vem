@@ -18,6 +18,7 @@ $global:OwnerHarnessScheduledTasks = @()
 $global:OwnerHarnessServices = @()
 $global:OwnerHarnessProcesses = @()
 $global:OwnerHarnessListeners = @()
+$global:OwnerHarnessTransientMachineConflictSnapshots = 0
 
 function global:Get-LocalUser { param([string]$Name) return [pscustomobject]@{ Name = $Name } }
 function global:Get-ScheduledTask {
@@ -30,7 +31,20 @@ function global:Get-CimInstance {
   if ($ClassName -eq "Win32_Service") { return @($global:OwnerHarnessServices) }
   if ($ClassName -eq "Win32_Process") {
     if ($Filter -match "Name = '([^']+)'") {
-      return @($global:OwnerHarnessProcesses | Where-Object { [string]$_.Name -eq $Matches[1] })
+      $processName = $Matches[1]
+      $observed = @($global:OwnerHarnessProcesses | Where-Object { [string]$_.Name -eq $processName })
+      if ($processName -eq "machine.exe" -and $global:OwnerHarnessTransientMachineConflictSnapshots -gt 0) {
+        $global:OwnerHarnessTransientMachineConflictSnapshots--
+        $observed += [pscustomobject]@{
+          Name = "machine.exe"
+          ProcessId = 4199
+          ParentProcessId = 1
+          SessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+          ExecutablePath = "C:\Transient\machine.exe"
+          CommandLine = '"C:\Transient\machine.exe"'
+        }
+      }
+      return $observed
     }
     if ($Filter -match "ProcessId = ([0-9]+)") {
       return @($global:OwnerHarnessProcesses | Where-Object { [int]$_.ProcessId -eq [int]$Matches[1] }) | Select-Object -First 1
@@ -146,8 +160,11 @@ try {
   $global:OwnerHarnessListeners = @([pscustomobject]@{ OwningProcess = 5101 })
   $firstReentry = (& (Join-Path $runtime "launch-vem-machine-ui.ps1") -Adapter manual | ConvertFrom-Json)
   $secondReentry = (& (Join-Path $runtime "launch-vem-machine-ui.ps1") -Adapter manual | ConvertFrom-Json)
+  $global:OwnerHarnessTransientMachineConflictSnapshots = 1
+  $transientReentry = (& (Join-Path $runtime "launch-vem-machine-ui.ps1") -Adapter manual | ConvertFrom-Json)
   Assert-True ($firstReentry.status -eq "ready" -and $firstReentry.reasonCode -eq "owner_already_ready") "manual adapter replaced an already ready owner"
   Assert-True ($secondReentry.processId -eq 4101 -and $secondReentry.invocationId -ne $firstReentry.invocationId) "repeated manual adapter did not converge to the same owner"
+  Assert-True ($transientReentry.processId -eq 4101 -and $transientReentry.reasonCode -eq "owner_already_ready") "one stale process snapshot blocked a healthy owner"
 
   [ordered]@{
     schemaVersion = "vem-runtime-owners-harness/v3"
@@ -161,6 +178,7 @@ try {
     aclCalls = @($global:OwnerHarnessAclCalls)
     registryWrites = @($global:OwnerHarnessRegistryWrites)
     reentryResults = @($firstReentry, $secondReentry)
+    transientReentry = $transientReentry
   } | ConvertTo-Json -Depth 16
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
