@@ -256,6 +256,104 @@ function validateModeEvidence(
   };
 }
 
+function validateVisionReadiness(value: unknown): JsonRecord {
+  const readiness = recordValue(value);
+  const health = recordValue(readiness.health);
+  const handshake = recordValue(readiness.handshake);
+  if (
+    !["ok", "degraded"].includes(String(health.status)) ||
+    health.protocol !== "vem.vision.v2" ||
+    health.module !== "vision" ||
+    health.mockScenario !== "off" ||
+    handshake.protocol !== "vem.vision.v2" ||
+    handshake.type !== "vision.ready"
+  ) {
+    failStartup(
+      "vision_readiness",
+      "vision_protocol_invalid",
+      "Vision health and ready handshake must use the generated V2 protocol",
+    );
+  }
+  if (health.cameraReady !== true || handshake.cameraReady !== true) {
+    failStartup(
+      "vision_readiness",
+      "vision_camera_not_ready",
+      "Vision camera readiness is not true after startup",
+    );
+  }
+  if (handshake.tryOnReady !== true) {
+    failStartup(
+      "vision_readiness",
+      "vision_try_on_not_ready",
+      "Vision try-on readiness is not true after startup",
+    );
+  }
+  if (
+    handshake.visionBusinessReady !== true ||
+    handshake.businessReadinessDiagnostic !== "ready"
+  ) {
+    failStartup(
+      "vision_readiness",
+      "vision_business_not_ready",
+      "Vision business readiness is not ready after startup",
+    );
+  }
+  const capabilities = Array.isArray(handshake.capabilities)
+    ? handshake.capabilities
+    : [];
+  const requiredCapabilities = [
+    "profile_push",
+    "presence_status",
+    "person_departed",
+    "try_on",
+  ];
+  if (
+    capabilities.some(
+      (capability) =>
+        typeof capability !== "string" ||
+        capability.trim() === "" ||
+        capability.length > 64,
+    ) ||
+    requiredCapabilities.some(
+      (capability) => !capabilities.includes(capability),
+    )
+  ) {
+    failStartup(
+      "vision_readiness",
+      "vision_capability_incomplete",
+      "Vision ready handshake is missing a required V2 capability",
+    );
+  }
+  try {
+    required(handshake.messageId, "Vision ready message ID");
+    observedTimestamp(handshake.timestamp, "Vision ready timestamp");
+    required(handshake.serverName, "Vision ready server name");
+    required(handshake.schemaVersion, "Vision ready schema version");
+    required(handshake.bundleVersion, "Vision ready bundle version");
+  } catch {
+    failStartup(
+      "vision_readiness",
+      "vision_handshake_incomplete",
+      "Vision ready handshake identity is incomplete",
+    );
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(handshake.contractDigest ?? ""))) {
+    failStartup(
+      "vision_readiness",
+      "vision_contract_digest_invalid",
+      "Vision ready contract digest is invalid",
+    );
+  }
+  return {
+    protocol: handshake.protocol,
+    cameraReady: true,
+    tryOnReady: true,
+    visionBusinessReady: true,
+    capabilities,
+    contractDigest: handshake.contractDigest,
+  };
+}
+
 function assertOwner(
   manifest: JsonRecord,
   key: string,
@@ -360,6 +458,7 @@ export function validateStartupOwnerReadinessEvidence(
   ) {
     throw new Error("Vision worker count must be a non-negative integer");
   }
+  const visionReadiness = validateVisionReadiness(observationVision.readiness);
   return {
     daemonService: daemonOwner.name,
     machineUiTask: machineUiOwner.name,
@@ -368,6 +467,7 @@ export function validateStartupOwnerReadinessEvidence(
     catalogRoute: observationMachineUi.route,
     ownerInstalledAt,
     ownerConfigurationSha256: ownerConfigurationSha256(manifest),
+    visionReadiness,
     modeEvidence: validateModeEvidence(evidence, manifest, mode, sessionId),
   };
 }

@@ -865,6 +865,7 @@ function Convert-TestbedStartupProbeToReadiness(
   [object]$OwnerManifest,
   [object]$MachineEvidence,
   [object]$VisionEvidence,
+  [object]$VisionReadiness,
   [string]$Route
 ) {
   $sessionId = [int]$MachineEvidence.sessionId
@@ -896,9 +897,63 @@ function Convert-TestbedStartupProbeToReadiness(
         processCount = @($Probe.processes.vision).Count
         workerCount = @($Probe.visionWorkers).Count
         sessionId = [int]$VisionEvidence.sessionId
+        readiness = $VisionReadiness
       }
     }
     modeEvidence = Get-TestbedStartupModeEvidence $sessionId $Probe
+  }
+}
+
+function Get-TestbedVisionReadinessEvidence {
+  $appDirectory = "C:\VEM\vision\app"
+  $configurationPath = "C:\ProgramData\VEM\vision\site.json"
+  $installRecordPath = "C:\ProgramData\VEM\vision\installed.json"
+  Require-Path $configurationPath
+  Require-Path $installRecordPath
+  $installed = Get-Content -Raw -LiteralPath $installRecordPath -Encoding UTF8 | ConvertFrom-Json
+  if ($installed.schemaVersion -ne "vem-vision-installed/v1" -or
+    [string]$installed.appDirectory -ine $appDirectory -or
+    [string]$installed.runtime -cne "vending-vision.exe") {
+    throw "installed Vision record is invalid for startup readiness"
+  }
+  $fixtureRoot = if ($null -ne $installed.fixtureSet -and
+    -not [string]::IsNullOrWhiteSpace([string]$installed.fixtureSet.root)) {
+    [string]$installed.fixtureSet.root
+  } else {
+    $null
+  }
+  $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
+  $visionProbe = & $visionModule {
+    param($SiteConfiguration, $RecordedFixtureRoot, $InstalledAppDirectory)
+    Invoke-VisionMainProbe `
+      -ConfigurationPath $SiteConfiguration `
+      -FixtureRoot $RecordedFixtureRoot `
+      -AppDirectory $InstalledAppDirectory `
+      -TimeoutSeconds 30
+  } $configurationPath $fixtureRoot $appDirectory
+  return [ordered]@{
+    health = [ordered]@{
+      status = [string]$visionProbe.health.status
+      protocol = [string]$visionProbe.health.protocol
+      module = [string]$visionProbe.health.module
+      mockScenario = [string]$visionProbe.health.mockScenario
+      cameraReady = [bool]$visionProbe.health.cameraReady
+    }
+    handshake = [ordered]@{
+      protocol = [string]$visionProbe.ready.protocol
+      type = [string]$visionProbe.ready.type
+      messageId = [string]$visionProbe.ready.messageId
+      timestamp = [string]$visionProbe.ready.timestamp
+      serverName = [string]$visionProbe.ready.payload.serverName
+      cameraReady = [bool]$visionProbe.ready.payload.cameraReady
+      tryOnReady = [bool]$visionProbe.ready.payload.tryOnReady
+      visionBusinessReady = [bool]$visionProbe.ready.payload.visionBusinessReady
+      businessReadinessDiagnostic = [string]$visionProbe.ready.payload.businessReadinessDiagnostic
+      schemaVersion = [string]$visionProbe.ready.payload.schemaVersion
+      bundleVersion = [string]$visionProbe.ready.payload.bundleVersion
+      contractDigest = [string]$visionProbe.ready.payload.contractDigest
+      capabilities = @($visionProbe.ready.payload.capabilities)
+    }
   }
 }
 
@@ -1038,9 +1093,10 @@ function Get-TestbedInstalledRuntimeOwnerState {
   $route = ([uri][string]$target.url).Fragment
   $machineEvidence = Wait-CanonicalProcessEvidence "machine.exe" $MachinePath 30
   $visionEvidence = Wait-TestbedVisionRuntimeEvidence 30
+  $visionReadiness = Get-TestbedVisionReadinessEvidence
   $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
   $probe = $probeRaw | ConvertFrom-Json
-  $readiness = Convert-TestbedStartupProbeToReadiness $probe $OwnerManifest $machineEvidence $visionEvidence $route
+  $readiness = Convert-TestbedStartupProbeToReadiness $probe $OwnerManifest $machineEvidence $visionEvidence $visionReadiness $route
   return [ordered]@{
     readiness = $readiness
     ownerManifest = $OwnerManifest

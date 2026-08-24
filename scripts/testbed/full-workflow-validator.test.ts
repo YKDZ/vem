@@ -2002,6 +2002,19 @@ describe("full workflow aggregate validator", () => {
         visionTask: "VEMVisionRuntime",
         kioskSessionId: 3,
         catalogRoute: "#/catalog",
+        visionReadiness: {
+          protocol: "vem.vision.v2",
+          cameraReady: true,
+          tryOnReady: true,
+          visionBusinessReady: true,
+          capabilities: [
+            "profile_push",
+            "presence_status",
+            "person_departed",
+            "try_on",
+          ],
+          contractDigest: "e".repeat(64),
+        },
         modeEvidence: {
           source: "installed_owner_stop_start",
           ownerRestartMarker: "owner-restart:001",
@@ -2020,6 +2033,16 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("startup"),
         { ...report, summary: { ...report.summary, visionTask: null } },
+        "/reports/startup-owner-readiness.json",
+      ).status,
+      "failed",
+    );
+    const noVisionReadiness = structuredClone(report);
+    noVisionReadiness.summary.visionReadiness.cameraReady = false;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("startup"),
+        noVisionReadiness,
         "/reports/startup-owner-readiness.json",
       ).status,
       "failed",

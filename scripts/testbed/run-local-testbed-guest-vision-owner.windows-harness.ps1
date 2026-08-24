@@ -69,13 +69,20 @@ try {
   function Wait-InstalledTauriRoute([string]$ExpectedRoute) {
     return [pscustomobject]@{ url = "http://tauri.localhost/#/catalog" }
   }
+  function Get-TestbedVisionReadinessEvidence {
+    return [ordered]@{
+      health = [ordered]@{ status = "ok"; protocol = "vem.vision.v2"; module = "vision"; mockScenario = "off"; cameraReady = $true }
+      handshake = [ordered]@{ protocol = "vem.vision.v2"; type = "vision.ready"; tryOnReady = $true; visionBusinessReady = $true }
+    }
+  }
   function Convert-TestbedStartupProbeToReadiness {
-    param($Probe, $OwnerManifest, $MachineEvidence, $VisionEvidence, $Route)
+    param($Probe, $OwnerManifest, $MachineEvidence, $VisionEvidence, $VisionReadiness, $Route)
     return [ordered]@{
       vision = [ordered]@{
         processCount = @($Probe.processes.vision).Count
         workerCount = @($Probe.visionWorkers).Count
         mainProcessId = [int]$VisionEvidence.processId
+        readiness = $VisionReadiness
       }
     }
   }

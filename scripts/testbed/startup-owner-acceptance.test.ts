@@ -59,6 +59,35 @@ function fullEvidence() {
         processCount: 1,
         workerCount: 2,
         sessionId: 3,
+        readiness: {
+          health: {
+            status: "ok",
+            protocol: "vem.vision.v2",
+            module: "vision",
+            mockScenario: "off",
+            cameraReady: true,
+          },
+          handshake: {
+            protocol: "vem.vision.v2",
+            type: "vision.ready",
+            messageId: "vision-ready-1",
+            timestamp: "2026-08-24T12:05:18.000Z",
+            serverName: "vending-vision",
+            cameraReady: true,
+            tryOnReady: true,
+            visionBusinessReady: true,
+            businessReadinessDiagnostic: "ready",
+            schemaVersion: "2.0.0",
+            bundleVersion: "2026-08-24",
+            contractDigest: "e".repeat(64),
+            capabilities: [
+              "profile_push",
+              "presence_status",
+              "person_departed",
+              "try_on",
+            ],
+          },
+        },
       },
     },
     modeEvidence: {
@@ -180,6 +209,19 @@ describe("installed runtime startup lifecycle evidence", () => {
       String(recordValue(report.summary).ownerConfigurationSha256),
       /^[a-f0-9]{64}$/,
     );
+    assert.deepEqual(recordValue(report.summary).visionReadiness, {
+      protocol: "vem.vision.v2",
+      cameraReady: true,
+      tryOnReady: true,
+      visionBusinessReady: true,
+      capabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "try_on",
+      ],
+      contractDigest: "e".repeat(64),
+    });
   });
 
   it("rejects a current-boot marker fabricated after warm owner starts", () => {
@@ -214,6 +256,42 @@ describe("installed runtime startup lifecycle evidence", () => {
     assert.equal(report.failedStage, "machine_ui_owner");
     assert.equal(report.reasonCode, "task_action_failed");
     assert.match(String(report.diagnostics), /0xC000013A/);
+  });
+
+  it("requires camera, try-on, and complete generated V2 handshake readiness", () => {
+    const cases = [
+      {
+        reasonCode: "vision_camera_not_ready",
+        mutate(evidence: ReturnType<typeof fullEvidence>) {
+          evidence.observation.vision.readiness.health.cameraReady = false;
+        },
+      },
+      {
+        reasonCode: "vision_try_on_not_ready",
+        mutate(evidence: ReturnType<typeof fullEvidence>) {
+          evidence.observation.vision.readiness.handshake.tryOnReady = false;
+        },
+      },
+      {
+        reasonCode: "vision_capability_incomplete",
+        mutate(evidence: ReturnType<typeof fullEvidence>) {
+          evidence.observation.vision.readiness.handshake.capabilities = [
+            "profile_push",
+            "presence_status",
+            "person_departed",
+          ];
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const evidence = fullEvidence();
+      testCase.mutate(evidence);
+      const report = run(evidence);
+      assert.equal(report.ok, false);
+      assert.equal(report.failedStage, "vision_readiness");
+      assert.equal(report.reasonCode, testCase.reasonCode);
+    }
   });
 });
 

@@ -233,6 +233,8 @@ function validateStartupTrack(
 ): TrackResult {
   const summary = recordValue(report?.summary);
   const modeEvidence = recordValue(summary.modeEvidence);
+  const visionReadiness = recordValue(summary.visionReadiness);
+  const visionCapabilities = arrayValue(visionReadiness.capabilities);
   const fullEvidenceComplete =
     report?.mode !== "full" ||
     (modeEvidence.source === "windows_reboot_logon_probe" &&
@@ -251,6 +253,14 @@ function validateStartupTrack(
     !Number.isSafeInteger(summary.kioskSessionId) ||
     (summary.kioskSessionId as number) < 1 ||
     summary.catalogRoute !== "#/catalog" ||
+    visionReadiness.protocol !== "vem.vision.v2" ||
+    visionReadiness.cameraReady !== true ||
+    visionReadiness.tryOnReady !== true ||
+    visionReadiness.visionBusinessReady !== true ||
+    !/^[a-f0-9]{64}$/.test(String(visionReadiness.contractDigest ?? "")) ||
+    !["profile_push", "presence_status", "person_departed", "try_on"].every(
+      (capability) => visionCapabilities.includes(capability),
+    ) ||
     !fullEvidenceComplete
   ) {
     return failedTrack(

@@ -249,6 +249,15 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /function Wait-TestbedVisionRuntimeEvidence/);
     assert.match(guest, /Get-VisionMainCanonicalProcessBinding/);
     assert.match(guest, /Wait-TestbedVisionRuntimeEvidence 30/);
+    assert.match(guest, /function Get-TestbedVisionReadinessEvidence/);
+    assert.match(
+      guest,
+      /Get-TestbedVisionReadinessEvidence[\s\S]*Invoke-VisionMainProbe[\s\S]*mockScenario[\s\S]*tryOnReady[\s\S]*contractDigest/,
+    );
+    assert.match(
+      guest,
+      /Get-TestbedInstalledRuntimeOwnerState[\s\S]*\$visionReadiness = Get-TestbedVisionReadinessEvidence[\s\S]*Convert-TestbedStartupProbeToReadiness[^\r\n]*\$visionReadiness/,
+    );
     assert.match(
       guest,
       /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", \$null, \$scope\)/,
