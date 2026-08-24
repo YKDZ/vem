@@ -360,6 +360,8 @@ try {
   $fragmentedProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15 -AppDirectory (Join-Path $root "vision\app")
   Wait-Job $fragmentedServer | Out-Null; Receive-Job $fragmentedServer | Out-Null; Remove-Job $fragmentedServer
   Assert-True ($fragmentedProbe.ready.type -eq "vision.ready") "fragmented Vision ready envelope was not assembled"
+  Assert-True ($fragmentedProbe.ready.timestamp -is [string]) "Vision ready timestamp did not preserve the protocol string boundary"
+  Assert-True ($fragmentedProbe.ready.timestamp -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$') "Vision ready timestamp was not returned as canonical UTC"
 
   $independentVersionReady = '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capabilities":["profile_push","presence_status","person_departed","ambient_light","try_on"]}}'
   $versionDiagnosticPort = New-VisionHarnessPort

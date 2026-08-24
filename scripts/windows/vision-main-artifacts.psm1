@@ -458,6 +458,12 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
         if (-not $readyValid) {
           throw "machine WebSocket handshake is invalid"
         }
+        if ($ready.timestamp -is [DateTime]) {
+          $ready.timestamp = $ready.timestamp.ToUniversalTime().ToString(
+            "yyyy-MM-ddTHH:mm:ss.fffffff'Z'",
+            [Globalization.CultureInfo]::InvariantCulture
+          )
+        }
         if ($recordedCameras.Count -gt 0) { Assert-VisionMainCondition ($ready.payload.cameraReady -eq $true) "recorded-video camera readiness is absent from the machine handshake" }
         return [pscustomobject]@{ health = $health; ready = $ready }
       } finally { $socket.Dispose(); $cancellation.Dispose() }
