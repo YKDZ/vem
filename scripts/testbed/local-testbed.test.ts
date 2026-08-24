@@ -2383,6 +2383,7 @@ describe("Windows D cache contract", () => {
       rebootObservationTaskStartCount: 0,
       preparationRoundTrip: true,
       ownerManifestTamperRejected: true,
+      ownerTimestampShapes: true,
     });
   });
 

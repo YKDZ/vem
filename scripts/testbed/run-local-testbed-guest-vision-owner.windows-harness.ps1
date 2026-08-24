@@ -41,13 +41,19 @@ try {
     $guestScript,
     '(?s)function Write-TestbedStartupPreparation\(.*?\r?\n\}\r?\n\r?\nfunction Clear-TestbedLegacyRuntimeOwnersForStartup'
   ).Value
+  $ownerTimestampFunction = [regex]::Match(
+    $guestScript,
+    '(?s)function Convert-TestbedOwnerLaunchTimestamp\(.*?\r?\n\}\r?\n\r?\nfunction Get-TestbedOwnerLaunchResult'
+  ).Value
   Assert-True (-not [string]::IsNullOrWhiteSpace($evidenceFunctions)) "could not extract installed owner evidence functions"
   Assert-True (-not [string]::IsNullOrWhiteSpace($startFunction)) "could not extract installed owner start function"
   Assert-True (-not [string]::IsNullOrWhiteSpace($preparationFunctions)) "could not extract startup preparation functions"
+  Assert-True (-not [string]::IsNullOrWhiteSpace($ownerTimestampFunction)) "could not extract owner launch timestamp function"
   $evidenceFunctions = $evidenceFunctions.Replace('$PSScriptRoot', '$guestScriptRoot')
   Invoke-Expression ($evidenceFunctions -replace '\r?\nfunction Invoke-InstalledTauriRouteAdmission$', '')
   Invoke-Expression ($startFunction -replace '\r?\nfunction Stop-TestbedCanonicalVision$', '')
   Invoke-Expression ($preparationFunctions -replace '\r?\nfunction Clear-TestbedLegacyRuntimeOwnersForStartup$', '')
+  Invoke-Expression ($ownerTimestampFunction -replace '\r?\nfunction Get-TestbedOwnerLaunchResult$', '')
 
   function Write-TestbedPhase([string]$Name) {}
   function Require-Path([string]$Path) {
@@ -194,6 +200,11 @@ try {
   }
   Assert-True $ownerManifestTamperRejected "startup preparation accepted a replaced owner manifest"
 
+  $timestampFromString = Convert-TestbedOwnerLaunchTimestamp "2026-08-24T12:05:08.123Z" "string"
+  $timestampFromObject = Convert-TestbedOwnerLaunchTimestamp ([DateTime]::SpecifyKind([DateTime]::Parse("2026-08-24T12:05:08.123"), [DateTimeKind]::Utc)) "object"
+  $ownerTimestampShapes = $timestampFromString -eq $timestampFromObject
+  Assert-True $ownerTimestampShapes "owner launch timestamp normalization differs between JSON parser shapes"
+
   foreach ($case in @(
     @{ name = "second listener"; processes = @($machine, $main, $workerOne); listeners = @($listener, [pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 7920 }) },
     @{ name = "canonical sibling"; processes = @($machine, $main, $workerOne, (New-VisionProcess 6001 1892 "`"$canonicalPath`" --config `"$canonicalConfig`"")); listeners = @($listener) },
@@ -211,7 +222,7 @@ try {
     Assert-True (-not [string]::IsNullOrWhiteSpace($failure)) "baseline observer accepted $($case.name)"
   }
 
-  [ordered]@{ schemaVersion = "vem-baseline-vision-owner-harness/v1"; mainProcessId = 5900; processCount = [int]$baseline.readiness.vision.processCount; workerCount = [int]$baseline.readiness.vision.workerCount; manualTaskStartCount = $manualTaskStartCount; rebootObservationTaskStartCount = $rebootObservationTaskStartCount; preparationRoundTrip = $true; ownerManifestTamperRejected = $ownerManifestTamperRejected } | ConvertTo-Json -Compress
+  [ordered]@{ schemaVersion = "vem-baseline-vision-owner-harness/v1"; mainProcessId = 5900; processCount = [int]$baseline.readiness.vision.processCount; workerCount = [int]$baseline.readiness.vision.workerCount; manualTaskStartCount = $manualTaskStartCount; rebootObservationTaskStartCount = $rebootObservationTaskStartCount; preparationRoundTrip = $true; ownerManifestTamperRejected = $ownerManifestTamperRejected; ownerTimestampShapes = $ownerTimestampShapes } | ConvertTo-Json -Compress
 } finally {
   if ($createdCDrive) { Remove-PSDrive -Name C -Force -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

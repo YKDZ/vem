@@ -920,6 +920,26 @@ function Convert-TestbedStartupProbeToReadiness(
   }
 }
 
+function Convert-TestbedOwnerLaunchTimestamp($Value, [string]$Label) {
+  try {
+    $timestamp = if ($Value -is [DateTimeOffset]) {
+      ([DateTimeOffset]$Value).ToUniversalTime()
+    } elseif ($Value -is [DateTime]) {
+      [DateTimeOffset]([DateTime]$Value).ToUniversalTime()
+    } else {
+      [DateTimeOffset]::ParseExact(
+        [string]$Value,
+        "yyyy-MM-ddTHH:mm:ss.fff'Z'",
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal
+      ).ToUniversalTime()
+    }
+  } catch {
+    throw "$Label timestamp is invalid"
+  }
+  return $timestamp
+}
+
 function Get-TestbedOwnerLaunchResult(
   [object]$Owner,
   [string]$ExpectedRole,
@@ -948,30 +968,16 @@ function Get-TestbedOwnerLaunchResult(
   if ([string]$result.invocationId -cnotmatch '^[a-f0-9]{32}$') {
     throw "$ExpectedRole owner launch invocation ID is invalid"
   }
-  try {
-    $startedAt = [DateTimeOffset]::ParseExact(
-      [string]$result.startedAt,
-      "yyyy-MM-ddTHH:mm:ss.fff'Z'",
-      [Globalization.CultureInfo]::InvariantCulture,
-      [Globalization.DateTimeStyles]::AssumeUniversal
-    )
-    $finishedAt = [DateTimeOffset]::ParseExact(
-      [string]$result.finishedAt,
-      "yyyy-MM-ddTHH:mm:ss.fff'Z'",
-      [Globalization.CultureInfo]::InvariantCulture,
-      [Globalization.DateTimeStyles]::AssumeUniversal
-    )
-  } catch {
-    throw "$ExpectedRole owner launch timestamps are invalid"
-  }
+  $startedAt = Convert-TestbedOwnerLaunchTimestamp $result.startedAt "$ExpectedRole owner launch start"
+  $finishedAt = Convert-TestbedOwnerLaunchTimestamp $result.finishedAt "$ExpectedRole owner launch finish"
   if ($finishedAt -lt $startedAt) { throw "$ExpectedRole owner launch finished before it started" }
   return [ordered]@{
     schemaVersion = "vem-runtime-owner-launch-result/v1"
     role = $ExpectedRole
     invocationId = [string]$result.invocationId
     adapter = "scheduled_task"
-    startedAt = [string]$result.startedAt
-    finishedAt = [string]$result.finishedAt
+    startedAt = $startedAt.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    finishedAt = $finishedAt.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
     status = "ready"
     failedStage = $null
     reasonCode = [string]$result.reasonCode
