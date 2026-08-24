@@ -1,4 +1,8 @@
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
+import {
+  mkdir as fsMkdir,
+  rm as fsRm,
+  writeFile as fsWriteFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -84,6 +88,20 @@ interface ReplayFrameRecord {
   width: number | null;
   height: number | null;
 }
+
+interface ReplayIo {
+  mkdir: typeof fsMkdir;
+  writeFile: typeof fsWriteFile;
+  clearDirectory?: (path: string) => Promise<void>;
+}
+
+const defaultReplayIo: ReplayIo = {
+  mkdir: fsMkdir,
+  writeFile: fsWriteFile,
+  clearDirectory: async (path) => {
+    await fsRm(path, { recursive: true, force: true });
+  },
+};
 
 interface RecorderState {
   received: number;
@@ -322,12 +340,12 @@ export class BusinessSetProcessReplay {
       webSocketFactory?: ReplayWebSocketFactory;
       screencast?: Record<string, unknown>;
       limits?: Partial<ReplayLimits>;
-      io?: { mkdir: typeof fsMkdir; writeFile: typeof fsWriteFile };
+      io?: ReplayIo;
       now?: () => number;
     },
     operation: () => Promise<T> | T,
   ): Promise<T> {
-    const io = context.io ?? { mkdir: fsMkdir, writeFile: fsWriteFile };
+    const io = context.io ?? defaultReplayIo;
     const now = context.now ?? Date.now;
     const limits = { ...DEFAULT_LIMITS, ...(context.limits ?? {}) };
     const screencast = { ...DEFAULT_SCREENCAST, ...(context.screencast ?? {}) };
@@ -458,7 +476,7 @@ async function startProcessReplay({
     endpoint: string;
     webSocketFactory?: ReplayWebSocketFactory;
   };
-  io: { mkdir: typeof fsMkdir; writeFile: typeof fsWriteFile };
+  io: ReplayIo;
   now: () => number;
   limits: ReplayLimits;
   screencast: typeof DEFAULT_SCREENCAST;
@@ -493,6 +511,7 @@ async function startProcessReplay({
   );
   await client.connect({ timeoutMs: 10_000 });
   await client.send("Page.enable");
+  await io.clearDirectory?.(framesDirectory);
   await io.mkdir(framesDirectory, { recursive: true });
 
   const state: RecorderState = {

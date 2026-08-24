@@ -149,6 +149,12 @@ function inMemoryIo(): {
     async writeFile(path: string, data: unknown) {
       files.set(path, Buffer.from(String(data)));
     },
+    async clearDirectory(path: string) {
+      const prefix = `${path}/`;
+      for (const key of [...files.keys()]) {
+        if (key.startsWith(prefix)) files.delete(key);
+      }
+    },
   } as unknown as ReplayIo;
   return {
     files,
@@ -300,6 +306,40 @@ test("动态页：screencast 帧被立即 ACK、按序落盘并写入时间戳�
       /frames\/000001\.jpg/,
     );
     assert.equal(socket.closed, true);
+  });
+});
+
+test("重跑前清理残留帧，避免上一轮更长的录制污染本轮清单", async () => {
+  await withHttpTargets([target()], async (endpoint) => {
+    const { files, io } = inMemoryIo();
+    const outputDirectory = "/replay/reused";
+    files.set("/replay/reused/frames/000001.jpg", Buffer.from("stale-1"));
+    files.set("/replay/reused/frames/000099.jpg", Buffer.from("stale-99"));
+    const value = await BusinessSetProcessReplay.run(
+      {
+        endpoint,
+        outputDirectory,
+        businessSet: "visionExperience",
+        webSocketFactory: (url) =>
+          new FakeWebSocket(url, (message, socket) =>
+            respondingSocketHandler(message, socket, {
+              frames: [jpegFrame(1, 2_000.25), jpegFrame(2, 2_000.5)],
+            }),
+          ),
+        io,
+      },
+      async () => "business-result",
+    );
+    assert.equal(value, "business-result");
+    assert.ok(!files.has("/replay/reused/frames/000099.jpg"));
+    assert.equal(
+      replayFile(files, "/replay/reused/frames/000001.jpg").toString(),
+      "jpeg-frame-1",
+    );
+    assert.equal(
+      replayFile(files, "/replay/reused/frames/000002.jpg").toString(),
+      "jpeg-frame-2",
+    );
   });
 });
 
