@@ -24,8 +24,12 @@ use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
     MIGRATION_V20_COPY, MIGRATION_V20_CREATE, MIGRATION_V20_DROP, MIGRATION_V20_RENAME,
-    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
-    MIGRATION_V9, RETIRED_PLANOGRAM_MEDIA_COLUMN, SCHEMA_VERSION,
+    MIGRATION_V21, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
+    MIGRATION_V8, MIGRATION_V9, RETIRED_PLANOGRAM_MEDIA_COLUMN, SCHEMA_VERSION,
+};
+use crate::environment_control::{
+    EnvironmentControlAction, EnvironmentControlAdmission, EnvironmentControlAdmissionOutcome,
+    EnvironmentControlConfirmation, EnvironmentControlConvergence, EnvironmentControlSnapshot,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -179,6 +183,10 @@ pub enum StoreError {
     ManualDispenseDiagnosticCapacity,
     #[error("manual dispense idempotency key belongs to a different principal or request")]
     ManualDispenseIdempotencyConflict,
+    #[error("invalid environment control action: {0}")]
+    InvalidEnvironmentControlAction(String),
+    #[error("environment control action idempotency conflict")]
+    EnvironmentControlIdempotencyConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1022,7 +1030,12 @@ impl LocalStateStore {
         }
         if current_version < 20 {
             self.migrate_machine_planogram_slots_to_v20(None).await?;
-            return Ok(());
+        }
+        if current_version < 21 {
+            sqlx::query(MIGRATION_V21)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
         }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
@@ -1119,7 +1132,7 @@ impl LocalStateStore {
                 "v20 migration foreign-key validation failed: {foreign_key_errors:?}"
             )));
         }
-        let schema_version = serde_json::to_string(&SCHEMA_VERSION)?;
+        let schema_version = serde_json::to_string(&20_i64)?;
         sqlx::query(
             "INSERT INTO runtime_metadata(key,value_json,updated_at) VALUES ('schema_version',?1,?2)
              ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
@@ -1430,6 +1443,173 @@ impl LocalStateStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn environment_control_snapshot(
+        &self,
+    ) -> Result<EnvironmentControlSnapshot, StoreError> {
+        if let Some((snapshot_json,)) = sqlx::query_as::<_, (String,)>(
+            "SELECT snapshot_json FROM environment_control_state WHERE id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Ok(serde_json::from_str(&snapshot_json)?);
+        }
+
+        let mut transaction = self.begin_immediate_write_transaction().await?;
+        let snapshot =
+            load_or_initialize_environment_control_snapshot(&mut transaction, now_iso().as_str())
+                .await?;
+        transaction.commit().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn admit_environment_control_action(
+        &self,
+        action: &EnvironmentControlAction,
+        accepted_at: &str,
+    ) -> Result<EnvironmentControlAdmission, StoreError> {
+        action
+            .validate()
+            .map_err(StoreError::InvalidEnvironmentControlAction)?;
+        if accepted_at.trim().is_empty() {
+            return Err(StoreError::InvalidEnvironmentControlAction(
+                "accepted timestamp is required".to_string(),
+            ));
+        }
+        let action_json = serde_json::to_string(action)?;
+        let mut transaction = self.begin_immediate_write_transaction().await?;
+        let snapshot =
+            load_or_initialize_environment_control_snapshot(&mut transaction, accepted_at).await?;
+        let existing: Option<(String, i64)> = sqlx::query_as(
+            "SELECT action_json,accepted_revision
+             FROM environment_control_actions WHERE action_id=?1",
+        )
+        .bind(&action.action_id)
+        .fetch_optional(transaction.as_mut())
+        .await?;
+        if let Some((existing_json, accepted_revision)) = existing {
+            if existing_json != action_json {
+                transaction.rollback().await?;
+                return Err(StoreError::EnvironmentControlIdempotencyConflict);
+            }
+            let accepted_revision = u64::try_from(accepted_revision).map_err(|_| {
+                StoreError::InvalidEnvironmentControlAction(
+                    "stored environment control revision is invalid".to_string(),
+                )
+            })?;
+            transaction.commit().await?;
+            return Ok(EnvironmentControlAdmission {
+                outcome: EnvironmentControlAdmissionOutcome::Deduplicated,
+                accepted_revision,
+                snapshot,
+            });
+        }
+
+        let next = snapshot
+            .transition(action, accepted_at)
+            .map_err(StoreError::InvalidEnvironmentControlAction)?;
+        let accepted_revision = next.revision;
+        let accepted_revision_i64 = i64::try_from(accepted_revision).map_err(|_| {
+            StoreError::InvalidEnvironmentControlAction(
+                "environment control revision exceeds SQLite range".to_string(),
+            )
+        })?;
+        sqlx::query(
+            "INSERT INTO environment_control_actions(
+               action_id,action_json,accepted_revision,accepted_at
+             ) VALUES (?1,?2,?3,?4)",
+        )
+        .bind(&action.action_id)
+        .bind(action_json)
+        .bind(accepted_revision_i64)
+        .bind(accepted_at)
+        .execute(transaction.as_mut())
+        .await?;
+        sqlx::query(
+            "UPDATE environment_control_state
+             SET snapshot_json=?1,updated_at=?2 WHERE id=1",
+        )
+        .bind(serde_json::to_string(&next)?)
+        .bind(accepted_at)
+        .execute(transaction.as_mut())
+        .await?;
+        transaction.commit().await?;
+        Ok(EnvironmentControlAdmission {
+            outcome: EnvironmentControlAdmissionOutcome::Accepted,
+            accepted_revision,
+            snapshot: next,
+        })
+    }
+
+    pub async fn record_environment_control_applied(
+        &self,
+        revision: u64,
+        confirmation: &EnvironmentControlConfirmation,
+        confirmed_at: &str,
+    ) -> Result<bool, StoreError> {
+        let (changed, _) = self
+            .update_environment_control_snapshot(confirmed_at, |snapshot| {
+                snapshot.record_applied(revision, confirmation.clone(), confirmed_at)
+            })
+            .await?;
+        Ok(changed)
+    }
+
+    pub async fn record_environment_control_unapplied(
+        &self,
+        revision: u64,
+        convergence: EnvironmentControlConvergence,
+        reason_code: &str,
+        message: Option<String>,
+        attempted_at: &str,
+    ) -> Result<bool, StoreError> {
+        let (changed, _) = self
+            .update_environment_control_snapshot(attempted_at, |snapshot| {
+                snapshot.record_unapplied(revision, convergence, reason_code, message, attempted_at)
+            })
+            .await?;
+        Ok(changed)
+    }
+
+    pub async fn reset_environment_control_confirmation_for_runtime_start(
+        &self,
+        started_at: &str,
+    ) -> Result<EnvironmentControlSnapshot, StoreError> {
+        let (_, snapshot) = self
+            .update_environment_control_snapshot(started_at, |snapshot| {
+                snapshot.reset_confirmation_for_runtime_start(started_at);
+                true
+            })
+            .await?;
+        Ok(snapshot)
+    }
+
+    async fn update_environment_control_snapshot<F>(
+        &self,
+        updated_at: &str,
+        update: F,
+    ) -> Result<(bool, EnvironmentControlSnapshot), StoreError>
+    where
+        F: FnOnce(&mut EnvironmentControlSnapshot) -> bool,
+    {
+        let mut transaction = self.begin_immediate_write_transaction().await?;
+        let mut snapshot =
+            load_or_initialize_environment_control_snapshot(&mut transaction, updated_at).await?;
+        let changed = update(&mut snapshot);
+        if changed {
+            sqlx::query(
+                "UPDATE environment_control_state
+                 SET snapshot_json=?1,updated_at=?2 WHERE id=1",
+            )
+            .bind(serde_json::to_string(&snapshot)?)
+            .bind(updated_at)
+            .execute(transaction.as_mut())
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok((changed, snapshot))
     }
 
     pub async fn whole_machine_maintenance_lock(
@@ -6139,6 +6319,31 @@ impl LocalStateStore {
     }
 }
 
+async fn load_or_initialize_environment_control_snapshot(
+    transaction: &mut Transaction<'_, Sqlite>,
+    initialized_at: &str,
+) -> Result<EnvironmentControlSnapshot, StoreError> {
+    if let Some((snapshot_json,)) = sqlx::query_as::<_, (String,)>(
+        "SELECT snapshot_json FROM environment_control_state WHERE id = 1",
+    )
+    .fetch_optional(transaction.as_mut())
+    .await?
+    {
+        return Ok(serde_json::from_str(&snapshot_json)?);
+    }
+
+    let snapshot = EnvironmentControlSnapshot::initial(initialized_at);
+    sqlx::query(
+        "INSERT INTO environment_control_state(id,snapshot_json,updated_at)
+         VALUES (1,?1,?2)",
+    )
+    .bind(serde_json::to_string(&snapshot)?)
+    .bind(initialized_at)
+    .execute(transaction.as_mut())
+    .await?;
+    Ok(snapshot)
+}
+
 async fn open_sqlite_pool(path: &Path) -> Result<SqlitePool, sqlx::Error> {
     let url = format!("sqlite://{}?mode=rwc", path.display());
     let options = url
@@ -10000,6 +10205,8 @@ mod tests {
         assert!(names.contains(&"current_stock_projection"));
         assert!(names.contains(&"sale_view_projection"));
         assert!(names.contains(&"whole_machine_lock_clear_audit_events"));
+        assert!(names.contains(&"environment_control_state"));
+        assert!(names.contains(&"environment_control_actions"));
         let planogram_columns: Vec<(String,)> =
             sqlx::query_as("SELECT name FROM pragma_table_info('machine_planogram_slots')")
                 .fetch_all(store.pool())

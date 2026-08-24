@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 // The V20 tombstone is the only live migration code allowed to name this
 // retired V19 column.  Published V10/V19 SQL below remains byte-for-byte
 // historical migration text.
@@ -624,6 +624,26 @@ ALTER TABLE stock_movement_sync_v20 RENAME TO stock_movement_sync;
 ALTER TABLE current_stock_projection_v20 RENAME TO current_stock_projection;
 ALTER TABLE sale_view_projection_v20 RENAME TO sale_view_projection;
 ALTER TABLE sale_safety_blockers_v20 RENAME TO sale_safety_blockers;
+"#;
+
+pub const MIGRATION_V21: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS environment_control_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  snapshot_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS environment_control_actions (
+  action_id TEXT PRIMARY KEY,
+  action_json TEXT NOT NULL,
+  accepted_revision INTEGER NOT NULL CHECK (accepted_revision >= 0),
+  accepted_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_environment_control_actions_revision
+  ON environment_control_actions(accepted_revision, accepted_at);
 "#;
 
 pub const MIGRATION_V4: &str = r#"
