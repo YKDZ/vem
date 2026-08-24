@@ -42,11 +42,11 @@ pub struct VisionCameraRoleStatus {
     pub role: VisionCameraRole,
     pub state: String,
     pub ready: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_observation: Option<VisionCameraBackendObservation>,
 }
 
@@ -345,6 +345,116 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn role_status_serialization_preserves_each_strict_contract_branch() {
+        let observation = VisionCameraBackendObservation {
+            backend: "dshow".to_string(),
+            index: Some(1),
+            available: true,
+            mapping_state: "proven".to_string(),
+        };
+        let branches = [
+            (
+                VisionCameraRoleStatus {
+                    role: VisionCameraRole::Top,
+                    state: "ready".to_string(),
+                    ready: true,
+                    candidate_id: Some("top-001".to_string()),
+                    reason: None,
+                    backend_observation: Some(observation.clone()),
+                },
+                serde_json::json!({
+                    "role": "top",
+                    "state": "ready",
+                    "ready": true,
+                    "candidateId": "top-001",
+                    "backendObservation": {
+                        "backend": "dshow",
+                        "index": 1,
+                        "available": true,
+                        "mappingState": "proven"
+                    }
+                }),
+            ),
+            (
+                VisionCameraRoleStatus {
+                    role: VisionCameraRole::Front,
+                    state: "unbound".to_string(),
+                    ready: false,
+                    candidate_id: None,
+                    reason: Some("camera_not_confirmed".to_string()),
+                    backend_observation: None,
+                },
+                serde_json::json!({
+                    "role": "front",
+                    "state": "unbound",
+                    "ready": false,
+                    "reason": "camera_not_confirmed"
+                }),
+            ),
+            (
+                VisionCameraRoleStatus {
+                    role: VisionCameraRole::Front,
+                    state: "missing".to_string(),
+                    ready: false,
+                    candidate_id: Some("front-001".to_string()),
+                    reason: Some("bound_camera_missing".to_string()),
+                    backend_observation: Some(VisionCameraBackendObservation {
+                        available: false,
+                        index: None,
+                        ..observation.clone()
+                    }),
+                },
+                serde_json::json!({
+                    "role": "front",
+                    "state": "missing",
+                    "ready": false,
+                    "candidateId": "front-001",
+                    "reason": "bound_camera_missing",
+                    "backendObservation": {
+                        "backend": "dshow",
+                        "index": null,
+                        "available": false,
+                        "mappingState": "proven"
+                    }
+                }),
+            ),
+            (
+                VisionCameraRoleStatus {
+                    role: VisionCameraRole::Top,
+                    state: "ambiguous".to_string(),
+                    ready: false,
+                    candidate_id: Some("top-001".to_string()),
+                    reason: Some("camera_mapping_unproven".to_string()),
+                    backend_observation: Some(VisionCameraBackendObservation {
+                        mapping_state: "unproven".to_string(),
+                        ..observation
+                    }),
+                },
+                serde_json::json!({
+                    "role": "top",
+                    "state": "ambiguous",
+                    "ready": false,
+                    "candidateId": "top-001",
+                    "reason": "camera_mapping_unproven",
+                    "backendObservation": {
+                        "backend": "dshow",
+                        "index": 1,
+                        "available": true,
+                        "mappingState": "unproven"
+                    }
+                }),
+            ),
+        ];
+
+        for (status, expected) in branches {
+            assert_eq!(
+                serde_json::to_value(status).expect("serialize role"),
+                expected
+            );
+        }
+    }
 
     #[tokio::test]
     async fn plain_loopback_proxy_preserves_v2_contract_without_capability_headers() {
