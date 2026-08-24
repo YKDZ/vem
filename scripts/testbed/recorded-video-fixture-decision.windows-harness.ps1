@@ -50,6 +50,10 @@ $manifest = [pscustomobject]@{
     geometryFar = [pscustomobject]@{ file = 'far.mp4'; sha256 = ('d' * 64); loop = $true; source = 'person.png'; sourceSha256 = ('e' * 64); generator = 'fixture.py' }
     geometryMid = [pscustomobject]@{ file = 'mid.mp4'; sha256 = ('f' * 64); loop = $true; source = 'person.png'; sourceSha256 = ('e' * 64); generator = 'fixture.py' }
     geometryNear = [pscustomobject]@{ file = 'near.mp4'; sha256 = ('1' * 64); loop = $true; source = 'person.png'; sourceSha256 = ('e' * 64); generator = 'fixture.py' }
+    fieldRecommendationNearTop = [pscustomobject]@{ file = 'field-near-top.mp4'; sha256 = ('2' * 64); loop = $true }
+    fieldRecommendationNearFront = [pscustomobject]@{ file = 'field-near-front.mp4'; sha256 = ('3' * 64); loop = $true }
+    fieldRecommendationFarTop = [pscustomobject]@{ file = 'field-far-top.mp4'; sha256 = ('4' * 64); loop = $true }
+    fieldRecommendationFarFront = [pscustomobject]@{ file = 'field-far-front.mp4'; sha256 = ('5' * 64); loop = $true }
   }
 }
 $select = Resolve-VemRecordedFixtureCameraDecision $manifest 'manFront' $true 'geometryMid' $true $true
@@ -58,6 +62,9 @@ Assert-True ($select.front.entry -eq 'geometryMid' -and $select.front.loop -eq $
 $restore = Resolve-VemRecordedFixtureCameraDecision $manifest 'top' $false 'frontVertical' $true $false
 Assert-True ($restore.top.entry -eq 'top' -and $restore.top.loop -eq $false) 'restore did not configure top non-loop'
 Assert-True ($restore.front.entry -eq 'frontVertical' -and $restore.front.loop -eq $true) 'restore did not configure frontVertical loop'
+$recommendationNear = Resolve-VemRecordedFixtureCameraDecision $manifest 'fieldRecommendationNearTop' $true 'fieldRecommendationNearFront' $true $false
+Assert-True ($recommendationNear.top.entry -eq 'fieldRecommendationNearTop' -and $recommendationNear.top.loop -eq $true) 'recommendation near did not configure the paired looping top capture'
+Assert-True ($recommendationNear.front.entry -eq 'fieldRecommendationNearFront' -and $recommendationNear.front.loop -eq $true) 'recommendation near did not configure the paired looping front capture'
 
 $duplicateGeometryDigest = $manifest | ConvertTo-Json -Depth 8 | ConvertFrom-Json
 $duplicateGeometryDigest.recordings.geometryMid.sha256 = $duplicateGeometryDigest.recordings.geometryFar.sha256
@@ -159,8 +166,12 @@ function New-FixtureSwitchHarnessState(
     geometryFar = 'geometry-far.mp4'
     geometryMid = 'geometry-mid.mp4'
     geometryNear = 'geometry-near.mp4'
+    fieldRecommendationNearTop = 'field-recommendation-near-top.mp4'
+    fieldRecommendationNearFront = 'field-recommendation-near-front.mp4'
+    fieldRecommendationFarTop = 'field-recommendation-far-top.mp4'
+    fieldRecommendationFarFront = 'field-recommendation-far-front.mp4'
   }
-  $loopByEntry = @{ top = $false; frontVertical = $true; manFront = $true; geometryFar = $true; geometryMid = $true; geometryNear = $true }
+  $loopByEntry = @{ top = $false; frontVertical = $true; manFront = $true; geometryFar = $true; geometryMid = $true; geometryNear = $true; fieldRecommendationNearTop = $true; fieldRecommendationNearFront = $true; fieldRecommendationFarTop = $true; fieldRecommendationFarFront = $true }
   $files = @{}
   $recordings = [ordered]@{}
   foreach ($entry in $clipByEntry.Keys) {
@@ -335,6 +346,18 @@ Assert-True ($selectedConfig.cameras.top.role -eq 'presence' -and $selectedConfi
 Assert-True ($selectedConfig.cameras.front.role -eq 'profile_try_on' -and $selectedConfig.cameras.front.video_path -eq "$($selectState.recordedRoot)\geometry-mid.mp4" -and $selectedConfig.cameras.front.loop -eq $true) 'select mid did not write geometryMid as looping front profile camera'
 Assert-True ($selectState.oldMainPid -ne $selectState.newMainPid) 'harness did not model a replacement canonical owner PID'
 Assert-True (($selectState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'select mid did not atomically write before restarting the canonical owner'
+
+$recommendationNearState = New-FixtureSwitchHarnessState
+Invoke-VemRecordedFixtureSwitch -Mode recommendation -Segment near -Dependencies $recommendationNearState.dependencies -ReadyStabilityMs 0 | Out-Null
+$recommendationNearConfig = $recommendationNearState.state.files[$recommendationNearState.sitePath] | ConvertFrom-Json
+Assert-True ($recommendationNearConfig.cameras.top.role -eq 'presence' -and $recommendationNearConfig.cameras.top.video_path -eq "$($recommendationNearState.recordedRoot)\field-recommendation-near-top.mp4" -and $recommendationNearConfig.cameras.top.loop -eq $true) 'recommendation near did not write its looping top capture'
+Assert-True ($recommendationNearConfig.cameras.front.role -eq 'profile_try_on' -and $recommendationNearConfig.cameras.front.video_path -eq "$($recommendationNearState.recordedRoot)\field-recommendation-near-front.mp4" -and $recommendationNearConfig.cameras.front.loop -eq $true) 'recommendation near did not write its looping front capture'
+Assert-True (($recommendationNearState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'recommendation near did not atomically write before restarting the canonical owner'
+
+$recommendationFarState = New-FixtureSwitchHarnessState
+Invoke-VemRecordedFixtureSwitch -Mode recommendation -Segment far -Dependencies $recommendationFarState.dependencies -ReadyStabilityMs 0 | Out-Null
+$recommendationFarConfig = $recommendationFarState.state.files[$recommendationFarState.sitePath] | ConvertFrom-Json
+Assert-True ($recommendationFarConfig.cameras.top.video_path -eq "$($recommendationFarState.recordedRoot)\field-recommendation-far-top.mp4" -and $recommendationFarConfig.cameras.front.video_path -eq "$($recommendationFarState.recordedRoot)\field-recommendation-far-front.mp4") 'recommendation far did not keep its paired field captures'
 
 $restoreState = New-FixtureSwitchHarnessState
 Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $restoreState.dependencies -ReadyStabilityMs 0 | Out-Null

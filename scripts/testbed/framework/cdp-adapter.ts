@@ -819,6 +819,7 @@ export class CdpTestAdapter implements TestAdapter {
   sourceGarmentPng: Promise<SemanticResultPng | null> | null = null;
   stopTryOnProtocolObserver: (() => void) | null = null;
   selectRecordedVideoFixtureImpl: typeof selectRecordedVideoFixture;
+  selectRecommendationVideoFixtureImpl: typeof selectRecommendationVideoFixture;
   restoreRecordedVideoFixturesImpl: typeof restoreRecordedVideoFixtures;
   cdpWebSocketFactory: ((url: string) => unknown) | null;
   diagnosticMilestones: unknown[] = [];
@@ -836,6 +837,7 @@ export class CdpTestAdapter implements TestAdapter {
     sourceGarmentMetadata = null,
     sourceGarmentServiceApiOrigin = null,
     selectRecordedVideoFixtureImpl = selectRecordedVideoFixture,
+    selectRecommendationVideoFixtureImpl = selectRecommendationVideoFixture,
     restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixtures,
     cdpWebSocketFactory = null,
   }: {
@@ -844,6 +846,7 @@ export class CdpTestAdapter implements TestAdapter {
     sourceGarmentMetadata?: unknown;
     sourceGarmentServiceApiOrigin?: unknown;
     selectRecordedVideoFixtureImpl?: typeof selectRecordedVideoFixture;
+    selectRecommendationVideoFixtureImpl?: typeof selectRecommendationVideoFixture;
     restoreRecordedVideoFixturesImpl?: typeof restoreRecordedVideoFixtures;
     cdpWebSocketFactory?: ((url: string) => unknown) | null;
   } = {}) {
@@ -853,6 +856,8 @@ export class CdpTestAdapter implements TestAdapter {
     this.sourceGarmentMetadata = sourceGarmentMetadata;
     this.sourceGarmentServiceApiOrigin = sourceGarmentServiceApiOrigin;
     this.selectRecordedVideoFixtureImpl = selectRecordedVideoFixtureImpl;
+    this.selectRecommendationVideoFixtureImpl =
+      selectRecommendationVideoFixtureImpl;
     this.restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixturesImpl;
     this.cdpWebSocketFactory = cdpWebSocketFactory;
   }
@@ -1533,6 +1538,15 @@ export class CdpTestAdapter implements TestAdapter {
       }
       return this.selectRecordedVideoFixtureImpl(segment);
     }
+    if (command === "select-recommendation-video-fixture") {
+      const segment = args[0];
+      if (segment !== "near" && segment !== "far") {
+        throw new Error(
+          "recommendation recorded video fixture segment must be near or far",
+        );
+      }
+      return this.selectRecommendationVideoFixtureImpl(segment);
+    }
     if (command === "restore-recorded-video-fixtures") {
       if (args.length !== 0) {
         throw new Error("restore-recorded-video-fixtures accepts no arguments");
@@ -1748,7 +1762,7 @@ export class CdpTestAdapter implements TestAdapter {
 
 /** 仅调用生产 PowerShell seam；夹具信任、写入与 owner 生命周期都在同一模块内。 */
 function invokeRecordedVideoFixtureSwitch(
-  mode: "select" | "restore",
+  mode: "select" | "restore" | "recommendation",
   segment?: "far" | "mid" | "near",
 ): CommandResult {
   const segmentArgument = segment ? ` -Segment '${segment}'` : "";
@@ -1776,6 +1790,13 @@ export function selectRecordedVideoFixture(
   segment: "far" | "mid" | "near",
 ): CommandResult {
   return invokeRecordedVideoFixtureSwitch("select", segment);
+}
+
+/** 使用已授权的成对现场 near/far 录播，驱动真实 Vision 推荐链路。 */
+export function selectRecommendationVideoFixture(
+  segment: "near" | "far",
+): CommandResult {
+  return invokeRecordedVideoFixtureSwitch("recommendation", segment);
 }
 
 /** 在每条 Vision acceptance 轨道后恢复已安装的默认录播对。 */

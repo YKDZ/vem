@@ -399,6 +399,31 @@ describe("CDP test adapter", () => {
     assert.equal(calls, 1);
   });
 
+  it("通过公开 recommendation fixture command 只选择成对的 near/far 现场素材", async () => {
+    const segments: string[] = [];
+    const adapter = new CdpTestAdapter({
+      endpoint: "http://127.0.0.1:1",
+      selectRecommendationVideoFixtureImpl: (segment) => {
+        segments.push(segment);
+        return { exitCode: 0, stdout: segment, stderr: "" };
+      },
+    });
+
+    assert.deepEqual(
+      await adapter.run("select-recommendation-video-fixture", ["near"]),
+      { exitCode: 0, stdout: "near", stderr: "" },
+    );
+    assert.deepEqual(
+      await adapter.run("select-recommendation-video-fixture", ["far"]),
+      { exitCode: 0, stdout: "far", stderr: "" },
+    );
+    assert.deepEqual(segments, ["near", "far"]);
+    await assert.rejects(
+      adapter.run("select-recommendation-video-fixture", ["mid"]),
+      /must be near or far/,
+    );
+  });
+
   it("采集有界失败诊断且不保留 HTTP 头与正文", async () => {
     const stops: string[] = [];
     const server = createServer((request, response) => {

@@ -115,6 +115,19 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     validator: "visionExperience",
   }),
   descriptor({
+    name: "implicitRecommendation",
+    core: true,
+    runner: {
+      kind: "node",
+      script:
+        "scripts/testbed/framework/slices/implicit-recommendation/implicit-recommendation-runner.ts",
+      args: [],
+      reportFileName: "implicit-recommendation.json",
+      artifactDirectory: "implicit-recommendation-artifacts",
+    },
+    validator: "implicitRecommendation",
+  }),
+  descriptor({
     name: "pickupProtocol",
     runner: {
       kind: "node",

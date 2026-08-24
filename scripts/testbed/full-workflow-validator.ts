@@ -1205,6 +1205,17 @@ const VISION_EXPERIENCE_GEOMETRY_ASSERTIONS = [
 const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = [
   "garment-scale-v2-adjustment-sequence",
 ];
+const IMPLICIT_RECOMMENDATION_ASSERTIONS = [
+  ["near.neutral-visible-within-500ms", "machine.runtime_trace+semantic_dom"],
+  ["near.stable-ten-seconds", "semantic_dom+machine.runtime_trace"],
+  ["near.catalog-detail-chinese-size", "semantic_dom"],
+  ["near.departure-once", "machine.runtime_trace+semantic_dom"],
+  ["far.neutral-visible-within-500ms", "machine.runtime_trace+semantic_dom"],
+  ["far.stable-ten-seconds", "semantic_dom+machine.runtime_trace"],
+  ["far.catalog-detail-chinese-size", "semantic_dom"],
+  ["far.departure-once", "machine.runtime_trace+semantic_dom"],
+  ["sessions.distinct", "machine.runtime_trace+fixture_restore"],
+] as const;
 
 function hasPassingAssertions(
   set: JsonRecord,
@@ -1255,6 +1266,32 @@ function hasPassingVisionExperienceAdjustmentAssertions(
     VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS,
     "vision-v2-protocol",
   );
+}
+
+function hasPassingImplicitRecommendationAssertions(set: JsonRecord): boolean {
+  const assertions = arrayValue(set.assertions);
+  if (
+    set.assertionCount !== assertions.length ||
+    assertions.length !== IMPLICIT_RECOMMENDATION_ASSERTIONS.length
+  ) {
+    return false;
+  }
+  return IMPLICIT_RECOMMENDATION_ASSERTIONS.every(([id, source]) => {
+    const matches = assertions.filter(
+      (entry: unknown) => recordValue(entry).id === id,
+    );
+    const assertion = maybeRecord(matches[0]);
+    return (
+      matches.length === 1 &&
+      assertion?.schemaVersion ===
+        "vem-runtime-testbed-business-assertion/v1" &&
+      assertion.source === source &&
+      assertion.status === "passed" &&
+      assertion.reason === null &&
+      JSON.stringify(assertion.expected ?? null) ===
+        JSON.stringify(assertion.observed ?? null)
+    );
+  });
 }
 
 function visionGeometryFixtureBlocker(set: JsonRecord): string | null {
@@ -1323,6 +1360,50 @@ export function validateBusinessCheckReport(
     localOperations: validateLocalOperationsTrack,
     environmentControl: validateEnvironmentControlTrack,
   };
+  if (descriptor.validator === "implicitRecommendation") {
+    if (report?.schemaVersion === "vem-runtime-testbed-report/v2") {
+      const sets = arrayValue(report.businessSets).filter(
+        (entry: unknown) =>
+          recordValue(entry).name === "implicitRecommendation",
+      );
+      const set = maybeRecord(sets[0]);
+      const primaryFailure = recordValue(set?.primaryFailure);
+      const passed =
+        sets.length === 1 &&
+        set?.status === "passed" &&
+        set.primaryFailure === null &&
+        hasPassingImplicitRecommendationAssertions(set);
+      return canonicalResult(
+        descriptor,
+        passed
+          ? passedTrack(
+              "implicitRecommendation",
+              "implicit recommendation",
+              reportPath,
+              { assertions: set?.assertionCount },
+            )
+          : failedTrack(
+              descriptorName,
+              descriptorName,
+              reportPath,
+              typeof primaryFailure.reason === "string"
+                ? primaryFailure.reason
+                : "implicit recommendation assertions are incomplete",
+            ),
+        reportPath,
+      );
+    }
+    return canonicalResult(
+      descriptor,
+      failedTrack(
+        descriptorName,
+        descriptorName,
+        reportPath,
+        "implicitRecommendation requires a V2 business-set report",
+      ),
+      reportPath,
+    );
+  }
   if (descriptor.validator === "visionExperience") {
     if (report?.schemaVersion === "vem-runtime-testbed-report/v2") {
       const set = arrayValue(report.businessSets).find(

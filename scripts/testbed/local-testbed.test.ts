@@ -1794,7 +1794,7 @@ describe("supported API seeding", () => {
         {
           productId: recommendationVariants[0].productId,
           variantId: recommendationVariants[0].variantId,
-          size: "M",
+          size: "中码",
           slotId: recommendationVariants[0].slotId,
           inventoryId: recommendationVariants[0].inventoryId,
           onHandQty: 3,
@@ -1802,7 +1802,7 @@ describe("supported API seeding", () => {
         {
           productId: recommendationVariants[0].productId,
           variantId: recommendationVariants[1].variantId,
-          size: "S",
+          size: "小码",
           slotId: recommendationVariants[1].slotId,
           inventoryId: recommendationVariants[1].inventoryId,
           onHandQty: 3,

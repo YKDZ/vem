@@ -1398,6 +1398,44 @@ function visionExperienceCapturedReport({
   };
 }
 
+function implicitRecommendationReport() {
+  const assertionSources = [
+    ["near.neutral-visible-within-500ms", "machine.runtime_trace+semantic_dom"],
+    ["near.stable-ten-seconds", "semantic_dom+machine.runtime_trace"],
+    ["near.catalog-detail-chinese-size", "semantic_dom"],
+    ["near.departure-once", "machine.runtime_trace+semantic_dom"],
+    ["far.neutral-visible-within-500ms", "machine.runtime_trace+semantic_dom"],
+    ["far.stable-ten-seconds", "semantic_dom+machine.runtime_trace"],
+    ["far.catalog-detail-chinese-size", "semantic_dom"],
+    ["far.departure-once", "machine.runtime_trace+semantic_dom"],
+    ["sessions.distinct", "machine.runtime_trace+fixture_restore"],
+  ] as const;
+  return {
+    schemaVersion: "vem-runtime-testbed-report/v2",
+    runId: "RUN-RECOMMENDATION-1",
+    mode: "full",
+    pass: 1,
+    businessSets: [
+      {
+        name: "implicitRecommendation",
+        status: "passed",
+        primaryFailure: null,
+        assertionCount: assertionSources.length,
+        assertions: assertionSources.map(([id, source]) => ({
+          schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+          id,
+          source,
+          expected: { passed: true },
+          observed: { passed: true },
+          status: "passed",
+          reason: null,
+        })),
+        supportingEvidence: [],
+      },
+    ],
+  };
+}
+
 describe("full workflow aggregate validator", () => {
   it("rejects vision experience reports outside the V2 business-set contract", () => {
     const rejected = validateBusinessCheckReport(
@@ -1620,6 +1658,85 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "failed",
     );
+  });
+
+  it("accepts implicit recommendation only from all exact public business assertions", () => {
+    const report = implicitRecommendationReport();
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("implicitRecommendation"),
+        report,
+        "implicit-recommendation.json",
+      ).status,
+      "passed",
+    );
+
+    const missing = structuredClone(report);
+    missing.businessSets[0].assertions.pop();
+    missing.businessSets[0].assertionCount -= 1;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("implicitRecommendation"),
+        missing,
+        "implicit-recommendation.json",
+      ).status,
+      "failed",
+    );
+
+    const wrongSource = structuredClone(report);
+    (wrongSource.businessSets[0].assertions[0] as { source: string }).source =
+      "screenshot";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("implicitRecommendation"),
+        wrongSource,
+        "implicit-recommendation.json",
+      ).status,
+      "failed",
+    );
+
+    const duplicate = structuredClone(report);
+    duplicate.businessSets[0].assertions.push(
+      structuredClone(duplicate.businessSets[0].assertions[0]),
+    );
+    duplicate.businessSets[0].assertionCount += 1;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("implicitRecommendation"),
+        duplicate,
+        "implicit-recommendation.json",
+      ).status,
+      "failed",
+    );
+
+    const forgedEquality = structuredClone(report);
+    forgedEquality.businessSets[0].assertions[1].observed = { passed: false };
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("implicitRecommendation"),
+        forgedEquality,
+        "implicit-recommendation.json",
+      ).status,
+      "failed",
+    );
+
+    const failed = structuredClone(report);
+    const failedSet = failed.businessSets[0] as unknown as {
+      status: string;
+      primaryFailure: unknown;
+    };
+    failedSet.status = "failed";
+    failedSet.primaryFailure = {
+      id: "near.stable-ten-seconds",
+      reason: "banner flickered",
+    };
+    const verdict = validateBusinessCheckReport(
+      descriptor("implicitRecommendation"),
+      failed,
+      "implicit-recommendation.json",
+    );
+    assert.equal(verdict.status, "failed");
+    assert.match(verdict.reason ?? "", /banner flickered/);
   });
 
   it("lets the owning sale validator decide its business claim", () => {

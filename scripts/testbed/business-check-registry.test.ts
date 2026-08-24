@@ -16,6 +16,7 @@ describe("runtime business-check registry", () => {
         "sale",
         "scannerPayment",
         "visionExperience",
+        "implicitRecommendation",
         "pickupProtocol",
         "presenceAndAudio",
         "ipcRecovery",
@@ -32,7 +33,7 @@ describe("runtime business-check registry", () => {
       BUSINESS_CHECK_REGISTRY.filter((descriptor) => descriptor.core).map(
         (descriptor) => descriptor.name,
       ),
-      ["sale", "stockMaintenance"],
+      ["sale", "implicitRecommendation", "stockMaintenance"],
     );
     assert.deepEqual(
       BUSINESS_CHECK_REGISTRY.filter(
@@ -44,6 +45,7 @@ describe("runtime business-check registry", () => {
         "sale",
         "scannerPayment",
         "visionExperience",
+        "implicitRecommendation",
         "pickupProtocol",
         "presenceAndAudio",
         "ipcRecovery",
@@ -182,12 +184,36 @@ describe("runtime business-check registry", () => {
     );
   });
 
+  it("runs implicit recommendation as an independent full-required core set", () => {
+    const recommendation = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "implicitRecommendation",
+    );
+    assert.equal(
+      recommendation?.runner?.script,
+      "scripts/testbed/framework/slices/implicit-recommendation/implicit-recommendation-runner.ts",
+    );
+    assert.equal(
+      recommendation?.runner?.artifactDirectory,
+      "implicit-recommendation-artifacts",
+    );
+    assert.equal(recommendation?.validator, "implicitRecommendation");
+    assert.equal(recommendation?.core, true);
+    assert.equal(recommendation?.fullRequired, true);
+    assert.deepEqual(
+      selectBusinessChecks({
+        mode: "fast",
+        focus: ["implicitRecommendation"],
+      }).map((descriptor) => descriptor.name),
+      ["implicitRecommendation"],
+    );
+  });
+
   it("keeps the real payment-provider boundary out of default selections while allowing fast focus", () => {
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast" }).map(
         (descriptor) => descriptor.name,
       ),
-      ["sale", "stockMaintenance"],
+      ["sale", "implicitRecommendation", "stockMaintenance"],
     );
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast", focus: ["paymentProvider"] }).map(

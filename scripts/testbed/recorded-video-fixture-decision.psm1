@@ -315,7 +315,7 @@ function Set-VemRecordedFixtureObjectProperty {
 function Invoke-VemRecordedFixtureSwitch {
   [CmdletBinding()]
   param(
-    [ValidateSet('select', 'restore')]
+    [ValidateSet('select', 'restore', 'recommendation')]
     [string]$Mode,
     [ValidateSet('far', 'mid', 'near')]
     [string]$Segment = 'mid',
@@ -418,6 +418,16 @@ function Invoke-VemRecordedFixtureSwitch {
   if ($Mode -eq 'select') {
     $geometryEntryBySegment = @{ far = 'geometryFar'; mid = 'geometryMid'; near = 'geometryNear' }
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'manFront' $true $geometryEntryBySegment[$Segment] $true $true
+  } elseif ($Mode -eq 'recommendation') {
+    if ($Segment -eq 'mid') {
+      throw '现场推荐录播只支持 near 或 far'
+    }
+    $recommendationEntryBySegment = @{
+      near = [pscustomobject]@{ top = 'fieldRecommendationNearTop'; front = 'fieldRecommendationNearFront' }
+      far = [pscustomobject]@{ top = 'fieldRecommendationFarTop'; front = 'fieldRecommendationFarFront' }
+    }
+    $recommendation = $recommendationEntryBySegment[$Segment]
+    $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $recommendation.top $true $recommendation.front $true $false
   } else {
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'top' $false 'frontVertical' $true $false
   }
