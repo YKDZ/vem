@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.ts";
+import { serialObservationsForLifecycle } from "./hardware-lifecycle-guest-full.ts";
 import { restartInstalledDaemon } from "./local-operations-guest-full.ts";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
 
@@ -204,6 +205,30 @@ async function waitForLowerControllerReady(
   }
   throw new Error(
     `lower controller was not ready before environment commands: ${JSON.stringify(last)}`,
+  );
+}
+
+async function waitForLowerControllerOffline(
+  handoff: HandoffRecord,
+  timeoutMs = HARDWARE_BINDING_READY_TIMEOUT_MS,
+): Promise<JsonRecord> {
+  const deadline = Date.now() + timeoutMs;
+  let last: JsonRecord | null = null;
+  do {
+    const bindings = (await daemonGet(handoff, "/v1/hardware-bindings").catch(
+      () => null,
+    )) as JsonRecord | null;
+    const lower = ((bindings?.roles ?? []) as unknown[]).find(
+      (role) =>
+        (role as JsonRecord)?.role === "lower_controller" ||
+        (role as JsonRecord)?.role === "lower-controller",
+    ) as JsonRecord | undefined;
+    last = lower ?? null;
+    if (lower?.ready === false && lower.currentPort == null) return lower;
+    await sleep(100);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `lower controller did not become unavailable: ${JSON.stringify(last)}`,
   );
 }
 
@@ -948,6 +973,11 @@ export async function runEnvironmentControlGuest(options: {
   const runId = required(guestInput.runId, "runId");
   const machineCode = required(guestInput.machineCode, "machineCode");
   const actionPrefix = `vm-env:${runId.replace(/[^A-Za-z0-9._:-]/g, "-").slice(-48)}`;
+  const discoveryPath = resolve(
+    dirname(options.handoffPath),
+    "serial-device-observations.json",
+  );
+  const originalObservations = readJson(discoveryPath);
   let session: JsonRecord | null = null;
   const report: JsonRecord = {
     schemaVersion: SCHEMA_VERSION,
@@ -1228,12 +1258,15 @@ export async function runEnvironmentControlGuest(options: {
       frame: restartFrame.frame,
     };
 
-    const disconnectedSessionId = String(activeSession.sessionId);
-    const disconnected = await control(
-      guestInput,
-      `/v1/serial-sessions/${disconnectedSessionId}/abort`,
-      {},
+    writeJson(
+      discoveryPath,
+      serialObservationsForLifecycle(
+        originalObservations,
+        "lower_controller",
+        false,
+      ),
     );
+    const offlineBinding = await waitForLowerControllerOffline(handoff);
     const offlineAdmission = await submitDaemonAction({
       handoff,
       actionId: `${actionPrefix}:offline-base-four`,
@@ -1255,12 +1288,25 @@ export async function runEnvironmentControlGuest(options: {
         recordValue(snapshot.desired).ventSpeed === 4 &&
         snapshot.convergence === "offline",
     );
+    const disconnectedSessionId = String(activeSession.sessionId);
+    const disconnected = await control(
+      guestInput,
+      `/v1/serial-sessions/${disconnectedSessionId}/abort`,
+      {},
+    );
     const reconnectedSession = await startEnvironmentSerialSession(
       guestInput,
       handoff,
       options.handoffPath,
     );
     session = reconnectedSession;
+    const reconnectBeforeEvidence = (await control(
+      guestInput,
+      `/v1/serial-sessions/${String(reconnectedSession.sessionId)}/evidence`,
+      {},
+    )) as JsonRecord;
+    const reconnectCursor = serialEvidenceCursor(reconnectBeforeEvidence);
+    writeJson(discoveryPath, originalObservations);
     await waitForLowerControllerReady(
       handoff,
       HARDWARE_BINDING_READY_TIMEOUT_MS,
@@ -1268,7 +1314,7 @@ export async function runEnvironmentControlGuest(options: {
     const reconnectFrame = await waitForExpectedProtocolFrame({
       guestInput,
       sessionId: String(reconnectedSession.sessionId),
-      beforeFrameCount: 0,
+      beforeFrameCount: reconnectCursor,
       expectedOpcode: "B3",
       expectedSpeed: 4,
     });
@@ -1284,6 +1330,7 @@ export async function runEnvironmentControlGuest(options: {
     report.lowerControllerReconnect = {
       disconnectedSessionId,
       disconnected,
+      offlineBinding,
       admission: offlineAdmission,
       offlineSnapshot,
       reconnectedSessionId: reconnectedSession.sessionId,
@@ -1458,6 +1505,7 @@ export async function runEnvironmentControlGuest(options: {
     writeJson(options.outPath, report);
     throw error;
   } finally {
+    writeJson(discoveryPath, originalObservations);
     if (session?.sessionId) {
       await control(
         guestInput,
