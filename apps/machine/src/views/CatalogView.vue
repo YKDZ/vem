@@ -401,11 +401,9 @@ onUnmounted(() => {
       <KioskHeader class="relative z-10" />
 
       <ImplicitRecommendationBanner
-        v-if="recommendationProjection.visible"
+        v-if="recommendationProjection.banner === 'multiple'"
         class="home-recommendation-banner relative z-10"
-        :state="
-          recommendationProjection.banner === 'multiple' ? 'multiple' : 'active'
-        "
+        state="multiple"
       />
 
       <div
@@ -487,6 +485,9 @@ onUnmounted(() => {
           class="home-category-card kiosk-touch-target"
           :class="{
             'home-category-card-sold-out': !categoryHasProducts(category.key),
+            'home-category-card-recommended':
+              category.key === 'tshirts' &&
+              recommendationProjection.banner === 'active',
           }"
           :data-sale-state="
             categoryHasProducts(category.key) ? 'available' : 'sold-out'
@@ -497,6 +498,17 @@ onUnmounted(() => {
           :data-category-key="category.key"
           @click="selectTopCategory(category.key)"
         >
+          <div
+            v-if="
+              category.key === 'tshirts' &&
+              recommendationProjection.banner === 'active'
+            "
+            class="home-tshirt-recommendation-card"
+            data-test="home-tshirt-recommendation-card"
+          >
+            <strong>为你推荐</strong>
+            <small>选一件后查看尺码</small>
+          </div>
           <img
             :src="category.icon"
             alt=""
@@ -627,11 +639,9 @@ onUnmounted(() => {
       <KioskHeader class="relative z-10" />
 
       <ImplicitRecommendationBanner
-        v-if="recommendationProjection.visible"
+        v-if="recommendationProjection.banner === 'multiple'"
         class="list-recommendation-banner relative z-10"
-        :state="
-          recommendationProjection.banner === 'multiple' ? 'multiple' : 'active'
-        "
+        state="multiple"
       />
 
       <div class="list-heading-row">
@@ -1549,6 +1559,40 @@ onUnmounted(() => {
   content: "";
   background: rgba(126, 145, 104, 0.12);
   border-radius: 65% 35% 0 0;
+}
+
+.home-category-card-recommended {
+  padding-top: clamp(78px, 7.8vh, 112px);
+}
+
+.home-category-card-recommended .category-illustration {
+  width: clamp(96px, 14.8vw, 160px);
+  height: clamp(96px, 14.8vw, 160px);
+}
+
+.home-tshirt-recommendation-card {
+  position: absolute;
+  z-index: 2;
+  top: clamp(14px, 1.85vh, 28px);
+  right: clamp(10px, 1.3vw, 18px);
+  left: clamp(10px, 1.3vw, 18px);
+  display: grid;
+  min-height: clamp(48px, 5.2vh, 74px);
+  place-content: center;
+  border: 2px solid #82966d;
+  border-radius: clamp(10px, 1.2vw, 14px);
+  background: rgba(245, 249, 238, 0.96);
+  color: #586d48;
+  box-shadow: 0 10px 24px rgba(72, 91, 57, 0.18);
+  font-size: clamp(0.9rem, 1.8vw, 1.22rem);
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.home-tshirt-recommendation-card small {
+  margin-top: 0.18rem;
+  font-size: 0.7em;
+  font-weight: 500;
 }
 
 .home-category-card:disabled {

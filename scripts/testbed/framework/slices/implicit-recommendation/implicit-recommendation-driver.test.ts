@@ -102,7 +102,11 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
       this.activeDistance === "near" &&
       this.nowMs - this.selectedAtMs >= 2_000 &&
       this.nowMs - this.selectedAtMs < 2_200;
-    const visible = this.currentSessionId !== null && !shouldFlicker;
+    const homeCardVisible =
+      this.currentSessionId !== null &&
+      !this.categoryOpen &&
+      !this.detailOpen &&
+      !shouldFlicker;
     const selectedSize = this.canonicalSize === "L" ? "大码" : "中码";
     return {
       observedAtMs: this.nowMs,
@@ -114,9 +118,14 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
         ? "#/products/product:recommendation"
         : "#/catalog",
       banner: {
-        visible,
-        state: visible ? "active" : null,
-        text: visible ? "智能选码已开启" : null,
+        visible: false,
+        state: null,
+        text: null,
+      },
+      homeCard: {
+        visible: homeCardVisible,
+        title: homeCardVisible ? "为你推荐" : null,
+        detail: homeCardVisible ? "选一件后查看尺码" : null,
       },
       catalog: {
         visible: !this.detailOpen,
@@ -130,7 +139,9 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
                 catalogKey: "product:recommendation",
                 preferredVariantId: "variant:recommended",
                 smartSizingSupported: true,
-                smartSizingText: "支持智能选码 · 进入查看",
+                smartSizingText: shouldFlicker
+                  ? null
+                  : "支持智能选码 · 进入查看",
               },
               {
                 catalogKey: "product:other",
@@ -245,7 +256,7 @@ describe("implicit recommendation VM business driver", () => {
     );
     assert.equal(nearStability?.status, "failed");
     assert.deepEqual(nearStability?.observed, {
-      bannerNeverFlickered: false,
+      presentationNeverFlickered: false,
       oneSession: true,
       canonicalChangedAtMostOnce: true,
       refinedAtMostOnce: false,

@@ -254,7 +254,20 @@ describe("customer acceptance hooks", () => {
     });
 
     let host = await mountView(CatalogView);
-    expect(host.textContent).toContain("智能选码已开启");
+    expect(host.textContent).not.toContain("智能选码已开启");
+    expect(
+      host.querySelector('[data-test="implicit-recommendation-banner"]'),
+    ).toBeNull();
+    const homeCard = host.querySelector(
+      '[data-test="home-tshirt-recommendation-card"]',
+    );
+    expect(homeCard?.textContent).toContain("为你推荐");
+    expect(homeCard?.textContent).toContain("选一件后查看尺码");
+    expect(
+      homeCard
+        ?.closest('[data-test="catalog-category"]')
+        ?.getAttribute("data-category-key"),
+    ).toBe("tshirts");
     expect(
       host
         .querySelector('[data-test="catalog-page"]')

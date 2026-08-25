@@ -41,6 +41,11 @@ export interface ImplicitRecommendationObservation {
     state: "active" | "multiple" | null;
     text: string | null;
   };
+  homeCard: {
+    visible: boolean;
+    title: string | null;
+    detail: string | null;
+  };
   catalog: {
     visible: boolean;
     categoryKey: string | null;
@@ -90,7 +95,7 @@ interface ScenarioEvidence {
   neutralVisibleLatencyMs: number | null;
   stabilityWindowMs: number;
   stabilitySampleCount: number;
-  bannerFlickerCount: number;
+  presentationFlickerCount: number;
   canonicalSizes: RecommendationCanonicalSize[];
   canonicalSize: RecommendationCanonicalSize | null;
   profileEventId: string | null;
@@ -109,7 +114,8 @@ export interface ImplicitRecommendationBusinessResult {
   };
 }
 
-const ACTIVE_BANNER_TEXT = "智能选码已开启";
+const HOME_CARD_TITLE = "为你推荐";
+const HOME_CARD_DETAIL = "选一件后查看尺码";
 const SMART_CARD_TEXT = "支持智能选码 · 进入查看";
 const CHINESE_SIZE_BY_CANONICAL: Record<RecommendationCanonicalSize, string> = {
   S: "小码",
@@ -191,6 +197,7 @@ async function waitForBaselineQuiescence(
   while (true) {
     const quiet =
       !observation.banner.visible &&
+      !observation.homeCard.visible &&
       activeTraceSessions(observation).size === 0;
     quietSince = quiet ? (quietSince ?? adapter.now()) : null;
     if (quietSince !== null && adapter.now() - quietSince >= quietMs) {
@@ -244,8 +251,10 @@ async function runScenario(
       );
       return Boolean(
         neutral?.sessionId &&
-        observation.banner.visible &&
-        observation.banner.state === "active" &&
+        observation.homeCard.visible &&
+        observation.homeCard.title === HOME_CARD_TITLE &&
+        observation.homeCard.detail === HOME_CARD_DETAIL &&
+        !observation.banner.visible &&
         observation.catalog.sessionId === neutral.sessionId,
       );
     },
@@ -272,15 +281,17 @@ async function runScenario(
       source: "machine.runtime_trace+semantic_dom",
       expected: {
         visible: true,
-        state: "active",
-        text: ACTIVE_BANNER_TEXT,
+        title: HOME_CARD_TITLE,
+        detail: HOME_CARD_DETAIL,
+        activeBannerHidden: true,
         within500ms: true,
       },
       observed: {
         visible:
-          presentation.matched && presentation.observation.banner.visible,
-        state: presentation.observation.banner.state,
-        text: presentation.observation.banner.text,
+          presentation.matched && presentation.observation.homeCard.visible,
+        title: presentation.observation.homeCard.title,
+        detail: presentation.observation.homeCard.detail,
+        activeBannerHidden: !presentation.observation.banner.visible,
         within500ms:
           neutralVisibleLatencyMs !== null && neutralVisibleLatencyMs <= 500,
       },
@@ -332,13 +343,6 @@ async function runScenario(
   const neutralPresentationCount = sessionTrace.filter(
     (entry) => entry.event === "neutral_presented",
   ).length;
-  const bannerFlickerCount = stabilityObservations.filter(
-    (observation) =>
-      !observation.banner.visible ||
-      observation.banner.state !== "active" ||
-      observation.banner.text !== ACTIVE_BANNER_TEXT ||
-      observation.catalog.sessionId !== sessionId,
-  ).length;
   const observedSessionIds = new Set(
     stabilityObservations
       .map((observation) => observation.catalog.sessionId)
@@ -347,6 +351,18 @@ async function runScenario(
   const categoryObservations = stabilityObservations.filter(
     (observation) => observation.catalog.categoryKey === "tshirts",
   );
+  const presentationFlickerCount = categoryObservations.filter(
+    (observation) => {
+      const smartCard = observation.catalog.cards.find(
+        (card) => card.smartSizingSupported,
+      );
+      return (
+        observation.banner.visible ||
+        smartCard?.smartSizingText !== SMART_CARD_TEXT ||
+        observation.catalog.sessionId !== sessionId
+      );
+    },
+  ).length;
   const catalogOrderStable =
     category.matched &&
     categoryObservations.length > 0 &&
@@ -361,7 +377,7 @@ async function runScenario(
       id: `${distance}.stable-ten-seconds`,
       source: "semantic_dom+machine.runtime_trace",
       expected: {
-        bannerNeverFlickered: true,
+        presentationNeverFlickered: true,
         oneSession: true,
         canonicalChangedAtMostOnce: true,
         refinedAtMostOnce: true,
@@ -369,7 +385,7 @@ async function runScenario(
         sampledForFullWindow: true,
       },
       observed: {
-        bannerNeverFlickered: bannerFlickerCount === 0,
+        presentationNeverFlickered: presentationFlickerCount === 0,
         oneSession:
           sessionId !== null &&
           observedSessionIds.size === 1 &&
@@ -452,6 +468,7 @@ async function runScenario(
     adapter,
     (observation) =>
       !observation.banner.visible &&
+      !observation.homeCard.visible &&
       observation.trace.some(
         (entry) =>
           entry.sessionId === sessionId && entry.event === "session_ended",
@@ -467,7 +484,10 @@ async function runScenario(
       source: "machine.runtime_trace+semantic_dom",
       expected: { hidden: true, endedExactlyOnce: true },
       observed: {
-        hidden: departure.matched && !departure.observation.banner.visible,
+        hidden:
+          departure.matched &&
+          !departure.observation.banner.visible &&
+          !departure.observation.homeCard.visible,
         endedExactlyOnce: departureCount === 1,
       },
     }),
@@ -481,7 +501,7 @@ async function runScenario(
       neutralVisibleLatencyMs,
       stabilityWindowMs,
       stabilitySampleCount: stabilityObservations.length,
-      bannerFlickerCount,
+      presentationFlickerCount,
       canonicalSizes: compactCanonicalSizes,
       canonicalSize,
       profileEventId: finalCatalogObservation.catalog.profileEventId,

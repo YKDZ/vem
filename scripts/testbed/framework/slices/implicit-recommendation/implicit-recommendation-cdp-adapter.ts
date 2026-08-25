@@ -80,20 +80,20 @@ export const IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE_EXPRESSION = `(() => {
     observer: null
   };
   const capture = () => {
-    const banner = document.querySelector('[data-test="implicit-recommendation-banner"]');
+    const card = document.querySelector('[data-test="home-tshirt-recommendation-card"]');
     const page = document.querySelector('[data-test="catalog-page"]');
     const sessionId = page?.getAttribute('data-recommendation-session-id') || null;
     const visible = Boolean(
-      banner &&
-      banner.getClientRects().length > 0 &&
-      getComputedStyle(banner).visibility !== 'hidden' &&
-      getComputedStyle(banner).display !== 'none'
+      card &&
+      card.getClientRects().length > 0 &&
+      getComputedStyle(card).visibility !== 'hidden' &&
+      getComputedStyle(card).display !== 'none'
     );
     if (
       visible &&
       sessionId &&
-      banner?.getAttribute('data-recommendation-state') === 'active' &&
-      banner.textContent?.trim() === '智能选码已开启'
+      card?.querySelector('strong')?.textContent?.trim() === '为你推荐' &&
+      card?.querySelector('small')?.textContent?.trim() === '选一件后查看尺码'
     ) {
       probe.observedAtMs = Date.now();
       probe.sessionId = sessionId;
@@ -125,6 +125,7 @@ export const IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION = `(() => {
   };
   const page = document.querySelector('[data-test="catalog-page"]');
   const banner = document.querySelector('[data-test="implicit-recommendation-banner"]');
+  const homeCard = document.querySelector('[data-test="home-tshirt-recommendation-card"]');
   const detail = document.querySelector('[data-test="product-detail-page"]');
   const recommendation = detail?.querySelector('[data-test="product-size-recommendation"]');
   const selectedSize = detail?.querySelector(
@@ -166,6 +167,11 @@ export const IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION = `(() => {
       visible: visible(banner),
       state: banner?.getAttribute('data-recommendation-state') || null,
       text: text(banner)
+    },
+    homeCard: {
+      visible: visible(homeCard),
+      title: text(homeCard?.querySelector('strong')),
+      detail: text(homeCard?.querySelector('small'))
     },
     catalog: {
       visible: visible(page),
@@ -299,6 +305,7 @@ export function parseImplicitRecommendationObservation(
   if (state !== null && state !== "active" && state !== "multiple") {
     throw new Error("recommendation banner state is invalid");
   }
+  const homeCard = recordValue(root.homeCard, "home recommendation card");
   const catalog = recordValue(root.catalog, "recommendation catalog");
   if (!Array.isArray(catalog.cards) || catalog.cards.length > 256) {
     throw new Error("recommendation catalog cards are invalid");
@@ -365,6 +372,11 @@ export function parseImplicitRecommendationObservation(
       visible: requiredBoolean(banner.visible, "banner visibility"),
       state,
       text: nullableString(banner.text, "banner text"),
+    },
+    homeCard: {
+      visible: requiredBoolean(homeCard.visible, "home card visibility"),
+      title: nullableString(homeCard.title, "home card title"),
+      detail: nullableString(homeCard.detail, "home card detail"),
     },
     catalog: {
       visible: requiredBoolean(catalog.visible, "catalog visibility"),

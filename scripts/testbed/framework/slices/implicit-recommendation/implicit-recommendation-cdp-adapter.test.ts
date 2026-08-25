@@ -16,7 +16,12 @@ function observationFixture() {
       sessionId: "presence:one",
     },
     route: "#/catalog",
-    banner: { visible: true, state: "active", text: "智能选码已开启" },
+    banner: { visible: false, state: null, text: null },
+    homeCard: {
+      visible: true,
+      title: "为你推荐",
+      detail: "选一件后查看尺码",
+    },
     catalog: {
       visible: true,
       categoryKey: "tshirts",

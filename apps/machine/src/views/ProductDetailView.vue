@@ -359,11 +359,9 @@ async function startTryOn(): Promise<void> {
       <KioskHeader class="detail-header" />
 
       <ImplicitRecommendationBanner
-        v-if="recommendationProjection.visible"
+        v-if="recommendationProjection.banner === 'multiple'"
         class="detail-recommendation-banner"
-        :state="
-          recommendationProjection.banner === 'multiple' ? 'multiple' : 'active'
-        "
+        state="multiple"
       />
 
       <button
