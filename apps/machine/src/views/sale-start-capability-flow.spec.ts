@@ -1387,6 +1387,82 @@ describe("sale-start capability UI flow", () => {
     expect(recommendedSize.classList).not.toContain("option-pill-recommended");
   });
 
+  it("keeps the selected color and disables purchase when the recommended size has no matching combination", async () => {
+    vi.useFakeTimers();
+    const mediumWhite = makeCatalogItem();
+    const largeBlue: MachineCatalogItem = {
+      ...mediumWhite,
+      slotId: "550e8400-e29b-41d4-a716-446655440031",
+      slotDisplayLabel: "A3",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440032",
+      variantId: "550e8400-e29b-41d4-a716-446655440033",
+      sku: "TEE-BASIC-L-BLUE-ONLY",
+      size: "L",
+      color: "蓝色",
+      slotCandidates: [
+        {
+          ...mediumWhite.slotCandidates[0],
+          slotId: "550e8400-e29b-41d4-a716-446655440031",
+          slotDisplayLabel: "A3",
+          inventoryId: "550e8400-e29b-41d4-a716-446655440032",
+          variantId: "550e8400-e29b-41d4-a716-446655440033",
+          sku: "TEE-BASIC-L-BLUE-ONLY",
+          size: "L",
+          color: "蓝色",
+        },
+      ],
+      variantCandidates: [],
+    };
+    useCatalogStore().applySnapshot({
+      items: [mediumWhite, largeBlue],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-08-25T00:00:00Z",
+    });
+    routeParams.catalogKey = mediumWhite.catalogKey;
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    applyVisionTryOnConfig();
+
+    const host = await mountView(ProductDetailView);
+    await establishStableSinglePresence("presence-color-size-combination");
+    requireButtonByText(host, "黑色", "exact").click();
+    await nextTick();
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-large-without-selected-color",
+        detectedAt: "2026-08-25T00:00:01.000Z",
+        occupancy: { state: "single", confidence: 0.94 },
+        profile: {
+          personPresent: true,
+          bodyType: "strong",
+          confidence: 0.94,
+        },
+        quality: { overall: "good", warnings: [], profileUsable: true },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+
+    const black = requireButtonByText(host, "黑色", "exact");
+    const blue = requireButtonByText(host, "蓝色", "exact");
+    const large = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-size-option"][data-size="L"]',
+    );
+    const buy = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-buy"]',
+    );
+    expect(black.classList).toContain("option-pill-active");
+    expect(blue.classList).not.toContain("option-pill-active");
+    expect(large.classList).toContain("option-pill-active");
+    expect(buy.disabled).toBe(true);
+    expect(buy.textContent).toContain("该规格暂不可购买");
+  });
+
   it("records a selected product when a sale-ready product is explicitly selected", async () => {
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
@@ -1420,9 +1496,9 @@ describe("sale-start capability UI flow", () => {
       slotDisplayLabel: "A2",
       inventoryId: "550e8400-e29b-41d4-a716-446655440022",
       variantId: "550e8400-e29b-41d4-a716-446655440023",
-      sku: "TEE-BASIC-L-WHITE",
+      sku: "TEE-BASIC-L-BLACK",
       size: "L",
-      color: "白色",
+      color: "黑色",
       slotCandidates: [
         {
           ...mediumItem.slotCandidates[0],
@@ -1430,9 +1506,9 @@ describe("sale-start capability UI flow", () => {
           slotDisplayLabel: "A2",
           inventoryId: "550e8400-e29b-41d4-a716-446655440022",
           variantId: "550e8400-e29b-41d4-a716-446655440023",
-          sku: "TEE-BASIC-L-WHITE",
+          sku: "TEE-BASIC-L-BLACK",
           size: "L",
-          color: "白色",
+          color: "黑色",
         },
       ],
       variantCandidates: [],

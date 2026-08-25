@@ -13,7 +13,10 @@ import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import ImplicitRecommendationBanner from "@/components/recommendation/ImplicitRecommendationBanner.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { normalizeRecommendationSize } from "@/recommendation/implicit-recommendation-session";
+import {
+  normalizeRecommendationSize,
+  variantForRecommendationSelection,
+} from "@/recommendation/implicit-recommendation-session";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -50,15 +53,32 @@ const item = computed(() => {
   return null;
 });
 const variantCandidates = computed(() => item.value?.variantCandidates ?? []);
-const selectedVariant = computed(
-  () =>
+const recommendationProjection = computed(() => recommendationStore.projection);
+const productRecommendation = computed(
+  () => recommendationProjection.value.products[catalogKey.value] ?? null,
+);
+const projectedVariant = computed(() => {
+  const projectedSize = productRecommendation.value?.selectedSize;
+  if (!projectedSize) return null;
+  return variantForRecommendationSelection(
+    variantCandidates.value,
+    projectedSize,
+    productRecommendation.value?.selectedColor ?? null,
+  );
+});
+const selectedVariant = computed(() => {
+  if (productRecommendation.value?.selectedSize) {
+    return projectedVariant.value;
+  }
+  return (
     variantCandidates.value.find(
       (variant) => variant.variantId === selectedVariantId.value,
     ) ??
     variantCandidates.value.find(variantIsSaleable) ??
     variantCandidates.value[0] ??
-    null,
-);
+    null
+  );
+});
 const selectedConcreteItem = computed(() => {
   const current = item.value;
   const variant = selectedVariant.value;
@@ -111,9 +131,17 @@ const routedVariantId = computed(() => {
   const value = route.query.variantId;
   return typeof value === "string" ? value : null;
 });
-const recommendationProjection = computed(() => recommendationStore.projection);
-const productRecommendation = computed(
-  () => recommendationProjection.value.products[catalogKey.value] ?? null,
+const selectedSize = computed(
+  () =>
+    productRecommendation.value?.selectedSize ??
+    selectedVariant.value?.size ??
+    null,
+);
+const selectedColor = computed(
+  () =>
+    productRecommendation.value?.selectedColor ??
+    selectedVariant.value?.color ??
+    null,
 );
 const latestRecommendationProfileEventId = computed(() => {
   const eventIds = recommendationStore.session.seenProfileEventIds;
@@ -143,9 +171,8 @@ const sizeOptions = computed(() =>
   ),
 );
 const colorOptions = computed(() => {
-  const activeSize = selectedVariant.value?.size ?? null;
   return uniqueVariantOptions(
-    variantCandidates.value.filter((variant) => variant.size === activeSize),
+    variantCandidates.value,
     (variant) => variant.color,
     "默认颜色",
   );
@@ -199,15 +226,13 @@ watch(
     const projectionChanged =
       projectedSize !== previous?.[3] || projectedColor !== previous?.[4];
     if (projectedSize && (productChanged || projectionChanged)) {
-      const projectedVariant = variantForProjectedSelection(
+      const projectedVariant = variantForRecommendationSelection(
         candidates,
         projectedSize,
         projectedColor,
       );
-      if (projectedVariant) {
-        selectedVariantId.value = projectedVariant.variantId;
-        return;
-      }
+      selectedVariantId.value = projectedVariant?.variantId ?? null;
+      return;
     }
     if (
       !productChanged &&
@@ -254,43 +279,30 @@ function uniqueVariantOptions(
   return [...options.values()];
 }
 
-function variantForProjectedSelection(
-  candidates: readonly MachineCatalogVariantCandidate[],
-  size: string,
-  color: string | null,
-): MachineCatalogVariantCandidate | null {
-  const canonicalSize = normalizeRecommendationSize(size);
-  const sizeCandidates = candidates.filter(
-    (variant) =>
-      variant.size === size ||
-      (canonicalSize !== null &&
-        normalizeRecommendationSize(variant.size) === canonicalSize),
-  );
-  if (color !== null) {
-    const exact = sizeCandidates.find((variant) => variant.color === color);
-    if (exact) return exact;
-  }
-  return sizeCandidates[0] ?? null;
-}
-
 function selectSize(size: string | null): void {
+  const currentColor = selectedColor.value;
   recommendationStore.selectManualSize(catalogKey.value, size);
-  const currentColor = selectedVariant.value?.color ?? null;
-  const candidates = variantCandidates.value.filter(
-    (variant) => variant.size === size,
-  );
-  const exact = candidates.find((variant) => variant.color === currentColor);
-  selectedVariantId.value =
-    exact?.variantId ?? candidates[0]?.variantId ?? selectedVariantId.value;
+  const variant = size
+    ? variantForRecommendationSelection(
+        variantCandidates.value,
+        size,
+        currentColor,
+      )
+    : null;
+  selectedVariantId.value = variant?.variantId ?? null;
 }
 
 function selectColor(color: string | null): void {
+  const currentSize = selectedSize.value;
   recommendationStore.selectColor(catalogKey.value, color);
-  const currentSize = selectedVariant.value?.size ?? null;
-  const exact = variantCandidates.value.find(
-    (variant) => variant.size === currentSize && variant.color === color,
-  );
-  if (exact) selectedVariantId.value = exact.variantId;
+  const variant = currentSize
+    ? variantForRecommendationSelection(
+        variantCandidates.value,
+        currentSize,
+        color,
+      )
+    : null;
+  selectedVariantId.value = variant?.variantId ?? null;
 }
 
 async function purchase(): Promise<void> {
@@ -328,7 +340,7 @@ async function startTryOn(): Promise<void> {
       data-test="product-detail-page"
       :data-catalog-key="item.catalogKey"
       :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
-      :data-variant-id="selectedVariant?.variantId ?? item.variantId"
+      :data-variant-id="selectedVariant?.variantId ?? ''"
       :data-vision-recommendation-active="
         isVisionRecommendationActive ? 'true' : 'false'
       "
@@ -479,7 +491,7 @@ async function startTryOn(): Promise<void> {
                 :key="attributeKey(option.value)"
                 class="option-pill kiosk-touch-target"
                 :class="{
-                  'option-pill-active': selectedVariant?.color === option.value,
+                  'option-pill-active': selectedColor === option.value,
                 }"
                 type="button"
                 :disabled="option.saleableStock <= 0"
@@ -495,17 +507,16 @@ async function startTryOn(): Promise<void> {
                 :key="attributeKey(option.value)"
                 class="option-pill kiosk-touch-target"
                 :class="{
-                  'option-pill-active': selectedVariant?.size === option.value,
+                  'option-pill-active': selectedSize === option.value,
                   'option-pill-recommended':
                     isVisionRecommendationActive &&
-                    selectedVariant?.size === option.value,
+                    selectedSize === option.value,
                 }"
                 type="button"
                 data-test="product-size-option"
                 :data-size="option.value ?? ''"
                 :data-vision-recommended="
-                  isVisionRecommendationActive &&
-                  selectedVariant?.size === option.value
+                  isVisionRecommendationActive && selectedSize === option.value
                     ? 'true'
                     : 'false'
                 "
@@ -520,7 +531,7 @@ async function startTryOn(): Promise<void> {
           <section class="detail-section product-copy">
             <h2>❀ 商品信息</h2>
             <p>商品材质：{{ materialText }}</p>
-            <p>商品尺码：{{ selectedVariant?.size ?? "均码" }}</p>
+            <p>商品尺码：{{ selectedSize ?? "均码" }}</p>
             <p>商品功能：{{ functionText }}</p>
             <p>洗涤建议：建议手洗，水温不超过30°C</p>
             <p>商品货号：{{ skuText }}</p>
@@ -561,7 +572,7 @@ async function startTryOn(): Promise<void> {
               data-test="product-buy"
               :data-catalog-key="item.catalogKey"
               :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
-              :data-variant-id="selectedVariant?.variantId ?? item.variantId"
+              :data-variant-id="selectedVariant?.variantId ?? ''"
               @click="purchase"
             >
               {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}

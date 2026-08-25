@@ -27,7 +27,7 @@ import { useCustomerInteractionSession } from "@/composables/customer-interactio
 import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { normalizeRecommendationSize } from "@/recommendation/implicit-recommendation-session";
+import { variantForRecommendationSelection } from "@/recommendation/implicit-recommendation-session";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCustomerJourneyStore } from "@/stores/customer-journey";
@@ -346,22 +346,13 @@ function preferredVariantIdFor(
   recommendation: ProductRecommendationProjection | undefined,
 ): string | null {
   if (!recommendation?.selectedSize) return null;
-  const desiredCanonicalSize = normalizeRecommendationSize(
-    recommendation.selectedSize,
+  return (
+    variantForRecommendationSelection(
+      item.variantCandidates,
+      recommendation.selectedSize,
+      recommendation.selectedColor,
+    )?.variantId ?? null
   );
-  const sizeCandidates = item.variantCandidates.filter(
-    (variant) =>
-      variant.size === recommendation.selectedSize ||
-      (desiredCanonicalSize !== null &&
-        normalizeRecommendationSize(variant.size) === desiredCanonicalSize),
-  );
-  if (recommendation.selectedColor !== null) {
-    const exact = sizeCandidates.find(
-      (variant) => variant.color === recommendation.selectedColor,
-    );
-    if (exact) return exact.variantId;
-  }
-  return sizeCandidates[0]?.variantId ?? null;
 }
 
 async function openProductDetail(product: DisplayProduct): Promise<void> {

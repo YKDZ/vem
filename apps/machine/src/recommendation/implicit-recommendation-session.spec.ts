@@ -7,6 +7,7 @@ import {
   normalizeRecommendationSize,
   projectImplicitRecommendation,
   transitionImplicitRecommendation,
+  variantForRecommendationSelection,
   type ImplicitRecommendationEvent,
   type ImplicitRecommendationState,
 } from "./implicit-recommendation-session";
@@ -104,6 +105,24 @@ describe("Implicit Recommendation Session", () => {
     ["", null],
   ] as const)("normalizes %s to %s", (input, expected) => {
     expect(normalizeRecommendationSize(input)).toBe(expected);
+  });
+
+  it("never substitutes another color for an unavailable size and color combination", () => {
+    const candidates = [
+      { ...variant("medium-white", "中码"), color: "白色" },
+      { ...variant("large-blue", "大码"), color: "蓝色" },
+      { ...variant("large-white", "大码", false), color: "白色" },
+    ];
+
+    expect(
+      variantForRecommendationSelection(candidates, "L", "白色")?.variantId,
+    ).toBe("large-white");
+    expect(
+      variantForRecommendationSelection(candidates, "L", "黑色"),
+    ).toBeNull();
+    expect(
+      variantForRecommendationSelection(candidates, "L", null)?.variantId,
+    ).toBe("large-blue");
   });
 
   it("starts once with neutral M, suppresses specifics for multiple people, and ends only on confirmed departure", () => {

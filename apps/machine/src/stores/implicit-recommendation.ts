@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { nextTick } from "vue";
 
 import type { VisionProfileResultPayload } from "@/native/vision";
 
@@ -82,12 +83,13 @@ export const useImplicitRecommendationStore = defineStore(
         this.applyEvent({ type: "runtime_reset" });
       },
       applyEvent(event: ImplicitRecommendationEvent): void {
+        const presentationStartedAt = monotonicNow();
         const transition = transitionImplicitRecommendation(
           this.session,
           event,
         );
         this.session = transition.state;
-        recordDiagnostics(transition.diagnostics);
+        recordDiagnostics(transition.diagnostics, presentationStartedAt);
       },
     },
   },
@@ -114,18 +116,36 @@ function availableCanonicalSizes() {
 
 function recordDiagnostics(
   diagnostics: readonly ImplicitRecommendationDiagnostic[],
+  presentationStartedAt = monotonicNow(),
 ): void {
   const trace = installedMachineRuntimeTrace();
   if (!trace) return;
   for (const diagnostic of diagnostics) {
-    trace.record({
-      type: "implicit_recommendation",
+    const record = {
+      type: "implicit_recommendation" as const,
       event: diagnostic.event,
       sessionId: diagnostic.sessionId,
       catalogKey: diagnostic.catalogKey ?? null,
       profileEventId: diagnostic.profileEventId ?? null,
       canonicalSize: diagnostic.canonicalSize ?? null,
-      latencyMs: diagnostic.event === "neutral_presented" ? 0 : null,
+      latencyMs: null as number | null,
+    };
+    if (diagnostic.event !== "neutral_presented") {
+      trace.record(record);
+      continue;
+    }
+    void nextTick().then(() => {
+      trace.record({
+        ...record,
+        latencyMs: Math.max(
+          0,
+          Math.round(monotonicNow() - presentationStartedAt),
+        ),
+      });
     });
   }
+}
+
+function monotonicNow(): number {
+  return globalThis.performance?.now() ?? Date.now();
 }

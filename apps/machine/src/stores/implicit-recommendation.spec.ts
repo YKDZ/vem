@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 
 import type { MachineSaleViewItem } from "@/types/catalog";
 
@@ -126,6 +127,31 @@ describe("useImplicitRecommendationStore", () => {
         profileEventId: "profile-2",
       }),
     );
+  });
+
+  it("records neutral presentation latency after the Vue presentation flush", async () => {
+    const monotonicClock = vi
+      .spyOn(performance, "now")
+      .mockReturnValueOnce(100)
+      .mockReturnValueOnce(137);
+    const store = useImplicitRecommendationStore();
+
+    store.observeStablePresence({
+      present: true,
+      occupancy: "single",
+      edgeId: "presence-latency:arrival",
+    });
+    await nextTick();
+
+    expect(traceRecordMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "implicit_recommendation",
+        event: "neutral_presented",
+        sessionId: "presence-latency",
+        latencyMs: 37,
+      }),
+    );
+    monotonicClock.mockRestore();
   });
 
   it("does not let color selection cancel a per-product manual size", () => {

@@ -1,4 +1,7 @@
-import type { MachineCatalogItem } from "@/types/catalog";
+import type {
+  MachineCatalogItem,
+  MachineCatalogVariantCandidate,
+} from "@/types/catalog";
 
 export type RecommendationCanonicalSize = "S" | "M" | "L";
 export type RecommendationOccupancy = "none" | "single" | "multiple";
@@ -130,6 +133,24 @@ export function normalizeRecommendationSize(
     .toLocaleUpperCase()
     .replace(/\s+/g, "");
   return NORMALIZED_SIZES[normalized] ?? null;
+}
+
+export function variantForRecommendationSelection(
+  candidates: readonly MachineCatalogVariantCandidate[],
+  size: string,
+  color: string | null,
+): MachineCatalogVariantCandidate | null {
+  const canonicalSize = normalizeRecommendationSize(size);
+  const sizeCandidates = candidates.filter(
+    (variant) =>
+      variant.size === size ||
+      (canonicalSize !== null &&
+        normalizeRecommendationSize(variant.size) === canonicalSize),
+  );
+  if (color !== null) {
+    return sizeCandidates.find((variant) => variant.color === color) ?? null;
+  }
+  return sizeCandidates[0] ?? null;
 }
 
 export function transitionImplicitRecommendation(
