@@ -277,10 +277,19 @@ async function waitForSuccessfulResultSurface(
   );
 }
 
+export function jsonOnlyPowerShellCommand(script: unknown): string {
+  return `$ProgressPreference = 'SilentlyContinue'\n& {\n${String(script)}\n} 3>$null 4>$null 5>$null 6>$null`;
+}
+
 function runLocalPowerShellJson(script: unknown, label: string): JsonRecord {
   const result = spawnSync(
     "pwsh",
-    ["-NoProfile", "-NonInteractive", "-Command", String(script)],
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      jsonOnlyPowerShellCommand(script),
+    ],
     {
       encoding: "utf8",
       env: process.env as NodeJS.ProcessEnv,
