@@ -215,16 +215,24 @@ async function waitForLowerControllerOffline(
   const deadline = Date.now() + timeoutMs;
   let last: JsonRecord | null = null;
   do {
-    const bindings = (await daemonGet(handoff, "/v1/hardware-bindings").catch(
-      () => null,
-    )) as JsonRecord | null;
-    const lower = ((bindings?.roles ?? []) as unknown[]).find(
+    const [selfCheck, bindings] = await Promise.all([
+      daemonPost(handoff, "/v1/hardware/self-check", {}).catch(() => null),
+      daemonGet(handoff, "/v1/hardware-bindings").catch(() => null),
+    ]);
+    const bindingsRecord = bindings as JsonRecord | null;
+    const lower = ((bindingsRecord?.roles ?? []) as unknown[]).find(
       (role) =>
         (role as JsonRecord)?.role === "lower_controller" ||
         (role as JsonRecord)?.role === "lower-controller",
     ) as JsonRecord | undefined;
-    last = lower ?? null;
-    if (lower?.ready === false && lower.currentPort == null) return lower;
+    last = { selfCheck, lower };
+    if (
+      (selfCheck as JsonRecord | null)?.online === false &&
+      lower?.ready === false &&
+      lower.currentPort == null
+    ) {
+      return { selfCheck, bindings: bindingsRecord, lower };
+    }
     await sleep(100);
   } while (Date.now() < deadline);
   throw new Error(
