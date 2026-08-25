@@ -39,7 +39,9 @@ import {
   normalizeVisionOrigin,
 } from "./slices/vision-experience/captured-source-evidence.ts";
 import {
+  decodeComposedGarmentPng,
   decodeSemanticResultPng,
+  decodeTransparentGarmentPng,
   SemanticResultPngDecodeError,
 } from "./slices/vision-experience/result-geometry-evidence.ts";
 import { parseSourceGarmentMetadata } from "./slices/vision-experience/source-garment-evidence.ts";
@@ -620,7 +622,10 @@ export class VisionProtocolEvidenceCollector {
  * 下一 attempt 被重用时把旧字节当成当前输入。
  */
 export class CapturedFrameEvidenceCache {
-  private entries = new Map<string, Promise<CapturedFrameResource | null>>();
+  private entries = new Map<
+    string,
+    Promise<{ resource: CapturedFrameResource; bytes: Buffer } | null>
+  >();
   private fetchImpl: typeof fetch;
 
   constructor({ fetchImpl = fetch }: { fetchImpl?: typeof fetch } = {}) {
@@ -659,7 +664,43 @@ export class CapturedFrameEvidenceCache {
       });
       this.entries.set(key, entry);
     }
-    return await entry;
+    return (await entry)?.resource ?? null;
+  }
+
+  async readPngBytes({
+    attemptId,
+    visionOrigin,
+    captured,
+  }: {
+    attemptId: string;
+    visionOrigin: string;
+    captured: CapturedFrameFacts;
+  }): Promise<Buffer | null> {
+    if (
+      !isControlledCapturedFrameReference(captured.reference) ||
+      !hasVisionOrigin(captured.reference, visionOrigin)
+    ) {
+      return null;
+    }
+    const key = [
+      attemptId,
+      visionOrigin,
+      captured.reference,
+      captured.digest,
+      captured.frameId,
+    ].join("\u0000");
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = inspectCapturedFrameResource({
+        fetchImpl: this.fetchImpl,
+        attemptId,
+        visionOrigin,
+        captured,
+      });
+      this.entries.set(key, entry);
+    }
+    const inspected = await entry;
+    return inspected ? Buffer.from(inspected.bytes) : null;
   }
 
   clear(): void {
@@ -767,10 +808,12 @@ export function hashPreviewScreenshot(data: unknown): string {
 export async function readResultPngResource({
   reference,
   visionOrigin,
+  capturedPng = null,
   fetchImpl = fetch,
 }: {
   reference: unknown;
   visionOrigin: string;
+  capturedPng?: Buffer | null;
   fetchImpl?: typeof fetch;
 }): Promise<ResultPngResourceRead> {
   const origin = normalizeVisionOrigin(visionOrigin);
@@ -851,7 +894,9 @@ export async function readResultPngResource({
     )
       return failed("响应体", "结果 PNG 响应体为空或超过上限", detail);
     try {
-      const png = decodeSemanticResultPng(body.bytes);
+      const png = capturedPng
+        ? decodeComposedGarmentPng(body.bytes, capturedPng)
+        : decodeSemanticResultPng(body.bytes);
       const semanticPixelCount =
         png.leftSleevePixels + png.torsoPixels + png.rightSleevePixels;
       return {
@@ -859,7 +904,9 @@ export async function readResultPngResource({
         outcome: {
           ok: true,
           stage: "成功",
-          reason: "结果 PNG 已解码为语义像素",
+          reason: capturedPng
+            ? "结果 PNG 已与公开捕获帧完成像素差分"
+            : "结果 PNG 已解码为语义像素",
           origin,
           path,
           ...detail,
@@ -916,7 +963,7 @@ export async function readSourceGarmentPngResource({
         value.digest
     )
       return null;
-    const decoded = decodeSemanticResultPng(bytes);
+    const decoded = decodeTransparentGarmentPng(bytes);
     return decoded.width === value.width && decoded.height === value.height
       ? decoded
       : null;
@@ -1405,9 +1452,18 @@ export class CdpTestAdapter implements TestAdapter {
             captured: parsedCaptured.data,
           })
         : null;
+    const capturedPng =
+      typeof state.attemptId === "string" && parsedCaptured.success
+        ? await this.capturedFrameResources.readPngBytes({
+            attemptId: state.attemptId,
+            visionOrigin: this.protocolEvidence.visionOrigin,
+            captured: parsedCaptured.data,
+          })
+        : null;
     const resultResource = await readResultPngResource({
       reference: (state as { resultUrl?: unknown }).resultUrl,
       visionOrigin: this.protocolEvidence.visionOrigin,
+      capturedPng,
     });
     boundedPush(this.resultPngOutcomes, resultResource.outcome);
     this.sourceGarmentPng ??= readSourceGarmentPngResource({
@@ -1974,7 +2030,7 @@ async function inspectCapturedFrameResource({
   attemptId: string;
   visionOrigin: string;
   captured: CapturedFrameFacts;
-}): Promise<CapturedFrameResource | null> {
+}): Promise<{ resource: CapturedFrameResource; bytes: Buffer } | null> {
   try {
     const response = await fetchImpl(captured.reference);
     const bytes = Buffer.from(await response.arrayBuffer());
@@ -1990,19 +2046,22 @@ async function inspectCapturedFrameResource({
       return null;
     }
     return {
-      attemptId,
-      capturedDigest: captured.digest,
-      capturedFrameId: captured.frameId,
-      visionOrigin,
-      reference: captured.reference,
-      finalUrl: response.url,
-      ok: true,
-      httpStatus: 200,
-      contentType: "image/png",
-      byteSize: bytes.byteLength,
-      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-      width: dimensions.width,
-      height: dimensions.height,
+      bytes,
+      resource: {
+        attemptId,
+        capturedDigest: captured.digest,
+        capturedFrameId: captured.frameId,
+        visionOrigin,
+        reference: captured.reference,
+        finalUrl: response.url,
+        ok: true,
+        httpStatus: 200,
+        contentType: "image/png",
+        byteSize: bytes.byteLength,
+        digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        width: dimensions.width,
+        height: dimensions.height,
+      },
     };
   } catch {
     return null;

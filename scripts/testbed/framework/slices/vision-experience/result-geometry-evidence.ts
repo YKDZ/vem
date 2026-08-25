@@ -11,6 +11,9 @@ const MAX_ASPECT_ERROR = 0.02;
 const MIN_SLEEVE_RETAINED_RATIO = 0.65;
 const MIN_SLEEVE_SYMMETRY_RATIO = 0.8;
 const MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH = 1.08;
+const MIN_FIELD_DISTANCE_MAJOR_SCALE_GROWTH = 1.5;
+const MIN_FIELD_DISTANCE_MINOR_SCALE_GROWTH = 1.2;
+const MAX_FIELD_GOLDEN_ABSOLUTE_RATIO_ERROR = 0.04;
 const MAX_RESULT_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_RESULT_PNG_PIXELS = 16_000_000;
 const MAX_RESULT_PNG_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -154,6 +157,97 @@ function sameColor(value: Buffer, offset: number, color: readonly number[]) {
   );
 }
 
+function geometryFromMask(
+  width: number,
+  height: number,
+  included: (x: number, y: number) => boolean,
+): SemanticResultPng {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!included(x, y)) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  if (maxX < minX || maxY < minY)
+    pngDecodeFailure("semantic_pixels", "结果 PNG 没有可见成衣像素");
+  const garmentWidth = maxX - minX + 1;
+  const garmentHeight = maxY - minY + 1;
+  const sleeveBottom = minY + garmentHeight * 0.55;
+  const leftBoundary = minX + garmentWidth * 0.32;
+  const rightBoundary = maxX - garmentWidth * 0.32;
+  let leftSleevePixels = 0;
+  let torsoPixels = 0;
+  let rightSleevePixels = 0;
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (!included(x, y)) continue;
+      if (y <= sleeveBottom && x <= leftBoundary) leftSleevePixels += 1;
+      else if (y <= sleeveBottom && x >= rightBoundary) rightSleevePixels += 1;
+      else torsoPixels += 1;
+    }
+  }
+  return {
+    width,
+    height,
+    leftSleevePixels,
+    torsoPixels,
+    rightSleevePixels,
+    garment: {
+      x: minX,
+      y: minY,
+      width: garmentWidth,
+      height: garmentHeight,
+      centerX: minX + (garmentWidth - 1) / 2,
+      centerY: minY + (garmentHeight - 1) / 2,
+      aspect: garmentWidth / garmentHeight,
+    },
+  };
+}
+
+/** 从生产透明成衣的 alpha，而不是测试色块，读取可见剪影。 */
+export function decodeTransparentGarmentPng(bytes: Buffer): SemanticResultPng {
+  const decoded = parseRgbPng(bytes);
+  const channels = decoded.pixels.length / (decoded.width * decoded.height);
+  if (channels !== 4) pngDecodeFailure("format", "透明成衣 PNG 必须包含 alpha");
+  return geometryFromMask(decoded.width, decoded.height, (x, y) => {
+    const offset = (y * decoded.width + x) * channels;
+    return decoded.pixels[offset + 3]! >= 32;
+  });
+}
+
+/** 从同一公开捕获帧与合成结果的像素差读取真实成衣区域。 */
+export function decodeComposedGarmentPng(
+  resultBytes: Buffer,
+  capturedBytes: Buffer,
+): SemanticResultPng {
+  const result = parseRgbPng(resultBytes);
+  const captured = parseRgbPng(capturedBytes);
+  if (result.width !== captured.width || result.height !== captured.height) {
+    pngDecodeFailure("format", "试衣结果与捕获帧尺寸不一致");
+  }
+  const resultChannels = result.pixels.length / (result.width * result.height);
+  const capturedChannels =
+    captured.pixels.length / (captured.width * captured.height);
+  return geometryFromMask(result.width, result.height, (x, y) => {
+    const resultOffset = (y * result.width + x) * resultChannels;
+    const capturedOffset = (y * captured.width + x) * capturedChannels;
+    return [0, 1, 2].some(
+      (channel) =>
+        Math.abs(
+          result.pixels[resultOffset + channel]! -
+            captured.pixels[capturedOffset + channel]!,
+        ) >= 24,
+    );
+  });
+}
+
 /** 解码受控语义夹具的真实结果 PNG，并从像素计算成衣区域。 */
 export function decodeSemanticResultPng(bytes: Buffer): SemanticResultPng {
   let decoded: ReturnType<typeof parseRgbPng>;
@@ -220,6 +314,7 @@ export interface ResultGeometryValidation {
   resultSleevesRetained: AssertionValue;
   resultUniformPlacement: AssertionValue;
   resultAutomaticScale: AssertionValue;
+  resultDefaultMatchesFieldGolden: AssertionValue;
 }
 
 export type ResultScaleDirection = "up" | "down";
@@ -236,17 +331,27 @@ export function validateResultScaleStep({
 }): AssertionValue {
   const widthRatio = after.garment.width / before.garment.width;
   const heightRatio = after.garment.height / before.garment.height;
-  const centerDrift = Math.hypot(
-    after.garment.centerX - before.garment.centerX,
-    after.garment.centerY - before.garment.centerY,
-  );
+  const beforeRight = before.garment.x + before.garment.width;
+  const afterRight = after.garment.x + after.garment.width;
+  const beforeBottom = before.garment.y + before.garment.height;
+  const afterBottom = after.garment.y + after.garment.height;
+  const horizontalAnchorStable =
+    (before.garment.x === 0 && after.garment.x === 0) ||
+    (beforeRight === before.width && afterRight === after.width) ||
+    Math.abs(after.garment.centerX - before.garment.centerX) <= 2;
+  const verticalAnchorStable =
+    (before.garment.y === 0 && after.garment.y === 0) ||
+    (beforeBottom === before.height && afterBottom === after.height) ||
+    Math.abs(after.garment.centerY - before.garment.centerY) <= 2;
+  const majorRatio = Math.max(widthRatio, heightRatio);
+  const minorRatio = Math.min(widthRatio, heightRatio);
   const ratiosOk =
     direction === "up"
-      ? widthRatio >= 1.03 && heightRatio >= 1.03
-      : widthRatio <= 0.97 && heightRatio <= 0.97;
+      ? majorRatio >= 1.03 && minorRatio >= 0.995
+      : minorRatio <= 0.97 && majorRatio <= 1.005;
   return {
     expected: true,
-    observed: ratiosOk && centerDrift <= 2,
+    observed: ratiosOk && horizontalAnchorStable && verticalAnchorStable,
   };
 }
 
@@ -273,18 +378,34 @@ export function validateResultScaleRoundTrip({
 export function validateResultGeometryEvidence({
   source,
   far,
-  mid,
+  mid = null,
   near,
   scale100,
   scaled,
+  fieldGolden = null,
 }: {
   source: SemanticResultPng;
   far: SemanticResultPng;
-  mid: SemanticResultPng;
+  mid?: SemanticResultPng | null;
   near: SemanticResultPng;
   scale100: SemanticResultPng;
   scaled: SemanticResultPng;
+  fieldGolden?: {
+    far: {
+      xRatio: number;
+      yRatio: number;
+      widthRatio: number;
+      heightRatio: number;
+    };
+    near: {
+      xRatio: number;
+      yRatio: number;
+      widthRatio: number;
+      heightRatio: number;
+    };
+  } | null;
 }): ResultGeometryValidation {
+  const representative = mid ?? near;
   const expectedSleevePixels = (
     result: SemanticResultPng,
     sourcePixels: number,
@@ -294,36 +415,77 @@ export function validateResultGeometryEvidence({
   const retained =
     source.leftSleevePixels > 0 &&
     source.rightSleevePixels > 0 &&
-    mid.leftSleevePixels / expectedSleevePixels(mid, source.leftSleevePixels) >=
+    representative.leftSleevePixels /
+      expectedSleevePixels(representative, source.leftSleevePixels) >=
       MIN_SLEEVE_RETAINED_RATIO &&
-    mid.rightSleevePixels /
-      expectedSleevePixels(mid, source.rightSleevePixels) >=
+    representative.rightSleevePixels /
+      expectedSleevePixels(representative, source.rightSleevePixels) >=
       MIN_SLEEVE_RETAINED_RATIO;
   const sleeveSymmetry =
-    mid.leftSleevePixels > 0 &&
-    mid.rightSleevePixels > 0 &&
-    Math.min(mid.leftSleevePixels, mid.rightSleevePixels) /
-      Math.max(mid.leftSleevePixels, mid.rightSleevePixels) >=
+    representative.leftSleevePixels > 0 &&
+    representative.rightSleevePixels > 0 &&
+    Math.min(
+      representative.leftSleevePixels,
+      representative.rightSleevePixels,
+    ) /
+      Math.max(
+        representative.leftSleevePixels,
+        representative.rightSleevePixels,
+      ) >=
       MIN_SLEEVE_SYMMETRY_RATIO;
   const sleeves = retained && sleeveSymmetry;
-  const uniform = [far, mid, near, scale100, scaled].every(
-    (result) =>
-      Math.abs(result.garment.aspect - source.garment.aspect) <=
-      MAX_ASPECT_ERROR,
-  );
-  const automaticScale =
-    mid.garment.width / far.garment.width >=
-      MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
-    near.garment.width / mid.garment.width >=
-      MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
-    mid.garment.height / far.garment.height >=
-      MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
-    near.garment.height / mid.garment.height >=
-      MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH;
+  const ratioError = (observed: number, expected: number) =>
+    Math.abs(observed - expected);
+  const matchesGoldenSegment = (
+    result: SemanticResultPng,
+    expected: NonNullable<typeof fieldGolden>["far"],
+  ) =>
+    ratioError(result.garment.x / result.width, expected.xRatio) <=
+      MAX_FIELD_GOLDEN_ABSOLUTE_RATIO_ERROR &&
+    ratioError(result.garment.y / result.height, expected.yRatio) <=
+      MAX_FIELD_GOLDEN_ABSOLUTE_RATIO_ERROR &&
+    ratioError(result.garment.width / result.width, expected.widthRatio) <=
+      MAX_FIELD_GOLDEN_ABSOLUTE_RATIO_ERROR &&
+    ratioError(result.garment.height / result.height, expected.heightRatio) <=
+      MAX_FIELD_GOLDEN_ABSOLUTE_RATIO_ERROR;
+  const matchesFieldGolden = fieldGolden
+    ? matchesGoldenSegment(far, fieldGolden.far) &&
+      matchesGoldenSegment(near, fieldGolden.near)
+    : true;
+  // 现场近景会同时切掉成衣左右和下缘；可见 bbox 的宽高比因此不再等于
+  // 完整源图。此时人工确认的公开可见边界才是等比摆放的端到端代理事实。
+  const uniform = fieldGolden
+    ? matchesFieldGolden
+    : [far, ...(mid ? [mid] : []), near, scale100, scaled].every(
+        (result) =>
+          Math.abs(result.garment.aspect - source.garment.aspect) <=
+          MAX_ASPECT_ERROR,
+      );
+  const automaticScale = mid
+    ? mid.garment.width / far.garment.width >=
+        MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
+      near.garment.width / mid.garment.width >=
+        MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
+      mid.garment.height / far.garment.height >=
+        MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
+      near.garment.height / mid.garment.height >=
+        MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH
+    : Math.max(
+        near.garment.width / far.garment.width,
+        near.garment.height / far.garment.height,
+      ) >= MIN_FIELD_DISTANCE_MAJOR_SCALE_GROWTH &&
+      Math.min(
+        near.garment.width / far.garment.width,
+        near.garment.height / far.garment.height,
+      ) >= MIN_FIELD_DISTANCE_MINOR_SCALE_GROWTH;
   return {
-    ok: sleeves && uniform && automaticScale,
+    ok: sleeves && uniform && automaticScale && matchesFieldGolden,
     resultSleevesRetained: { expected: true, observed: sleeves },
     resultUniformPlacement: { expected: true, observed: uniform },
     resultAutomaticScale: { expected: true, observed: automaticScale },
+    resultDefaultMatchesFieldGolden: {
+      expected: true,
+      observed: matchesFieldGolden,
+    },
   };
 }

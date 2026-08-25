@@ -416,26 +416,23 @@ function Invoke-VemRecordedFixtureSwitch {
     throw '安装 Vision expected-results 不是有效 JSON'
   }
 
-  if ($Mode -eq 'select') {
-    $geometryEntryBySegment = @{ far = 'geometryFar'; mid = 'geometryMid'; near = 'geometryNear' }
-    $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'manFront' $true $geometryEntryBySegment[$Segment] $true $true
-  } elseif ($Mode -eq 'recommendation') {
+  if ($Mode -eq 'select' -or $Mode -eq 'recommendation') {
     if ($Segment -eq 'mid') {
-      throw '现场推荐录播只支持 near 或 far'
+      throw '现场近远录播只支持 near 或 far'
     }
-    $recommendationEntryBySegment = @{
+    $fieldEntryBySegment = @{
       near = [pscustomobject]@{ top = 'fieldRecommendationNearTop'; front = 'fieldRecommendationNearFront' }
       far = [pscustomobject]@{ top = 'fieldRecommendationFarTop'; front = 'fieldRecommendationFarFront' }
     }
-    $recommendation = $recommendationEntryBySegment[$Segment]
-    $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $recommendation.top $true $recommendation.front $true $false
+    $field = $fieldEntryBySegment[$Segment]
+    $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $field.top $true $field.front $true $false
   } elseif ($Mode -eq 'departure') {
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'top' $false 'frontVerticalUnstable' $true $false
   } else {
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'top' $false 'frontVertical' $true $false
   }
   $pathsByEntry = @{}
-  # 选择任一 geometry 子场景前同时检查 manFront 和 far/mid/near，避免慢失败。
+  # 每次切换先验证所选现场 top/front 对，再触碰 site 或运行时 owner。
   foreach ($recording in @($decision.entries)) {
     $path = & $joinPath $recordedRoot ([string]$recording.file)
     if (-not (Test-VemRecordedFixtureLocalPath $path) -or -not (& $fileExists $path)) {

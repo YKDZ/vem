@@ -30,6 +30,9 @@ const FIXTURE_PATH = new URL(
   "./fixtures/local-testbed-catalog.json",
   import.meta.url,
 );
+const FIELD_TRY_ON_GARMENT = readFileSync(
+  new URL("./fixtures/try-on-silhouette.png", import.meta.url),
+);
 const SERVICE_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres",
   mqtt: "vem-local-testbed-mosquitto",
@@ -1698,27 +1701,9 @@ function createProductFixturePng({
 // The garment follows the production Admin upload contract rather than a
 // customer overlay transport.
 const TESTBED_MEDIA_FIXTURES = Object.freeze({
-  tryOnGarment: createRgbaPng(512, 640, (x, y, width, height) => {
-    const torso =
-      x > width * 0.24 &&
-      x < width * 0.76 &&
-      y > height * 0.26 &&
-      y < height * 0.9;
-    const leftSleeve =
-      y > height * 0.2 &&
-      y < height * 0.52 &&
-      x > width * 0.08 &&
-      x < width * 0.26;
-    const rightSleeve =
-      y > height * 0.2 &&
-      y < height * 0.52 &&
-      x > width * 0.74 &&
-      x < width * 0.92;
-    if (leftSleeve) return [255, 0, 0, 255];
-    if (torso) return [0, 220, 0, 255];
-    if (rightSleeve) return [0, 0, 255, 255];
-    return [0, 0, 0, 0];
-  }),
+  // 现场确认过的透明黑色短袖同时服务真实试衣与 T 恤商品展示；VM 不再把
+  // RGB 几何探针当作顾客可见成衣。长袖仍只保留其独有的模板覆盖。
+  tryOnGarment: FIELD_TRY_ON_GARMENT,
   tryOnGarmentLong: createRgbaPng(512, 640, (x, y, width, height) => {
     const torso =
       x > width * 0.27 &&
@@ -1741,10 +1726,7 @@ const TESTBED_MEDIA_FIXTURES = Object.freeze({
       background: [95, 64, 137],
       accent: [63, 198, 181],
     }),
-    T恤: createProductFixturePng({
-      background: [163, 74, 58],
-      accent: [97, 151, 206],
-    }),
+    T恤: FIELD_TRY_ON_GARMENT,
   }),
 });
 
@@ -2330,8 +2312,8 @@ export async function seedThroughSupportedApis({
         contentType: "image/png",
         byteSize: testbedTryOnGarmentAsset().buffer.byteLength,
         template: "tshirt_short_sleeve",
-        width: 512,
-        height: 640,
+        width: 1158,
+        height: 1253,
       },
       tryOnCategoryKey: "tshirts",
       selectedCatalogKey: `product:${recommendationBase.product.product.id}`,

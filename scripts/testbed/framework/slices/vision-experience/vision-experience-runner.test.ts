@@ -141,17 +141,17 @@ function replaySummaryFixture(
 const fixedResultPng = {
   width: 720,
   height: 1280,
-  leftSleevePixels: 120,
-  torsoPixels: 1_200,
-  rightSleevePixels: 120,
+  leftSleevePixels: 2_517,
+  torsoPixels: 25_171,
+  rightSleevePixels: 2_517,
   garment: {
-    x: 310,
-    y: 577.5,
-    width: 100,
-    height: 125,
+    x: 148.5,
+    y: 411,
+    width: 423,
+    height: 458,
     centerX: 359.5,
     centerY: 639.5,
-    aspect: 0.8,
+    aspect: 0.924,
   },
 };
 
@@ -296,30 +296,63 @@ function observationTimelineFor(attemptId: string) {
 
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
-  let selectedSegment: "far" | "mid" | "near" = "mid";
+  let selectedSegment: "far" | "near" = "near";
   let scaleClickCount = 0;
-  const segmentScale = { far: 0.8, mid: 1, near: 1.2 } as const;
   const segmentAttemptId = {
     far: "550e8400-e29b-41d4-a716-446655440121",
-    mid: tryOnAttemptId,
-    near: "550e8400-e29b-41d4-a716-446655440123",
+    near: tryOnAttemptId,
   } as const;
   const resultPng = (scale: number) => ({
     width: 720,
     height: 1280,
-    leftSleevePixels: 120,
-    torsoPixels: 1_200,
-    rightSleevePixels: 120,
+    leftSleevePixels: Math.round(120 * scale * scale),
+    torsoPixels: Math.round(1_200 * scale * scale),
+    rightSleevePixels: Math.round(120 * scale * scale),
     garment: {
-      x: 360 - Math.round(100 * scale) / 2,
-      y: 640 - Math.round(125 * scale) / 2,
-      width: Math.round(100 * scale),
-      height: Math.round(125 * scale),
+      x: 360 - Math.round(92.4 * scale) / 2,
+      y: 640 - Math.round(100 * scale) / 2,
+      width: Math.round(92.4 * scale),
+      height: Math.round(100 * scale),
       centerX: 359.5,
       centerY: 639.5,
-      aspect: 0.8,
+      aspect: 0.924,
     },
   });
+  const sourceGarmentPng = resultPng(1);
+  const fieldResultPng = (segment: "far" | "near", scale = 1) => {
+    const base =
+      segment === "far"
+        ? { width: 559, height: 382 }
+        : { width: 720, height: 585 };
+    const width =
+      segment === "near"
+        ? 720
+        : Math.round(base.width * (1 + (scale - 1) * 0.52));
+    const height = Math.round(base.height * scale);
+    const areaScale =
+      (width * height) /
+      (sourceGarmentPng.garment.width * sourceGarmentPng.garment.height);
+    return {
+      width: 720,
+      height: 1_280,
+      leftSleevePixels: Math.round(
+        sourceGarmentPng.leftSleevePixels * areaScale,
+      ),
+      torsoPixels: Math.round(sourceGarmentPng.torsoPixels * areaScale),
+      rightSleevePixels: Math.round(
+        sourceGarmentPng.rightSleevePixels * areaScale,
+      ),
+      garment: {
+        x: 0,
+        y: 1_280 - height,
+        width,
+        height,
+        centerX: (width - 1) / 2,
+        centerY: 1_280 - height + (height - 1) / 2,
+        aspect: width / height,
+      },
+    };
+  };
   const sourceGarmentMetadata = sourceGarmentMetadataFixture;
   const startGarment = {
     assetId: sourceGarmentMetadata.assetId,
@@ -338,10 +371,6 @@ function fakeUiAdapter() {
       "select-recorded-video-fixture far": () => {
         selectedSegment = "far";
         return { exitCode: 0, stdout: "far", stderr: "" };
-      },
-      "select-recorded-video-fixture mid": () => {
-        selectedSegment = "mid";
-        return { exitCode: 0, stdout: "mid", stderr: "" };
       },
       "select-recorded-video-fixture near": () => {
         selectedSegment = "near";
@@ -405,8 +434,8 @@ function fakeUiAdapter() {
               attemptId,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl: resultReference,
-              resultPng: resultPng(segmentScale[selectedSegment]),
-              sourceGarmentPng: resultPng(1),
+              resultPng: fieldResultPng(selectedSegment),
+              sourceGarmentPng,
               sourceGarmentMetadata,
               startGarment,
               observationTimeline: observationTimelineFor(attemptId),
@@ -430,7 +459,7 @@ function fakeUiAdapter() {
             garmentScale: nextScale,
             scaleValue: `${percent}%`,
             resultUrl: resultReference,
-            resultPng: resultPng(nextScale),
+            resultPng: fieldResultPng(selectedSegment, nextScale),
             adjustmentEvidence: {
               scales: [
                 ...(current.adjustmentEvidence?.scales ?? []),
@@ -461,7 +490,7 @@ function fakeUiAdapter() {
             garmentScale: nextScale,
             scaleValue: `${percent}%`,
             resultUrl: resultReference,
-            resultPng: resultPng(nextScale),
+            resultPng: fieldResultPng(selectedSegment, nextScale),
             adjustmentEvidence: {
               scales: [
                 ...(current.adjustmentEvidence?.scales ?? []),
@@ -968,7 +997,7 @@ describe("visionExperience slice runner", () => {
     }
   });
 
-  it("从三次结果资源与同一 attempt 的 100/105 资源生成几何业务断言", async () => {
+  it("从现场近远结果与同一 attempt 的 100/105 资源生成几何业务断言", async () => {
     const report = await runVisionExperienceSlice({
       adapter: fakeUiAdapter(),
       acceptanceBinding: visionAcceptanceBinding,
@@ -1046,7 +1075,7 @@ describe("visionExperience slice runner", () => {
     assert.equal(report.businessSets[0].status, "failed");
   });
 
-  it("三段受控录播缺失时保留结构化 fail-closed 几何诊断", async () => {
+  it("现场近远录播缺失时保留结构化 fail-closed 几何诊断", async () => {
     const adapter = fakeUiAdapter();
     const originalRun = adapter.run.bind(adapter);
     adapter.run = async (command, args = []) => {
@@ -1054,7 +1083,7 @@ describe("visionExperience slice runner", () => {
         return {
           exitCode: 1,
           stdout: "",
-          stderr: "已安装产物未携带动态 far/mid/near 录播夹具",
+          stderr: "已安装产物未携带现场 far/near 录播夹具",
         };
       }
       return originalRun(command, args);
@@ -1077,7 +1106,7 @@ describe("visionExperience slice runner", () => {
     assert.deepEqual(set.supportingEvidence.at(-1), {
       kind: "vision-recorded-geometry-fixture",
       status: "blocked",
-      reason: "已安装产物未携带动态 far/mid/near 录播夹具",
+      reason: "已安装产物未携带现场 far/near 录播夹具",
       segments: ["far"],
     });
   });
@@ -1300,7 +1329,7 @@ describe("visionExperience slice runner", () => {
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 22);
+    assert.equal(report.businessSets[0].assertionCount, 23);
   });
 
   it("waits for a stable Vision role PID set before starting the flow", async () => {

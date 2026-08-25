@@ -348,10 +348,10 @@ try {
 }
 
 $selectState = New-FixtureSwitchHarnessState
-Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $selectState.dependencies -ReadyStabilityMs 0 | Out-Null
+Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $selectState.dependencies -ReadyStabilityMs 0 | Out-Null
 $selectedConfig = $selectState.state.files[$selectState.sitePath] | ConvertFrom-Json
-Assert-True ($selectedConfig.cameras.top.role -eq 'presence' -and $selectedConfig.cameras.top.video_path -eq "$($selectState.recordedRoot)\man-front.mp4" -and $selectedConfig.cameras.top.loop -eq $true) 'select mid did not write manFront as looping top presence camera'
-Assert-True ($selectedConfig.cameras.front.role -eq 'profile_try_on' -and $selectedConfig.cameras.front.video_path -eq "$($selectState.recordedRoot)\geometry-mid.mp4" -and $selectedConfig.cameras.front.loop -eq $true) 'select mid did not write geometryMid as looping front profile camera'
+Assert-True ($selectedConfig.cameras.top.role -eq 'presence' -and $selectedConfig.cameras.top.video_path -eq "$($selectState.recordedRoot)\field-recommendation-near-top.mp4" -and $selectedConfig.cameras.top.loop -eq $true) 'select near did not write the field near top capture'
+Assert-True ($selectedConfig.cameras.front.role -eq 'profile_try_on' -and $selectedConfig.cameras.front.video_path -eq "$($selectState.recordedRoot)\field-recommendation-near-front.mp4" -and $selectedConfig.cameras.front.loop -eq $true) 'select near did not write the field near front capture'
 Assert-True ($selectState.oldMainPid -ne $selectState.newMainPid) 'harness did not model a replacement canonical owner PID'
 Assert-True (($selectState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'select mid did not atomically write before restarting the canonical owner'
 
@@ -418,7 +418,7 @@ $orphanWorkerState.dependencies.StopProcess = {
   $orphanWorker.remainingOldPids = @($orphanWorker.remainingOldPids | Where-Object { $_ -ne $ProcessId })
   [void]$orphanWorker.events.Add("stop-process:$ProcessId")
 }.GetNewClosure()
-Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $orphanWorkerState.dependencies -ReadyStabilityMs 0 | Out-Null
+Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $orphanWorkerState.dependencies -ReadyStabilityMs 0 | Out-Null
 Assert-True ($orphanWorker.remainingOldPids.Count -eq 0) '停止生命周期后仍有孤立 canonical worker PID 存活'
 Assert-True (($orphanWorker.events -join '|') -eq 'write-site|stop-owner|stop-process:1102|start-owner') '未在启动替换 owner 前只终止残留 canonical worker PID'
 
@@ -427,7 +427,7 @@ $missingInitialOwner = New-FixtureSwitchHarnessState
 $missingInitialState = $missingInitialOwner.state
 $missingInitialOwner.dependencies.GetCanonicalOwner = { $null }.GetNewClosure()
 Assert-ThrowsMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $missingInitialOwner.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $missingInitialOwner.dependencies -ReadyStabilityMs 0
 } '切换前 Vision runtime roles 可达但缺少唯一 canonical Vision owner' '运行中 owner 验证错误地接受了缺少 canonical binding 的可达 roles'
 Assert-True (($missingInitialState.events -join '|') -eq 'write-site') '缺少初始 canonical owner 时错误地尝试停止或启动替换 owner'
 
@@ -448,7 +448,7 @@ $inconsistentStopState.dependencies.StopProcess = {
   [void]$inconsistentState.events.Add("stop-process:$ProcessId")
 }.GetNewClosure()
 Assert-ThrowsExactMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $inconsistentStopState.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $inconsistentStopState.dependencies -ReadyStabilityMs 0
 } '停止后旧 Vision owner 未收敛（roles=stopped; remainingOldPids=1102; canonicalBinding=none）' '停止超时未报告有界的三分量最后观测'
 Assert-True (($inconsistentState.events -join '|') -eq 'write-site|stop-owner|stop-process:1102') '停止分量不一致时错误地启动了替换 owner'
 
@@ -469,12 +469,12 @@ $lateOwnerState.dependencies.GetCanonicalOwner = {
   }
   return (& $lateOwnerOriginalBinding)
 }.GetNewClosure()
-Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $lateOwnerState.dependencies -ReadyStabilityMs 1000 | Out-Null
+Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $lateOwnerState.dependencies -ReadyStabilityMs 1000 | Out-Null
 Assert-True (($lateOwner.now - $lateOwner.ownerStartedAt).TotalMilliseconds -ge 2000) '完整 owner ready 谓词未从 canonical binding 成立后重新稳定计时'
 
 $wrongOwnerRoles = New-FixtureSwitchHarnessState $true
 Assert-ThrowsMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $wrongOwnerRoles.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $wrongOwnerRoles.dependencies -ReadyStabilityMs 0
 } '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' 'roles outside the replacement canonical owner were accepted'
 Assert-True (($wrongOwnerRoles.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'wrong replacement roles did not exercise the post-write owner lifecycle'
 
@@ -500,7 +500,7 @@ $reusedWorkerState.dependencies.GetRoles = {
   return $reusedNewRoles
 }.GetNewClosure()
 Assert-ThrowsMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $reusedWorkerState.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $reusedWorkerState.dependencies -ReadyStabilityMs 0
 } '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' '替换 owner 错误地复用了旧 canonical worker PID'
 Assert-True (($reusedWorker.events -join '|') -eq 'write-site|stop-owner|start-owner') '旧 worker PID 复用攻击未经过完整替换 owner 生命周期'
 
@@ -525,7 +525,7 @@ $reusedCanonicalState.dependencies.GetRoles = {
   return [pscustomobject]@{ roles = @([pscustomobject]@{ name = 'capture'; pid = 1201; ready = $true }, [pscustomobject]@{ name = 'worker'; pid = 1202; ready = $true }) }
 }.GetNewClosure()
 Assert-ThrowsMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $reusedCanonicalState.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $reusedCanonicalState.dependencies -ReadyStabilityMs 0
 } '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' '全新 roles 错误地掩盖了 canonical 集合中的旧 PID 复用'
 Assert-True (($reusedCanonical.events -join '|') -eq 'write-site|stop-owner|start-owner') '仅 canonical 的 PID 复用攻击未经过完整替换 owner 生命周期'
 
@@ -549,15 +549,15 @@ $detachedOwner.dependencies.StopProcess = {
   [void]$detachedState.events.Add("stop-process:$ProcessId")
 }.GetNewClosure()
 Assert-ThrowsExactMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $detachedOwner.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $detachedOwner.dependencies -ReadyStabilityMs 0
 } '停止后旧 Vision owner 未收敛（roles=stopped; remainingOldPids=1101; canonicalBinding=none）' '进程感知辅助函数遗留 main 时未精确保守失败'
 Assert-True (($detachedOwner.state.events -join '|') -eq 'write-site|stop-owner|stop-process:1102') 'main 残留时错误地启动了替换 owner'
 
 $missingNear = New-FixtureSwitchHarnessState
-$missingNear.state.files.Remove("$($missingNear.recordedRoot)\geometry-near.mp4")
+$missingNear.state.files.Remove("$($missingNear.recordedRoot)\field-recommendation-near-front.mp4")
 Assert-ThrowsMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $missingNear.dependencies -ReadyStabilityMs 0
-} '安装录播文件缺失或不是本地绝对路径: geometryNear' 'select accepted a missing near geometry clip after earlier segment checks'
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $missingNear.dependencies -ReadyStabilityMs 0
+} '安装录播文件缺失或不是本地绝对路径: fieldRecommendationNearFront' 'select accepted a missing field near front clip'
 Assert-True ($missingNear.state.writeCount -eq 0 -and $missingNear.state.ownerCallCount -eq 0) 'missing near geometry clip wrote configuration or restarted owner'
 
 $driftedExpectedResults = New-FixtureSwitchHarnessState
@@ -565,7 +565,7 @@ $driftedInstalled = $driftedExpectedResults.state.files['C:\ProgramData\VEM\visi
 $driftedInstalled.fixtureSet.expectedResults.sha256 = '8' * 64
 $driftedExpectedResults.state.files['C:\ProgramData\VEM\vision\installed.json'] = $driftedInstalled | ConvertTo-Json -Depth 8
 Assert-ThrowsMessage {
-  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $driftedExpectedResults.dependencies -ReadyStabilityMs 0
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $driftedExpectedResults.dependencies -ReadyStabilityMs 0
 } '安装 Vision expected-results SHA-256 不匹配' 'installed expected-results digest drift was accepted'
 Assert-True ($driftedExpectedResults.state.writeCount -eq 0 -and $driftedExpectedResults.state.ownerCallCount -eq 0) 'expected-results digest drift wrote configuration or restarted owner'
 

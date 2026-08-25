@@ -1127,6 +1127,10 @@ function geometryAssertions(validation: ResultGeometryValidation) {
       ["result-sleeves-retained", validation.resultSleevesRetained],
       ["result-uniform-placement", validation.resultUniformPlacement],
       ["result-automatic-scale", validation.resultAutomaticScale],
+      [
+        "result-default-matches-field-golden",
+        validation.resultDefaultMatchesFieldGolden,
+      ],
     ] as const
   ).map(([id, value]) =>
     businessAssertion({
@@ -1139,9 +1143,9 @@ function geometryAssertions(validation: ResultGeometryValidation) {
 }
 
 /**
- * 在已安装 Vision owner 上依次切换远、中、近三段录播，并只从每次完成 attempt
- * 下载的 result PNG 聚合几何事实。切换失败时返回结构化、fail-closed 的证据，
- * 不会把同一 clip 的重播改名为不同距离。
+ * 在已安装 Vision owner 上依次切换现场远、近录播，并只从每次完成 attempt
+ * 的公开捕获帧与 result PNG 聚合几何事实。切换失败时返回结构化、fail-closed
+ * 的证据，不会让旧合成全身素材代表现场视觉质量。
  */
 export async function runRecordedResultGeometryScenario(
   adapter: TestAdapter,
@@ -1157,7 +1161,7 @@ export async function runRecordedResultGeometryScenario(
 ): Promise<
   | {
       ok: true;
-      mid: Awaited<ReturnType<typeof runTryOnScenario>>;
+      primary: Awaited<ReturnType<typeof runTryOnScenario>>;
       assertions: ReturnType<typeof geometryAssertions>;
       scaleAssertions: Awaited<
         ReturnType<typeof runGarmentScaleScenario>
@@ -1185,7 +1189,7 @@ export async function runRecordedResultGeometryScenario(
   >();
   let scaleResult: Awaited<ReturnType<typeof runGarmentScaleScenario>> | null =
     null;
-  for (const segment of ["far", "mid", "near"]) {
+  for (const segment of ["far", "near"] as const) {
     const selected = await adapter.run("select-recorded-video-fixture", [
       segment,
     ]);
@@ -1197,6 +1201,10 @@ export async function runRecordedResultGeometryScenario(
           resultSleevesRetained: { expected: true, observed: false },
           resultUniformPlacement: { expected: true, observed: false },
           resultAutomaticScale: { expected: true, observed: false },
+          resultDefaultMatchesFieldGolden: {
+            expected: true,
+            observed: false,
+          },
         }),
         scaleAssertions: [],
         adjustmentAssertions: [],
@@ -1231,6 +1239,10 @@ export async function runRecordedResultGeometryScenario(
           resultSleevesRetained: { expected: true, observed: false },
           resultUniformPlacement: { expected: true, observed: false },
           resultAutomaticScale: { expected: true, observed: false },
+          resultDefaultMatchesFieldGolden: {
+            expected: true,
+            observed: false,
+          },
         }),
         scaleAssertions: [],
         adjustmentAssertions: [],
@@ -1244,7 +1256,7 @@ export async function runRecordedResultGeometryScenario(
       };
     }
     attempts.set(segment, attempt);
-    if (segment === "mid") {
+    if (segment === "near") {
       scaleResult = await runGarmentScaleScenario(adapter, {
         timeoutMs,
         pollMs,
@@ -1263,9 +1275,9 @@ export async function runRecordedResultGeometryScenario(
       attempts.set("scaled", { ...attempt, state: scaleResult.states[1]! });
     }
   }
-  const mid = attempts.get("mid")!;
-  const source = mid.state.sourceGarmentPng;
-  const metadata = mid.state.sourceGarmentMetadata ?? null;
+  const primary = attempts.get("near")!;
+  const source = primary.state.sourceGarmentPng;
+  const metadata = primary.state.sourceGarmentMetadata ?? null;
   const sourceBound = [...attempts.values()].every((attempt) =>
     isSourceGarmentAttemptBound(metadata, attempt.state.startGarment),
   );
@@ -1277,6 +1289,10 @@ export async function runRecordedResultGeometryScenario(
         resultSleevesRetained: { expected: true, observed: false },
         resultUniformPlacement: { expected: true, observed: false },
         resultAutomaticScale: { expected: true, observed: false },
+        resultDefaultMatchesFieldGolden: {
+          expected: true,
+          observed: false,
+        },
       }),
       scaleAssertions: [],
       adjustmentAssertions: [],
@@ -1287,24 +1303,39 @@ export async function runRecordedResultGeometryScenario(
         reason: !source
           ? "当前 attempt 缺少同源短袖语义 mask"
           : "当前 attempt 的 V2 start 成衣描述未绑定本次预置源图",
-        segments: ["far", "mid", "near"],
+        segments: ["far", "near"],
       },
     };
   }
   const validation = validateResultGeometryEvidence({
     source,
     far: attempts.get("far")!.state.resultPng!,
-    mid: mid.state.resultPng!,
     near: attempts.get("near")!.state.resultPng!,
     scale100: attempts.get("scale100")!.state.resultPng!,
     scaled: attempts.get("scaled")!.state.resultPng!,
+    fieldGolden: {
+      // 来自现场固定远/近录播在公开 1080x1920 结果上的人工确认可见边界。
+      // x=0 与近景 width=1080 是预期画布裁切，不代表完整成衣横向压扁。
+      far: {
+        xRatio: 0,
+        yRatio: 1_347 / 1_920,
+        widthRatio: 838 / 1_080,
+        heightRatio: 573 / 1_920,
+      },
+      near: {
+        xRatio: 0,
+        yRatio: 1_043 / 1_920,
+        widthRatio: 1,
+        heightRatio: 877 / 1_920,
+      },
+    },
   });
   const assertions = geometryAssertions(validation);
   const evidence: RecordedGeometryFixtureEvidence = {
     kind: "vision-recorded-geometry-fixture",
     status: validation.ok ? "ready" : "blocked",
     reason: validation.ok ? null : "result PNG 几何事实校验未通过",
-    segments: ["far", "mid", "near"],
+    segments: ["far", "near"],
   };
   if (!validation.ok) {
     return {
@@ -1318,7 +1349,7 @@ export async function runRecordedResultGeometryScenario(
   }
   return {
     ok: true,
-    mid,
+    primary,
     assertions,
     scaleAssertions: scaleResult!.assertions,
     adjustmentAssertions: scaleResult!.adjustmentAssertions,

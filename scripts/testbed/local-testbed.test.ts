@@ -1620,11 +1620,12 @@ describe("supported API seeding", () => {
     });
     assert.ok(Buffer.isBuffer(uploadBuffer(uploads[0])));
     assert.deepEqual(pngDimensions(uploadBuffer(uploads[0])), {
-      width: 512,
-      height: 640,
+      width: 1158,
+      height: 1253,
     });
-    assert.ok(
+    assert.equal(
       createHash("sha256").update(uploadBuffer(uploads[0])).digest("hex"),
+      "57b5872801b884b6125078eb7cdb54f0be40e34677046214d1c4d8b155740222",
     );
     assert.equal(uploads[1].path, "/media-assets/try-on-garments");
     assert.equal(uploads[1].fileName, "local-testbed-try-on-garment-long.png");
@@ -1642,14 +1643,22 @@ describe("supported API seeding", () => {
       ).size,
       3,
     );
-    for (const upload of productDisplayUploads) {
+    for (const [index, upload] of productDisplayUploads.entries()) {
       assert.equal(upload.contentType, "image/png");
       assert.ok(Buffer.isBuffer(upload.buffer));
-      assert.deepEqual(pngDimensions(uploadBuffer(upload)), {
-        width: 240,
-        height: 240,
-      });
+      assert.deepEqual(
+        pngDimensions(uploadBuffer(upload)),
+        index === 2
+          ? { width: 1158, height: 1253 }
+          : { width: 240, height: 240 },
+      );
     }
+    assert.equal(
+      createHash("sha256")
+        .update(uploadBuffer(productDisplayUploads[2]!))
+        .digest("hex"),
+      "57b5872801b884b6125078eb7cdb54f0be40e34677046214d1c4d8b155740222",
+    );
     const productDisplayAssetIds = new Set(
       productDisplayUploads.map((upload) => recordValue(upload.asset).id),
     );
@@ -1771,8 +1780,8 @@ describe("supported API seeding", () => {
       contentType: "image/png",
       byteSize: uploadBuffer(uploads[0]).byteLength,
       template: "tshirt_short_sleeve",
-      width: 512,
-      height: 640,
+      width: 1158,
+      height: 1253,
     });
     assert.equal(visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.deepEqual(

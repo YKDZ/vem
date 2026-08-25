@@ -288,7 +288,7 @@ export async function runVisionExperienceSlice({
       });
     } else {
       const tryOn = geometry?.ok
-        ? geometry.mid
+        ? geometry.primary
         : await runReplaySegment("automatic-try-on", () =>
             runTryOnScenario(adapter, {
               timeoutMs,

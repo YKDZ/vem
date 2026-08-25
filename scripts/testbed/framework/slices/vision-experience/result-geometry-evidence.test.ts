@@ -3,7 +3,9 @@ import { describe, it } from "node:test";
 import { deflateSync } from "node:zlib";
 
 import {
+  decodeComposedGarmentPng,
   decodeSemanticResultPng,
+  decodeTransparentGarmentPng,
   validateResultGeometryEvidence,
   validateResultScaleRoundTrip,
   validateResultScaleStep,
@@ -117,7 +119,64 @@ function semanticPng({
   ]);
 }
 
+function rasterPng({
+  rgba = false,
+  pixel,
+}: {
+  rgba?: boolean;
+  pixel: (x: number, y: number) => readonly number[];
+}) {
+  const width = 64;
+  const height = 64;
+  const channels = rgba ? 4 : 3;
+  const raw = Buffer.alloc(height * (width * channels + 1));
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width * channels + 1);
+    for (let x = 0; x < width; x += 1) {
+      const color = pixel(x, y);
+      for (let channel = 0; channel < channels; channel += 1) {
+        raw[row + 1 + x * channels + channel] = color[channel] ?? 255;
+      }
+    }
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = rgba ? 6 : 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 describe("试衣结果像素几何证据", () => {
+  it("从真实纹理透明成衣及捕获帧差分提取公开结果几何", () => {
+    const shirt = (x: number, y: number) =>
+      y >= 14 &&
+      y <= 50 &&
+      ((x >= 20 && x <= 44) ||
+        (y <= 30 && ((x >= 12 && x < 20) || (x > 44 && x <= 52))));
+    const source = decodeTransparentGarmentPng(
+      rasterPng({
+        rgba: true,
+        pixel: (x, y) => (shirt(x, y) ? [28, 29, 31, 255] : [0, 0, 0, 0]),
+      }),
+    );
+    const captured = rasterPng({ pixel: () => [232, 228, 219] });
+    const result = rasterPng({
+      pixel: (x, y) => (shirt(x, y) ? [28, 29, 31] : [232, 228, 219]),
+    });
+
+    const composed = decodeComposedGarmentPng(result, captured);
+
+    assert.deepEqual(source.garment, composed.garment);
+    assert.ok(composed.leftSleevePixels > 0);
+    assert.ok(composed.rightSleevePixels > 0);
+  });
+
   it("从实际 PNG 像素而不是 URL 或摘要测量袖子、比例和缩放", () => {
     const evidence = validateResultGeometryEvidence({
       source: decodeSemanticResultPng(semanticPng({ scale: 1 })),
@@ -159,6 +218,78 @@ describe("试衣结果像素几何证据", () => {
     assert.equal(evidence.ok, true, JSON.stringify(evidence));
   });
 
+  it("以人工确认的现场远近可见边界验收默认 100%", () => {
+    const source = decodeSemanticResultPng(semanticPng({ scale: 1 }));
+    const fieldResult = ({
+      x,
+      y,
+      width,
+      height,
+    }: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }) => {
+      const areaScale =
+        (width * height) / (source.garment.width * source.garment.height);
+      return {
+        ...source,
+        width: 1_080,
+        height: 1_920,
+        leftSleevePixels: Math.round(source.leftSleevePixels * areaScale),
+        torsoPixels: Math.round(source.torsoPixels * areaScale),
+        rightSleevePixels: Math.round(source.rightSleevePixels * areaScale),
+        garment: {
+          x,
+          y,
+          width,
+          height,
+          centerX: x + (width - 1) / 2,
+          centerY: y + (height - 1) / 2,
+          aspect: width / height,
+        },
+      };
+    };
+    const far = fieldResult({ x: 0, y: 1_347, width: 838, height: 573 });
+    const near = fieldResult({ x: 0, y: 1_043, width: 1_080, height: 877 });
+    const fieldGolden = {
+      far: {
+        xRatio: 0,
+        yRatio: 1_347 / 1_920,
+        widthRatio: 838 / 1_080,
+        heightRatio: 573 / 1_920,
+      },
+      near: {
+        xRatio: 0,
+        yRatio: 1_043 / 1_920,
+        widthRatio: 1,
+        heightRatio: 877 / 1_920,
+      },
+    };
+
+    const accepted = validateResultGeometryEvidence({
+      source,
+      far,
+      near,
+      scale100: near,
+      scaled: near,
+      fieldGolden,
+    });
+    assert.equal(accepted.ok, true, JSON.stringify(accepted));
+
+    const shifted = fieldResult({ x: 80, y: 900, width: 1_000, height: 800 });
+    const rejected = validateResultGeometryEvidence({
+      source,
+      far,
+      near: shifted,
+      scale100: shifted,
+      scaled: shifted,
+      fieldGolden,
+    });
+    assert.equal(rejected.resultDefaultMatchesFieldGolden.observed, false);
+  });
+
   for (const [name, input] of [
     ["单侧袖缺失", { leftSleeve: false }],
     ["非等比摆放", { widthScale: 1.2, heightScale: 0.8 }],
@@ -190,9 +321,9 @@ describe("试衣结果像素几何证据", () => {
 
   for (const [name, direction, beforeScale, afterScale, expected] of [
     ["放大步真的放大", "up", 1, 1.05, true],
-    ["放大步不足 3% 判失败", "up", 1, 1.02, false],
+    ["放大步不足 3% 判失败", "up", 1, 1.01, false],
     ["缩小步真的缩小", "down", 1.1, 1.05, true],
-    ["缩小步不足 3% 判失败", "down", 1.1, 1.08, false],
+    ["缩小步不足 3% 判失败", "down", 1.1, 1.09, false],
   ] as const) {
     it(`缩放步校验：${name}`, () => {
       const check = validateResultScaleStep({
@@ -211,6 +342,34 @@ describe("试衣结果像素几何证据", () => {
       direction: "up",
     });
     assert.equal(check.observed, false);
+  });
+
+  it("缩放步允许现场画面边缘裁切造成的可见中心变化", () => {
+    const before = decodeSemanticResultPng(semanticPng({ scale: 1 }));
+    const clipped = (
+      width: number,
+      height: number,
+      top: number,
+    ): typeof before => ({
+      ...before,
+      width: 1_080,
+      height: 1_920,
+      garment: {
+        x: 0,
+        y: top,
+        width,
+        height,
+        centerX: (width - 1) / 2,
+        centerY: top + (height - 1) / 2,
+        aspect: width / height,
+      },
+    });
+    const check = validateResultScaleStep({
+      before: clipped(838, 573, 1_347),
+      after: clipped(860, 598, 1_322),
+      direction: "up",
+    });
+    assert.equal(check.observed, true);
   });
 
   it("回程 100% 与初始 100% 的成衣 bbox 在容差内一致", () => {
