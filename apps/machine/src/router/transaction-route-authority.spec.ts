@@ -146,7 +146,7 @@ describe("transaction route authority", () => {
     expect(router.currentRoute.value.name).toBe("payment");
   });
 
-  it("waits on the try-on route for Vision's departure terminal instead of manufacturing route leave", async () => {
+  it("waits for stable presence to close the try-on owner instead of manufacturing route leave", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const router = createRouter({

@@ -293,9 +293,9 @@ export function createMachineNavigationAuthority(
     }
 
     if (intent.type === "presence.departed") {
-      // Vision owns departure cancellation for the active attempt.  Leaving
-      // the route first would manufacture a second route_leave terminal and
-      // could discard the authoritative departure reason.
+      // The stable-presence runtime closes the active attempt owner. Leaving
+      // the route before that synchronous consumer runs would manufacture a
+      // route_leave cancel and discard the authoritative departure reason.
       if (routeName(router) === "try-on" && tryOnStore.hasActiveAttempt) {
         recordDecision("rejected", "try_on_departure_pending_terminal", null);
         return;

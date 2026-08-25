@@ -333,6 +333,84 @@ describe("try-on store lifecycle", () => {
     expect(store.result?.reference).toContain(`/results/${firstAttemptId}`);
   });
 
+  it("ends the local attempt on stable departure by closing its owner instead of inventing a client cancel reason", async () => {
+    const catalog = useCatalogStore();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    const cancel = vi.fn(() => true);
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    let ownerSignal: AbortSignal | undefined;
+    openAttemptMock.mockImplementationOnce(
+      (_connection, input, onEvent, signal) => {
+        ownerSignal = signal;
+        emit = (next) =>
+          onEvent(next, {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          });
+        return Promise.resolve({ close: vi.fn(), capture: vi.fn(), cancel });
+      },
+    );
+
+    await store.start();
+    const attemptId = store.attemptId!;
+    emit?.(accepted(attemptId));
+    emit?.(acquiring(attemptId));
+    emit?.(captured(attemptId));
+    emit?.(generating(attemptId));
+
+    expect(store.endCurrentAttemptForDeparture()).toBe(true);
+    expect(ownerSignal?.aborted).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(store.phase).toBe("canceled");
+    expect(store.failureReason).toBe("departure");
+
+    emit?.(completed(attemptId));
+    expect(store.phase).toBe("canceled");
+    expect(store.result).toBeNull();
+  });
+
+  it("releases a completed result when stable presence ends its owner", async () => {
+    const catalog = useCatalogStore();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    let ownerSignal: AbortSignal | undefined;
+    const close = vi.fn();
+    openAttemptMock.mockImplementationOnce(
+      (_connection, input, onEvent, signal) => {
+        ownerSignal = signal;
+        emit = (next) =>
+          onEvent(next, {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          });
+        return Promise.resolve({ close, capture: vi.fn(), cancel: vi.fn() });
+      },
+    );
+
+    await store.start();
+    const attemptId = store.attemptId!;
+    emit?.(accepted(attemptId));
+    emit?.(acquiring(attemptId));
+    emit?.(captured(attemptId));
+    emit?.(generating(attemptId));
+    emit?.(completed(attemptId));
+    expect(store.result).not.toBeNull();
+
+    expect(store.endCurrentAttemptForDeparture()).toBe(true);
+    expect(ownerSignal?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    expect(store.phase).toBe("canceled");
+    expect(store.failureReason).toBe("departure");
+    expect(store.result).toBeNull();
+    expect(store.endCurrentAttemptForDeparture()).toBe(false);
+  });
+
   it.each([
     ["失败", "vision.try_on.attempt.failed", { reason: "try_on_failed" }],
     ["取消", "vision.try_on.attempt.canceled", { reason: "timeout" }],

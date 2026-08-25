@@ -18,6 +18,7 @@ import { useMqttStore } from "@/stores/mqtt";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
+import { useTryOnStore } from "@/stores/try-on";
 import { useVisionStore } from "@/stores/vision";
 
 import {
@@ -286,6 +287,7 @@ export function startMachineRuntime(pinia: Pinia): void {
     }),
     ({ edge, edgeId }) => {
       if (edge !== "departure" || !edgeId) return;
+      useTryOnStore(pinia).endCurrentAttemptForDeparture();
       refreshProjectionAfterVisionDeparture(
         useCheckoutStore(pinia),
         edgeId,

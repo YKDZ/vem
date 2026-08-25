@@ -966,36 +966,18 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(cancel).toHaveBeenCalledWith("route_leave");
   });
 
-  it("顾客离场会通过既有导航接口自动返回商品", async () => {
-    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
-    openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
-      const localAttemptId = _input.attemptId;
-      emit = (next) =>
-        onEvent(
-          { ...next, payload: { ...next.payload, attemptId: localAttemptId } },
-          {
-            attemptId: localAttemptId,
-            visionSocketUrl: "ws://127.0.0.1:7892/ws",
-          },
-        );
-      return Promise.resolve({
-        close: vi.fn(),
-        capture: vi.fn(),
-        cancel: vi.fn(),
-      });
+  it("稳定顾客离场会关闭 owner 并通过既有导航接口返回商品", async () => {
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
     });
     await mount();
     await vi.waitFor(() => {
       expect(openAttemptMock).toHaveBeenCalledOnce();
     });
-    if (!emit) throw new Error("预期收到原生试衣事件回调");
 
-    emit(
-      event("vision.try_on.attempt.canceled", {
-        attemptId,
-        reason: "departure",
-      }),
-    );
+    expect(useTryOnStore().endCurrentAttemptForDeparture()).toBe(true);
     await nextTick();
     expect(submitNavigationMock).toHaveBeenCalledWith({
       type: "customer.navigate",

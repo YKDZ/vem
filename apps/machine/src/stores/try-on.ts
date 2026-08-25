@@ -232,6 +232,19 @@ export const useTryOnStore = defineStore("tryOn", {
       this.clearAcquisitionPresentation();
       clearOperation(owner);
     },
+    endCurrentAttemptForDeparture(): boolean {
+      const owner = currentOperation;
+      if (!this.attemptId || !isCurrentOperation(owner, this.attemptId))
+        return false;
+      cancelCurrentOperation();
+      this.phase = "canceled";
+      this.failureReason = "departure";
+      this.result = null;
+      this.resultUnavailable = false;
+      this.adjusting = false;
+      this.clearAcquisitionPresentation();
+      return true;
+    },
     cancelCurrentAttempt(reason: "user" | "route_leave" = "user"): boolean {
       const owner = currentOperation;
       if (!this.hasActiveAttempt || !this.attemptId || !owner) return false;

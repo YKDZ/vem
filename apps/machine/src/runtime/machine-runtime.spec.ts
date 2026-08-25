@@ -13,6 +13,7 @@ import {
   machineRuntimeTrace,
 } from "@/router/transaction-route-authority";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useTryOnStore } from "@/stores/try-on";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 type RuntimeEventHandlers = {
@@ -431,6 +432,89 @@ describe("Machine runtime coordinator", () => {
         ]),
       );
     });
+  });
+
+  it("dispatches one try-on departure action from the stable five-second edge", async () => {
+    vi.useFakeTimers();
+    const tryOn = useTryOnStore(pinia);
+    const endForDeparture = vi
+      .spyOn(tryOn, "endCurrentAttemptForDeparture")
+      .mockReturnValue(true);
+    startMachineRuntime(pinia);
+    const subscription = subscribeEventsMock.mock.calls[0];
+    if (!subscription)
+      throw new Error("runtime did not create an event subscription");
+    const [handlers] = subscription;
+
+    handlers.onEvent({
+      type: "vision_changed",
+      eventId: "daemon-vision-present-try-on",
+      updatedAt: "2026-07-18T08:00:01.000Z",
+      enabled: true,
+      online: true,
+      message: "Vision presence observed",
+      latestDiagnosticPayload: {
+        type: "vision.presence_status",
+        payload: {
+          source: "top",
+          eventId: "VISION-PRESENT-TRY-ON",
+          state: "approach",
+          reason: "person_present_but_not_close",
+          detectedAt: "2026-07-18T08:00:01.000Z",
+          personPresent: true,
+          closeNow: false,
+          close: false,
+          closeTrigger: null,
+          proximity: { present: true },
+          occupancy: { state: "single", confidence: 0.91 },
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    handlers.onEvent({
+      type: "vision_changed",
+      eventId: "daemon-vision-departed-try-on",
+      updatedAt: "2026-07-18T08:00:02.000Z",
+      enabled: true,
+      online: true,
+      message: "Vision departure observed",
+      latestDiagnosticPayload: {
+        type: "vision.person_departed",
+        payload: {
+          source: "top",
+          eventId: "VISION-DEPARTED-TRY-ON",
+          detectedAt: "2026-07-18T08:00:02.000Z",
+          lastSeenAt: "2026-07-18T08:00:01.000Z",
+          reason: "left_frame",
+        },
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(endForDeparture).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(endForDeparture).toHaveBeenCalledOnce();
+
+    handlers.onEvent({
+      type: "vision_changed",
+      eventId: "daemon-vision-departed-try-on-duplicate",
+      updatedAt: "2026-07-18T08:00:08.000Z",
+      enabled: true,
+      online: true,
+      message: "Vision departure observed again",
+      latestDiagnosticPayload: {
+        type: "vision.person_departed",
+        payload: {
+          source: "top",
+          eventId: "VISION-DEPARTED-TRY-ON-DUPLICATE",
+          detectedAt: "2026-07-18T08:00:08.000Z",
+          lastSeenAt: "2026-07-18T08:00:01.000Z",
+          reason: "left_frame",
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(endForDeparture).toHaveBeenCalledOnce();
   });
 
   it("exposes transaction recovery when the daemon stream drops during payment", async () => {
