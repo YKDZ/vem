@@ -1121,12 +1121,14 @@ export function mergeFrozenSerialMilestones({
 export async function waitForRawSerialFrame({
   journalPath,
   parsedOpcode,
+  afterSequence = null,
   serialScenario = SERIAL_SCENARIOS.NORMAL,
   timeoutMs = 30_000,
   pollMs = 25,
 }: {
   journalPath: unknown;
   parsedOpcode: unknown;
+  afterSequence?: unknown;
   serialScenario?: unknown;
   timeoutMs?: number;
   pollMs?: number;
@@ -1137,6 +1139,17 @@ export async function waitForRawSerialFrame({
   observedProtocolFrames: SerialFrame[];
 }> {
   const opcode = String(parsedOpcode ?? "");
+  const normalizedAfterSequence =
+    afterSequence === null || afterSequence === undefined
+      ? null
+      : Number(afterSequence);
+  if (
+    normalizedAfterSequence !== null &&
+    (!Number.isSafeInteger(normalizedAfterSequence) ||
+      normalizedAfterSequence < 0)
+  ) {
+    throw new Error("afterSequence must be a non-negative safe integer");
+  }
   const scenario = normalizeSerialScenario(serialScenario);
   const scenarioExpected: Record<
     string,
@@ -1166,9 +1179,17 @@ export async function waitForRawSerialFrame({
     throw new Error("parsedOpcode is not valid for the serial scenario");
   const deadline = Date.now() + timeoutMs;
   do {
-    const raw = readRawSerialJournal(String(journalPath));
-    if (raw.length > 256)
+    const journal = readRawSerialJournal(String(journalPath));
+    if (journal.length > 256)
       throw new Error("raw serial evidence exceeded 256 records");
+    const raw =
+      normalizedAfterSequence === null
+        ? journal
+        : journal.filter(
+            (frame: SerialFrame) =>
+              Number.isSafeInteger(frame.sequence) &&
+              Number(frame.sequence) > normalizedAfterSequence,
+          );
     const protocolFrames = raw.filter(
       (frame: SerialFrame) =>
         frame.parsedOpcode !== undefined &&
@@ -1255,6 +1276,7 @@ async function waitForSessionFrame(
   const boundary = await waitForRawSerialFrame({
     journalPath: adapterSessionPaths(session).journalPath,
     parsedOpcode: required(input.parsedOpcode, "parsedOpcode"),
+    afterSequence: input.afterSequence,
     serialScenario: normalizeSerialScenario(
       input.serialScenario ?? session.serialScenario,
     ),

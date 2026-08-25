@@ -431,12 +431,21 @@ function serialTailIdentity(evidence: JsonRecord | null | undefined): string {
     .join("|");
 }
 
-function serialProtocolFrames(
+export function serialProtocolFrames(
   evidence: JsonRecord | null | undefined,
   beforeFrameCount: JsonRecord | number,
+  expectedOutboundOpcode: string | null = null,
 ): unknown[] {
   return serialFramesSince(evidence, beforeFrameCount)
-    .filter((frame) => (frame as JsonRecord)?.parsedOpcode)
+    .filter((frame) => {
+      const frameRecord = frame as JsonRecord;
+      if (!frameRecord?.parsedOpcode) return false;
+      return (
+        expectedOutboundOpcode === null ||
+        (frameRecord.direction === "daemon-to-controller" &&
+          frameRecord.parsedOpcode === expectedOutboundOpcode)
+      );
+    })
     .map((frame) => (frame as JsonRecord).parsedOpcode);
 }
 
@@ -724,7 +733,11 @@ async function submitDaemonActionWithFrame({
       `/v1/serial-sessions/${sessionId}/evidence`,
       {},
     )) as JsonRecord;
-    const protocolFrames = serialProtocolFrames(evidence, beforeCursor);
+    const protocolFrames = serialProtocolFrames(
+      evidence,
+      beforeCursor,
+      expectedOpcode,
+    );
     if (protocolFrames.length !== 0) {
       throw new Error(
         `deduplicated environment action emitted protocol frames: ${JSON.stringify(protocolFrames)}`,

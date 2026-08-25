@@ -142,6 +142,7 @@ type LocalOperationsGuestDependencies = {
     input: GuestInputRecord,
     sessionId: string,
     parsedOpcode: string,
+    afterEvidence?: JsonRecord | null,
   ) => Promise<unknown>;
   collectMaintenanceEntryEvidence?: (
     handoff: HandoffRecord,
@@ -1367,22 +1368,45 @@ export async function collectAudioPreferencePersistenceEvidence(
   }
 }
 
-export function serialBoundaryWaitRequest(parsedOpcode: string): JsonRecord {
-  return {
+function latestSerialSequence(
+  evidence: JsonRecord | null | undefined,
+): number | null {
+  const sequences = (
+    Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : []
+  )
+    .map((frame) => (frame as JsonRecord)?.sequence)
+    .filter(
+      (sequence): sequence is number =>
+        typeof sequence === "number" &&
+        Number.isSafeInteger(sequence) &&
+        sequence >= 0,
+    );
+  return sequences.length > 0 ? Math.max(...sequences) : null;
+}
+
+export function serialBoundaryWaitRequest(
+  parsedOpcode: string,
+  afterEvidence: JsonRecord | null = null,
+): JsonRecord {
+  const request: JsonRecord = {
     parsedOpcode,
     timeoutMs: 30_000,
   };
+  const afterSequence = latestSerialSequence(afterEvidence);
+  if (afterSequence !== null) request.afterSequence = afterSequence;
+  return request;
 }
 
 async function waitForSerialBoundary(
   input: GuestInputRecord,
   sessionId: string,
   parsedOpcode: string,
+  afterEvidence: JsonRecord | null = null,
 ): Promise<unknown> {
   return control(
     input,
     `/v1/serial-sessions/${sessionId}/wait-frame`,
-    serialBoundaryWaitRequest(parsedOpcode),
+    serialBoundaryWaitRequest(parsedOpcode, afterEvidence),
   );
 }
 export function selectPlanogramSlot(
@@ -1674,7 +1698,12 @@ export async function runLocalOperationsGuest(
       "/v1/environment-control/actions",
       environmentRequest,
     );
-    await waitForSerialBoundaryFn(input, String(activeSession.sessionId), "B3");
+    await waitForSerialBoundaryFn(
+      input,
+      String(activeSession.sessionId),
+      "B3",
+      environmentBeforeEvidence,
+    );
     const environmentAfterEvidence = (await controlRequest(
       input,
       `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
