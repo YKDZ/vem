@@ -11,6 +11,7 @@ import {
   exportDaemonIpcScannerStatusJsonSchema,
   exportDaemonIpcDeviceBindingActivationJsonSchema,
   exportDaemonIpcDeviceBindingJsonSchema,
+  exportDaemonIpcEnvironmentControlJsonSchema,
   exportDaemonIpcSaleStartCapabilityJsonSchema,
   exportDaemonIpcManagedMediaJsonSchema,
   exportDaemonIpcTransactionCheckoutJsonSchema,
@@ -67,6 +68,8 @@ type GeneratorPaths = {
   saleStartCapabilityGeneratedPath: string;
   managedMediaSchemaPath: string;
   managedMediaGeneratedPath: string;
+  environmentControlSchemaPath: string;
+  environmentControlGeneratedPath: string;
 };
 
 export type DaemonIpcGeneratedContractInputs = {
@@ -96,6 +99,9 @@ export type DaemonIpcGeneratedContractInputs = {
     schema: DaemonIpcJsonSchemaDocument;
   };
   managedMedia: {
+    schema: DaemonIpcJsonSchemaDocument;
+  };
+  environmentControl: {
     schema: DaemonIpcJsonSchemaDocument;
   };
 };
@@ -186,6 +192,14 @@ function defaultPaths(repoRoot: string): GeneratorPaths {
     managedMediaGeneratedPath: resolve(
       crateRoot,
       "src/generated/managed_media.rs",
+    ),
+    environmentControlSchemaPath: resolve(
+      crateRoot,
+      "schemas/environment_control.schema.json",
+    ),
+    environmentControlGeneratedPath: resolve(
+      crateRoot,
+      "src/generated/environment_control.rs",
     ),
   };
 }
@@ -278,6 +292,10 @@ function writeGeneratorInputs(
     inputs.saleStartCapability.schema,
   );
   writeJson(paths.managedMediaSchemaPath, inputs.managedMedia.schema);
+  writeJson(
+    paths.environmentControlSchemaPath,
+    inputs.environmentControl.schema,
+  );
 }
 
 function formatGeneratorJsonInputs(
@@ -302,6 +320,7 @@ function formatGeneratorJsonInputs(
       paths.scannerProtocolRequestSchemaPath,
       paths.saleStartCapabilitySchemaPath,
       paths.managedMediaSchemaPath,
+      paths.environmentControlSchemaPath,
     ],
     {
       cwd: repoRoot,
@@ -436,6 +455,9 @@ export function buildDaemonIpcGeneratedContractInputs(): DaemonIpcGeneratedContr
     managedMedia: {
       schema: exportDaemonIpcManagedMediaJsonSchema(),
     },
+    environmentControl: {
+      schema: exportDaemonIpcEnvironmentControlJsonSchema(),
+    },
   };
 }
 
@@ -539,6 +561,17 @@ export function generateDaemonIpcContracts(
       targetPaths.managedMediaGeneratedPath,
       cargoTypifyVersion,
     );
+    runCargoTypify(
+      repoRoot,
+      targetPaths.environmentControlSchemaPath,
+      targetPaths.environmentControlGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      targetPaths.environmentControlGeneratedPath,
+      cargoTypifyVersion,
+      "packages/shared/src/schemas/environment-control.ts",
+    );
     return { mode, checkedPaths, changedPaths: [] };
   }
 
@@ -626,6 +659,17 @@ export function generateDaemonIpcContracts(
     writeGeneratedHeader(
       actualPaths.managedMediaGeneratedPath,
       cargoTypifyVersion,
+    );
+    runCargoTypify(
+      repoRoot,
+      actualPaths.environmentControlSchemaPath,
+      actualPaths.environmentControlGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      actualPaths.environmentControlGeneratedPath,
+      cargoTypifyVersion,
+      "packages/shared/src/schemas/environment-control.ts",
     );
     const changedPaths = assertFreshGeneratedOutputs(
       targetPaths,

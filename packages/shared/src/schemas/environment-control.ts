@@ -98,6 +98,12 @@ export const environmentControlProjectionSchema = z.strictObject({
   stale: z.boolean(),
 });
 
+export const daemonIpcEnvironmentControlContractSchema = z.strictObject({
+  action: environmentControlActionSchema,
+  admission: environmentControlAdmissionSchema,
+  snapshot: environmentControlSnapshotSchema,
+});
+
 export type EnvironmentControlSource = z.infer<
   typeof environmentControlSourceSchema
 >;

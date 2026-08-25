@@ -7,6 +7,7 @@ import {
   paymentStatusSchema,
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
+import { daemonIpcEnvironmentControlContractSchema } from "./environment-control";
 import {
   daemonIpcManagedMediaContractSchema,
   managedMediaDescriptorSchema,
@@ -825,6 +826,18 @@ export function exportDaemonIpcManagedMediaJsonSchema(): DaemonIpcJsonSchemaDocu
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     title: "ManagedMediaContract",
+    ...root,
+  };
+}
+
+export function exportDaemonIpcEnvironmentControlJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "EnvironmentControlContract",
+    daemonIpcEnvironmentControlContractSchema,
+  );
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "EnvironmentControlContract",
     ...root,
   };
 }

@@ -648,7 +648,16 @@ async fn environment_control_snapshot(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    match ctx.environment_control.snapshot().await {
+    match ctx
+        .environment_control
+        .snapshot()
+        .await
+        .and_then(|snapshot| {
+            convert_environment_control_boundary::<
+                _,
+                daemon_ipc_contracts::EnvironmentControlSnapshot,
+            >(snapshot)
+        }) {
         Ok(snapshot) => Json(snapshot).into_response(),
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -661,13 +670,42 @@ async fn environment_control_snapshot(
 async fn environment_control_action(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
-    Json(action): Json<EnvironmentControlAction>,
+    Json(action): Json<daemon_ipc_contracts::EnvironmentControlAction>,
 ) -> impl IntoResponse {
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
+    if let Err(error) = daemon_ipc_contracts::validate_environment_control_action_boundary(&action)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "environment_control_action_invalid",
+            error.to_string(),
+        );
+    }
+    let action = match convert_environment_control_boundary::<_, EnvironmentControlAction>(action) {
+        Ok(action) => action,
+        Err(error) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "environment_control_action_invalid",
+                error,
+            )
+        }
+    };
     match ctx.environment_control.submit(action).await {
-        Ok(admission) => Json(admission).into_response(),
+        Ok(admission) => match convert_environment_control_boundary::<
+            _,
+            daemon_ipc_contracts::EnvironmentControlAdmission,
+        >(admission)
+        {
+            Ok(admission) => Json(admission).into_response(),
+            Err(error) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "environment_control_admission_unavailable",
+                error,
+            ),
+        },
         Err(error) if error.contains("idempotency conflict") => error_response(
             StatusCode::CONFLICT,
             "environment_control_action_conflict",
@@ -679,6 +717,16 @@ async fn environment_control_action(
             error,
         ),
     }
+}
+
+fn convert_environment_control_boundary<Source, Target>(source: Source) -> Result<Target, String>
+where
+    Source: serde::Serialize,
+    Target: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(source)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("environment control boundary conversion failed: {error}"))
 }
 
 pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {

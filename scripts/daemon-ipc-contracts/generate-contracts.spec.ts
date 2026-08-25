@@ -56,6 +56,17 @@ describe("Daemon IPC contract generator", () => {
     expect(JSON.stringify(schema)).toContain("127\\\\.0\\\\.0\\\\.1");
   });
 
+  it("exports the complete environment-control IPC boundary as one generated contract root", () => {
+    const schema =
+      buildDaemonIpcGeneratedContractInputs().environmentControl.schema;
+    expect(schema.title).toBe("EnvironmentControlContract");
+    expect(schema).toHaveProperty("properties.action");
+    expect(schema).toHaveProperty("properties.admission");
+    expect(schema).toHaveProperty("properties.snapshot");
+    expect(JSON.stringify(schema)).toContain("temporarily_stop_vent");
+    expect(JSON.stringify(schema)).not.toContain("customerPresent");
+  });
+
   it("orchestrates schema, fixture, and Rust generation without requiring git state", async () => {
     const root = await mkdtemp(join(tmpdir(), "vem-daemon-ipc-generator-"));
     const spawnCalls: Array<{ command: string; args: string[]; cwd: string }> =
@@ -114,6 +125,7 @@ describe("Daemon IPC contract generator", () => {
             expect.stringContaining("device_binding_activation.schema.json"),
             expect.stringContaining("scanner_protocol_request.schema.json"),
             expect.stringContaining("sale_start_capability.schema.json"),
+            expect.stringContaining("environment_control.schema.json"),
           ]),
           cwd: root,
         }),
@@ -226,6 +238,18 @@ describe("Daemon IPC contract generator", () => {
           ]),
           cwd: root,
         }),
+        expect.objectContaining({
+          command: "cargo",
+          args: expect.arrayContaining([
+            "typify",
+            "--no-builder",
+            "--additional-derive",
+            "PartialEq",
+            expect.stringContaining("src/generated/environment_control.rs"),
+            expect.stringContaining("schemas/environment_control.schema.json"),
+          ]),
+          cwd: root,
+        }),
       ]);
 
       const schema = JSON.parse(
@@ -270,6 +294,17 @@ describe("Daemon IPC contract generator", () => {
         "utf8",
       );
       expect(scannerGenerated).toContain("Do not edit by hand.");
+
+      const environmentControlGenerated = readFileSync(
+        join(
+          root,
+          "crates/daemon-ipc-contracts/src/generated/environment_control.rs",
+        ),
+        "utf8",
+      );
+      expect(environmentControlGenerated).toContain(
+        "packages/shared/src/schemas/environment-control.ts",
+      );
 
       const scannerInvalidFixtures = JSON.parse(
         readFileSync(
@@ -351,8 +386,10 @@ describe("Daemon IPC contract generator", () => {
     "crates/daemon-ipc-contracts/src/generated/scanner_status.rs",
     "crates/daemon-ipc-contracts/tests/fixtures/scanner_status_valid.snapshots.json",
     "crates/daemon-ipc-contracts/tests/fixtures/scanner_status_invalid.snapshots.json",
+    "crates/daemon-ipc-contracts/schemas/environment_control.schema.json",
+    "crates/daemon-ipc-contracts/src/generated/environment_control.rs",
   ])(
-    "fails check mode when committed scanner output is stale: %s",
+    "fails check mode when a committed generated boundary output is stale: %s",
     async (path) => {
       const root = await mkdtemp(join(tmpdir(), "vem-daemon-ipc-generator-"));
 

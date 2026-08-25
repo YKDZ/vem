@@ -6,6 +6,7 @@ use std::fmt;
 mod generated {
     pub mod device_binding;
     pub mod device_binding_activation;
+    pub mod environment_control;
     pub mod managed_media;
     pub mod runtime_configuration;
     pub mod sale_start_capability;
@@ -28,6 +29,14 @@ pub type DeviceBindingSnapshotRolesItem = generated::device_binding::DeviceBindi
 pub type DeviceBindingSnapshotRolesItemRole =
     generated::device_binding::DeviceBindingSnapshotRolesItemRole;
 pub type DeviceBindingActivation = generated::device_binding_activation::DeviceBindingActivation;
+pub type EnvironmentControlAction =
+    generated::environment_control::EnvironmentControlContractAction;
+pub type EnvironmentControlActionKind =
+    generated::environment_control::EnvironmentControlContractActionAction;
+pub type EnvironmentControlAdmission =
+    generated::environment_control::EnvironmentControlContractAdmission;
+pub type EnvironmentControlSnapshot =
+    generated::environment_control::EnvironmentControlContractSnapshot;
 pub type SaleStartCapabilitySnapshot =
     generated::sale_start_capability::SaleStartCapabilitySnapshot;
 pub type SaleStartCapabilityGeneration =
@@ -93,6 +102,30 @@ impl fmt::Display for BoundaryValidationError {
 }
 
 impl std::error::Error for BoundaryValidationError {}
+
+pub fn validate_environment_control_action_boundary(
+    action: &EnvironmentControlAction,
+) -> Result<(), BoundaryValidationError> {
+    let mut issues = Vec::new();
+    match action.action {
+        EnvironmentControlActionKind::SetTargetTemperature {
+            temperature_celsius,
+        } if !(18..=30).contains(&temperature_celsius) => {
+            issues.push("environment target temperature must be between 18 and 30 Celsius");
+        }
+        EnvironmentControlActionKind::SetBaseVentSpeed { vent_speed }
+            if !(0..=4).contains(&vent_speed) =>
+        {
+            issues.push("environment base vent speed must be between 0 and 4");
+        }
+        _ => {}
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(BoundaryValidationError { issues })
+    }
+}
 
 pub fn validate_managed_media_reconcile_receipt_boundary(
     receipt: &ManagedMediaReconcileReceipt,
