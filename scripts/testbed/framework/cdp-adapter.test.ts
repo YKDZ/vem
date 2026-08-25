@@ -6,11 +6,13 @@ import { runInNewContext } from "node:vm";
 
 type JsonRecord = Record<string, unknown>;
 
+import { VISION_V2_RUNTIME_IDENTITY } from "../../../packages/shared/src/generated/vision-v2-bundle.ts";
 import {
   CapturedFrameEvidenceCache,
   CdpTestAdapter,
   hashPreviewScreenshot,
   isControlledCapturedFrameReference,
+  probeVisionBusinessReadiness,
   readResultPngResource,
   readSourceGarmentPngResource,
   VisionProtocolEvidenceCollector,
@@ -1237,6 +1239,109 @@ describe("CDP test adapter", () => {
         server.close(() => resolvePromise()),
       );
     }
+  });
+
+  it("角色进程已就绪但 V2 试衣握手仍降级时不得报告 Vision 就绪", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          roles: [
+            { name: "observer", pid: 4100, ready: true },
+            { name: "broker", pid: 4200, ready: true },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolvePromise) =>
+      server.listen(0, "127.0.0.1", () => resolvePromise()),
+    );
+    server.unref();
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+    try {
+      const adapter = new CdpTestAdapter({
+        visionBaseUrl: `http://127.0.0.1:${address.port}`,
+        visionBusinessReadinessProbeImpl: async () => ({
+          ready: false,
+          diagnostic: "camera_unavailable",
+        }),
+      });
+      const result = await adapter.run("vision-ready");
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ready: false,
+        pids: [4100, 4200],
+        businessReadinessDiagnostic: "camera_unavailable",
+      });
+    } finally {
+      await new Promise<void>((resolvePromise) =>
+        server.close(() => resolvePromise()),
+      );
+    }
+  });
+
+  it("V2 业务就绪探针使用生产握手并保留降级诊断", async () => {
+    let sentHello: Record<string, unknown> | null = null;
+    const result = await probeVisionBusinessReadiness(
+      "http://127.0.0.1:27892/base?ignored=true",
+      {
+        webSocketFactory: (url) => {
+          assert.equal(url, "ws://127.0.0.1:27892/ws");
+          const socket = {
+            onopen: null as ((event: Event) => void) | null,
+            onmessage: null as ((event: MessageEvent) => void) | null,
+            onerror: null as ((event: Event) => void) | null,
+            onclose: null as ((event: Event) => void) | null,
+            send(data: string) {
+              sentHello = JSON.parse(data) as Record<string, unknown>;
+              queueMicrotask(() => {
+                socket.onmessage?.({
+                  data: JSON.stringify({
+                    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+                    type: "vision.ready",
+                    messageId: "ready-1",
+                    timestamp: "2026-08-25T00:00:00.000Z",
+                    payload: {
+                      serverName: "vending-vision",
+                      serverVersion: "2.0.0",
+                      schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+                      bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+                      contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
+                      cameraReady: true,
+                      tryOnReady: false,
+                      visionBusinessReady: false,
+                      businessReadinessDiagnostic: "camera_unavailable",
+                      capabilities: ["try_on"],
+                    },
+                  }),
+                } as MessageEvent);
+              });
+            },
+            close() {},
+          };
+          queueMicrotask(() => socket.onopen?.({} as Event));
+          return socket as unknown as WebSocket;
+        },
+      },
+    );
+    assert.deepEqual(result, {
+      ready: false,
+      diagnostic: "camera_unavailable",
+    });
+    assert.notEqual(sentHello, null);
+    assert.deepEqual(
+      (sentHello as unknown as Record<string, unknown>).payload,
+      {
+        clientRole: "machine",
+        schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+        bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+        contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
+        capabilities: ["try_on"],
+      },
+    );
   });
 
   it("失败截图超过证据上限时不返回可落盘字节", async () => {

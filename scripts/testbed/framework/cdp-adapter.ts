@@ -10,10 +10,13 @@ import type { SemanticResultPng } from "./slices/vision-experience/result-geomet
 import type { VisionExperienceObservation } from "./slices/vision-experience/vision-experience-driver.ts";
 import type { CommandResult, TestAdapter } from "./test-adapter.ts";
 
+import { VISION_V2_RUNTIME_IDENTITY } from "../../../packages/shared/src/generated/vision-v2-bundle.ts";
 import {
   visionV2AttemptAdjustMessageSchema,
   visionV2AttemptStartMessageSchema,
   visionV2CapturedFrameSchema,
+  visionV2HelloMessageSchema,
+  visionV2ReadyMessageSchema,
   visionV2ResultAdjustedMessageSchema,
 } from "../../../packages/shared/src/schemas/vision-v2.ts";
 import { isStructurallyValidPng } from "../../lib/png-structure.ts";
@@ -312,6 +315,125 @@ interface RuntimeRole {
   name: string;
   pid: number | null;
   ready: boolean;
+}
+
+export interface VisionBusinessReadinessProbeResult {
+  ready: boolean;
+  diagnostic: string | null;
+}
+
+type VisionBusinessReadinessProbe = (
+  visionBaseUrl: string,
+) => Promise<VisionBusinessReadinessProbeResult>;
+
+export async function probeVisionBusinessReadiness(
+  visionBaseUrl: string,
+  {
+    timeoutMs = 3_000,
+    webSocketFactory = (url: string) => new WebSocket(url),
+  }: {
+    timeoutMs?: number;
+    webSocketFactory?: (url: string) => WebSocket;
+  } = {},
+): Promise<VisionBusinessReadinessProbeResult> {
+  const socketUrl = new URL(visionBaseUrl);
+  socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+  socketUrl.pathname = "/ws";
+  socketUrl.search = "";
+  socketUrl.hash = "";
+  const socket = webSocketFactory(socketUrl.toString());
+  const messageIdSuffix =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  const hello = visionV2HelloMessageSchema.parse({
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+    type: "vision.hello",
+    messageId: `testbed-ready-${messageIdSuffix}`,
+    timestamp: new Date().toISOString(),
+    payload: {
+      clientRole: "machine",
+      schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+      bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+      contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
+      capabilities: ["try_on"],
+    },
+  });
+  return await new Promise<VisionBusinessReadinessProbeResult>(
+    (resolve, reject) => {
+      let settled = false;
+      const finish = (
+        result: VisionBusinessReadinessProbeResult | null,
+        error?: Error,
+      ): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+          socket.close();
+        } catch {
+          // The readiness verdict is already complete; close is best effort.
+        }
+        if (result) resolve(result);
+        else reject(error ?? new Error("Vision readiness probe failed"));
+      };
+      const timer = setTimeout(
+        () => finish(null, new Error("Vision readiness probe timed out")),
+        timeoutMs,
+      );
+      socket.onopen = () => {
+        try {
+          socket.send(JSON.stringify(hello));
+        } catch (error) {
+          finish(
+            null,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        }
+      };
+      socket.onmessage = (event) => {
+        try {
+          if (typeof event.data !== "string") {
+            throw new Error("Vision readiness probe received a non-text frame");
+          }
+          const ready = visionV2ReadyMessageSchema.parse(
+            JSON.parse(event.data),
+          );
+          const identityMatches =
+            ready.payload.schemaVersion ===
+              VISION_V2_RUNTIME_IDENTITY.schemaVersion &&
+            ready.payload.bundleVersion ===
+              VISION_V2_RUNTIME_IDENTITY.bundleVersion &&
+            ready.payload.contractDigest ===
+              VISION_V2_RUNTIME_IDENTITY.contractDigest;
+          finish({
+            ready:
+              identityMatches &&
+              ready.payload.cameraReady &&
+              ready.payload.tryOnReady &&
+              ready.payload.visionBusinessReady &&
+              ready.payload.businessReadinessDiagnostic === "ready" &&
+              ready.payload.capabilities.includes("try_on"),
+            diagnostic: identityMatches
+              ? ready.payload.businessReadinessDiagnostic
+              : "contract_identity_mismatch",
+          });
+        } catch (error) {
+          finish(
+            null,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        }
+      };
+      socket.onerror = () =>
+        finish(null, new Error("Vision readiness probe websocket error"));
+      socket.onclose = () =>
+        finish(null, new Error("Vision readiness probe websocket closed"));
+    },
+  );
 }
 
 export function isControlledCapturedFrameReference(
@@ -822,6 +944,7 @@ export class CdpTestAdapter implements TestAdapter {
   selectRecommendationVideoFixtureImpl: typeof selectRecommendationVideoFixture;
   selectDepartureVideoFixtureImpl: typeof selectDepartureVideoFixture;
   restoreRecordedVideoFixturesImpl: typeof restoreRecordedVideoFixtures;
+  visionBusinessReadinessProbeImpl: VisionBusinessReadinessProbe;
   cdpWebSocketFactory: ((url: string) => unknown) | null;
   diagnosticMilestones: unknown[] = [];
   stateObservations: unknown[] = [];
@@ -841,6 +964,7 @@ export class CdpTestAdapter implements TestAdapter {
     selectRecommendationVideoFixtureImpl = selectRecommendationVideoFixture,
     selectDepartureVideoFixtureImpl = selectDepartureVideoFixture,
     restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixtures,
+    visionBusinessReadinessProbeImpl = probeVisionBusinessReadiness,
     cdpWebSocketFactory = null,
   }: {
     endpoint?: string;
@@ -851,6 +975,7 @@ export class CdpTestAdapter implements TestAdapter {
     selectRecommendationVideoFixtureImpl?: typeof selectRecommendationVideoFixture;
     selectDepartureVideoFixtureImpl?: typeof selectDepartureVideoFixture;
     restoreRecordedVideoFixturesImpl?: typeof restoreRecordedVideoFixtures;
+    visionBusinessReadinessProbeImpl?: VisionBusinessReadinessProbe;
     cdpWebSocketFactory?: ((url: string) => unknown) | null;
   } = {}) {
     this.endpoint = endpoint;
@@ -863,6 +988,7 @@ export class CdpTestAdapter implements TestAdapter {
       selectRecommendationVideoFixtureImpl;
     this.selectDepartureVideoFixtureImpl = selectDepartureVideoFixtureImpl;
     this.restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixturesImpl;
+    this.visionBusinessReadinessProbeImpl = visionBusinessReadinessProbeImpl;
     this.cdpWebSocketFactory = cdpWebSocketFactory;
   }
 
@@ -1608,7 +1734,7 @@ export class CdpTestAdapter implements TestAdapter {
       }
       const payload = (await response.json()) as { roles?: RuntimeRole[] };
       const roles = payload.roles ?? [];
-      const ready =
+      const rolesReady =
         roles.length > 0 &&
         roles.every(
           (entry) =>
@@ -1619,9 +1745,28 @@ export class CdpTestAdapter implements TestAdapter {
       const pids = roles
         .filter((entry) => Number.isInteger(entry?.pid) && entry.pid! > 0)
         .map((entry) => entry.pid);
+      if (!rolesReady) {
+        return {
+          exitCode: 1,
+          stdout: JSON.stringify({ ready: false, pids }),
+          stderr: "",
+        };
+      }
+      let businessReadiness: VisionBusinessReadinessProbeResult;
+      try {
+        businessReadiness = await this.visionBusinessReadinessProbeImpl(
+          this.visionBaseUrl,
+        );
+      } catch {
+        businessReadiness = { ready: false, diagnostic: "unreachable" };
+      }
       return {
-        exitCode: ready ? 0 : 1,
-        stdout: JSON.stringify({ ready, pids }),
+        exitCode: businessReadiness.ready ? 0 : 1,
+        stdout: JSON.stringify({
+          ready: businessReadiness.ready,
+          pids,
+          businessReadinessDiagnostic: businessReadiness.diagnostic,
+        }),
         stderr: "",
       };
     }
