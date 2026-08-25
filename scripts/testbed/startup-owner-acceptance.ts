@@ -99,12 +99,10 @@ function validateFullOwnerTask(
     key,
     name,
     failedStage,
-    bootStartedAt,
   }: {
     key: string;
     name: string;
     failedStage: string;
-    bootStartedAt: string;
   },
 ): JsonRecord {
   if (task?.name !== name) {
@@ -132,13 +130,6 @@ function validateFullOwnerTask(
       failedStage,
       "task_not_triggered_after_reboot",
       `${name} has no canonical post-reboot run time`,
-    );
-  }
-  if (Date.parse(lastRunTime) < Date.parse(bootStartedAt)) {
-    failStartup(
-      failedStage,
-      "task_not_triggered_after_reboot",
-      `${name} last ran before the accepted reboot`,
     );
   }
   const lastTaskResult = Number(task?.lastTaskResult);
@@ -231,13 +222,11 @@ function validateModeEvidence(
     key: "machineUi",
     name: "VEMMachineUI",
     failedStage: "machine_ui_owner",
-    bootStartedAt,
   });
   const visionTask = validateFullOwnerTask(recordValue(tasks.vision), {
     key: "vision",
     name: "VEMVisionRuntime",
     failedStage: "vision_owner",
-    bootStartedAt,
   });
   return {
     source: modeEvidence.source,

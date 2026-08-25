@@ -265,15 +265,29 @@ describe("installed runtime startup lifecycle evidence", () => {
     assert.equal(report.reasonCode, "reboot_not_after_owner_install");
   });
 
-  it("rejects an owner task that did not run after the accepted reboot", () => {
+  it("uses the post-reboot launcher binding instead of Task Scheduler LastRunTime chronology", () => {
     const evidence = fullEvidence();
+    evidence.modeEvidence.tasks.machineUi.lastRunTime =
+      "2026-08-24T11:59:00.000Z";
     evidence.modeEvidence.tasks.vision.lastRunTime = "2026-08-24T11:59:00.000Z";
 
     const report = run(evidence);
 
+    assert.equal(report.ok, true);
+  });
+
+  it("rejects a scheduled-task launcher result that predates the accepted reboot", () => {
+    const evidence = fullEvidence();
+    evidence.observation.ownerLaunch.machineUi.startedAt =
+      "2026-08-24T11:59:00.000Z";
+    evidence.observation.ownerLaunch.machineUi.finishedAt =
+      "2026-08-24T11:59:02.000Z";
+
+    const report = run(evidence);
+
     assert.equal(report.ok, false);
-    assert.equal(report.failedStage, "vision_owner");
-    assert.equal(report.reasonCode, "task_not_triggered_after_reboot");
+    assert.equal(report.failedStage, "machine_ui_owner");
+    assert.equal(report.reasonCode, "owner_launch_before_reboot");
   });
 
   it("preserves the first AtLogon action exit code instead of accepting process luck", () => {
