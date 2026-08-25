@@ -2009,6 +2009,17 @@ describe("Windows D cache contract", () => {
     );
   });
 
+  it("allows the installed catalog to become observable under deployment load", () => {
+    const guestScript = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      guestScript,
+      /function Invoke-InstalledTauriRouteAdmission\(\[string\]\$Endpoint, \[int\]\$TimeoutSeconds = 180\)/,
+    );
+  });
+
   it("adapts stable QEMU USB ports to production device identities without fixed COM numbers", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),

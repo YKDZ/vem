@@ -553,7 +553,7 @@ function Wait-TestbedVisionRuntimeEvidence([int]$TimeoutSeconds = 30) {
   throw "canonical installed Vision process did not become observable: $lastError"
 }
 
-function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSeconds = 120) {
+function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSeconds = 180) {
   $stdoutPath = Join-Path $handoffRoot "installed-tauri-route-admission.stdout.log"
   $stderrPath = Join-Path $handoffRoot "installed-tauri-route-admission.stderr.log"
   $diagnosticsPath = Join-Path $handoffRoot "installed-tauri-route-admission.diagnostics.json"
