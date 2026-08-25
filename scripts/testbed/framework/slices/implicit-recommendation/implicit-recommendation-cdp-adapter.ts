@@ -70,6 +70,48 @@ const CATALOG_KEY =
 const SCREENSHOT_LABEL =
   /^implicit-recommendation-(?:near|far)-(?:catalog|detail)$/;
 
+export const IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE_EXPRESSION = `(() => {
+  const key = '__VEM_IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE__';
+  const previous = window[key];
+  previous?.observer?.disconnect?.();
+  const probe = {
+    observedAtMs: null,
+    sessionId: null,
+    observer: null
+  };
+  const capture = () => {
+    const banner = document.querySelector('[data-test="implicit-recommendation-banner"]');
+    const page = document.querySelector('[data-test="catalog-page"]');
+    const sessionId = page?.getAttribute('data-recommendation-session-id') || null;
+    const visible = Boolean(
+      banner &&
+      banner.getClientRects().length > 0 &&
+      getComputedStyle(banner).visibility !== 'hidden' &&
+      getComputedStyle(banner).display !== 'none'
+    );
+    if (
+      visible &&
+      sessionId &&
+      banner?.getAttribute('data-recommendation-state') === 'active' &&
+      banner.textContent?.trim() === '智能选码已开启'
+    ) {
+      probe.observedAtMs = Date.now();
+      probe.sessionId = sessionId;
+      probe.observer?.disconnect();
+    }
+  };
+  probe.observer = new MutationObserver(capture);
+  window[key] = probe;
+  probe.observer.observe(document.documentElement, {
+    attributes: true,
+    childList: true,
+    characterData: true,
+    subtree: true
+  });
+  capture();
+  return true;
+})()`;
+
 export const IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION = `(() => {
   const visible = (element) => Boolean(
     element &&
@@ -88,6 +130,7 @@ export const IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION = `(() => {
   const selectedSize = detail?.querySelector(
     '[data-test="product-size-option"][data-vision-recommended="true"]'
   );
+  const presentationProbe = window.__VEM_IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE__;
   const cards = [...document.querySelectorAll('[data-test="catalog-product"]')].map((card) => ({
     catalogKey: card.getAttribute('data-catalog-key'),
     preferredVariantId: card.getAttribute('data-preferred-variant-id') || null,
@@ -110,6 +153,14 @@ export const IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION = `(() => {
     : [];
   return {
     observedAtMs: Date.now(),
+    presentation: {
+      observedAtMs: Number.isSafeInteger(presentationProbe?.observedAtMs)
+        ? presentationProbe.observedAtMs
+        : null,
+      sessionId: typeof presentationProbe?.sessionId === 'string'
+        ? presentationProbe.sessionId
+        : null
+    },
     route: location.hash,
     banner: {
       visible: visible(banner),
@@ -221,6 +272,28 @@ export function parseImplicitRecommendationObservation(
   ) {
     throw new Error("implicit recommendation observation timestamp is invalid");
   }
+  const presentation = recordValue(
+    root.presentation,
+    "recommendation presentation timing",
+  );
+  const presentationObservedAtMs = presentation.observedAtMs;
+  if (
+    presentationObservedAtMs !== null &&
+    (!Number.isSafeInteger(presentationObservedAtMs) ||
+      Number(presentationObservedAtMs) < 1)
+  ) {
+    throw new Error("recommendation presentation timestamp is invalid");
+  }
+  const presentationSessionId = nullableString(
+    presentation.sessionId,
+    "recommendation presentation session id",
+  );
+  if (
+    (presentationObservedAtMs === null) !==
+    (presentationSessionId === null)
+  ) {
+    throw new Error("recommendation presentation timing is incomplete");
+  }
   const banner = recordValue(root.banner, "recommendation banner");
   const state = banner.state;
   if (state !== null && state !== "active" && state !== "multiple") {
@@ -280,6 +353,13 @@ export function parseImplicitRecommendationObservation(
   }
   return {
     observedAtMs: Number(root.observedAtMs),
+    presentation: {
+      observedAtMs:
+        presentationObservedAtMs === null
+          ? null
+          : Number(presentationObservedAtMs),
+      sessionId: presentationSessionId,
+    },
     route: requiredString(root.route, "recommendation route"),
     banner: {
       visible: requiredBoolean(banner.visible, "banner visibility"),
@@ -365,6 +445,14 @@ export class InstalledImplicitRecommendationAdapter implements ImplicitRecommend
   }
 
   async selectFieldFixtures(distance: RecommendationDistance): Promise<void> {
+    const armed = await this.evaluateImpl(
+      this.requiredClient(),
+      IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE_EXPRESSION,
+      { timeoutMs: 5_000 },
+    );
+    if (armed !== true) {
+      throw new Error("implicit recommendation presentation probe did not arm");
+    }
     await this.runRequired(
       "select-recommendation-video-fixture",
       [distance],

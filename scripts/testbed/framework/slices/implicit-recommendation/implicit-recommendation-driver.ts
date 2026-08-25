@@ -31,6 +31,10 @@ export interface RecommendationCatalogCardObservation {
 
 export interface ImplicitRecommendationObservation {
   observedAtMs: number;
+  presentation: {
+    observedAtMs: number | null;
+    sessionId: string | null;
+  };
   route: string;
   banner: {
     visible: boolean;
@@ -254,10 +258,13 @@ async function runScenario(
   const sessionId =
     neutral?.sessionId ?? presentation.observation.catalog.sessionId;
   const neutralAtMs = neutral ? Date.parse(neutral.recordedAt) : Number.NaN;
+  const presentationAtMs = presentation.observation.presentation.observedAtMs;
   const neutralVisibleLatencyMs =
     Number.isFinite(neutralAtMs) &&
-    presentation.observation.observedAtMs >= neutralAtMs
-      ? presentation.observation.observedAtMs - neutralAtMs
+    presentationAtMs !== null &&
+    presentation.observation.presentation.sessionId === sessionId &&
+    presentationAtMs >= neutralAtMs
+      ? presentationAtMs - neutralAtMs
       : null;
   const assertions: BusinessAssertionRecord[] = [
     businessAssertion({

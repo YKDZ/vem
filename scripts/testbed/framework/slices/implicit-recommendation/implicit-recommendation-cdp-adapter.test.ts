@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION,
+  IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE_EXPRESSION,
   InstalledImplicitRecommendationAdapter,
   parseImplicitRecommendationObservation,
 } from "./implicit-recommendation-cdp-adapter.ts";
@@ -9,6 +11,10 @@ import {
 function observationFixture() {
   return {
     observedAtMs: Date.parse("2026-08-24T10:00:00.200Z"),
+    presentation: {
+      observedAtMs: Date.parse("2026-08-24T10:00:00.010Z"),
+      sessionId: "presence:one",
+    },
     route: "#/catalog",
     banner: { visible: true, state: "active", text: "智能选码已开启" },
     catalog: {
@@ -51,6 +57,7 @@ function observationFixture() {
 describe("installed implicit recommendation CDP adapter", () => {
   it("maps only the public fixture, navigation, DOM and screenshot boundaries", async () => {
     const commands: Array<{ command: string; args: string[] }> = [];
+    const evaluations: string[] = [];
     const writes: Array<{ path: string; bytes: Buffer }> = [];
     const boundary = {
       client: { send: async () => ({}) },
@@ -62,7 +69,13 @@ describe("installed implicit recommendation CDP adapter", () => {
     const adapter = new InstalledImplicitRecommendationAdapter({
       boundary,
       artifactRoot: "C:\\evidence\\implicit-recommendation-artifacts",
-      evaluateImpl: async () => observationFixture(),
+      evaluateImpl: async (_client, expression) => {
+        evaluations.push(expression);
+        return expression ===
+          IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE_EXPRESSION
+          ? true
+          : observationFixture();
+      },
       captureImpl: async (_client, options) => {
         const bytes = Buffer.from("png");
         const ref = await options.screenshotSink?.({
@@ -116,6 +129,10 @@ describe("installed implicit recommendation CDP adapter", () => {
     ]);
     assert.equal(writes.length, 1);
     assert.equal(writes[0]?.bytes.toString(), "png");
+    assert.deepEqual(evaluations, [
+      IMPLICIT_RECOMMENDATION_PRESENTATION_PROBE_EXPRESSION,
+      IMPLICIT_RECOMMENDATION_OBSERVATION_EXPRESSION,
+    ]);
   });
 
   it("fails closed on malformed runtime trace facts", () => {
@@ -132,6 +149,14 @@ describe("installed implicit recommendation CDP adapter", () => {
           observedAtMs: Number.NaN,
         }),
       /observation timestamp/,
+    );
+    assert.throws(
+      () =>
+        parseImplicitRecommendationObservation({
+          ...observationFixture(),
+          presentation: { observedAtMs: null, sessionId: "presence:one" },
+        }),
+      /presentation timing is incomplete/,
     );
   });
 });

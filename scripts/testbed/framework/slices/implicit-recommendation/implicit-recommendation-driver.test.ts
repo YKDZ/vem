@@ -14,6 +14,8 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
   nowMs = Date.parse("2026-08-24T10:00:00.000Z");
   activeDistance: RecommendationDistance | null = null;
   selectedAtMs = 0;
+  presentationAtMs: number | null = null;
+  fixtureSwitchDelayMs = 0;
   currentSessionId: string | null = null;
   canonicalSize: "M" | "L" | null = null;
   categoryOpen = false;
@@ -40,6 +42,7 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
       this.record("session_ended", this.currentSessionId, null);
     }
     this.activeDistance = null;
+    this.presentationAtMs = null;
     this.currentSessionId = null;
     this.canonicalSize = null;
     this.categoryOpen = false;
@@ -50,11 +53,13 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
     this.calls.push(`select:${distance}`);
     this.activeDistance = distance;
     this.selectedAtMs = this.nowMs;
+    this.presentationAtMs = this.nowMs;
     this.currentSessionId = `session-${distance}`;
     this.canonicalSize = "M";
     this.refined = false;
     this.record("session_started", this.currentSessionId, "M");
     this.record("neutral_presented", this.currentSessionId, "M");
+    this.nowMs += this.fixtureSwitchDelayMs;
   }
 
   async navigateCatalogHome(): Promise<void> {
@@ -101,6 +106,10 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
     const selectedSize = this.canonicalSize === "L" ? "大码" : "中码";
     return {
       observedAtMs: this.nowMs,
+      presentation: {
+        observedAtMs: this.presentationAtMs,
+        sessionId: this.currentSessionId,
+      },
       route: this.detailOpen
         ? "#/products/product:recommendation"
         : "#/catalog",
@@ -168,6 +177,7 @@ class FakeRecommendationAdapter implements ImplicitRecommendationAcceptanceAdapt
 describe("implicit recommendation VM business driver", () => {
   it("proves two distinct real-fixture sessions through the public customer projection", async () => {
     const adapter = new FakeRecommendationAdapter();
+    adapter.fixtureSwitchDelayMs = 900;
 
     const result = await runImplicitRecommendationBusinessSet(adapter, {
       baselineQuietMs: 1_000,
