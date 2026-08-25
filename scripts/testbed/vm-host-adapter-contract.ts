@@ -36,6 +36,8 @@ const AUDIO_ENCODING = new Set([
   "pcm_s32le",
 ]);
 const AUDIO_CAPTURE_SOURCE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+){0,15}$/;
+const POST_FAILURE_OPERATION_MIN_TIMEOUT_MS = 1_000;
+const POST_FAILURE_OPERATION_MAX_TIMEOUT_MS = 30_000;
 
 export const VM_HOST_ADAPTER_REQUEST_SCHEMA_VERSION = REQUEST_SCHEMA_VERSION;
 export const VM_HOST_ADAPTER_REPORT_SCHEMA_VERSION = REPORT_SCHEMA_VERSION;
@@ -4228,6 +4230,10 @@ export async function runVmHostAdapter({
       ? { VEM_VM_HOST_EVIDENCE_EXPORT_DIR: scopedEvidenceDirectory }
       : {}),
   };
+  const postFailureOperationTimeoutMs = Math.min(
+    Math.max(timeoutMs, POST_FAILURE_OPERATION_MIN_TIMEOUT_MS),
+    POST_FAILURE_OPERATION_MAX_TIMEOUT_MS,
+  );
   let cancellation: AdapterInvocationOutcome | undefined;
   const cancelInFlightOperation =
     async (): Promise<AdapterInvocationOutcome> => {
@@ -4236,7 +4242,7 @@ export async function runVmHostAdapter({
         request: cancelRequestFor(request),
         workDirectory: adapterWorkDirectory,
         environment: adapterEnvironment,
-        timeoutMs: Math.min(timeoutMs, 30000),
+        timeoutMs: postFailureOperationTimeoutMs,
         signal: undefined,
         scannerCode: undefined,
         allowTestAdapter: testAdapterAllowed,
@@ -4371,7 +4377,7 @@ export async function runVmHostAdapter({
       request: cleanupRequestFor(request),
       workDirectory: adapterWorkDirectory,
       environment: adapterEnvironment,
-      timeoutMs: Math.min(timeoutMs, 30000),
+      timeoutMs: postFailureOperationTimeoutMs,
       signal: undefined,
       scannerCode: undefined,
       allowTestAdapter: testAdapterAllowed,
