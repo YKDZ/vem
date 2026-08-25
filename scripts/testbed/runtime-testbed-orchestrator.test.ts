@@ -317,10 +317,20 @@ describe("runtime testbed scheduler contract", () => {
   });
 
   it("waits for a reboot disconnect before accepting the reconnected guest", async () => {
-    const observations = [true, true, false, false, true];
+    const observations = [
+      "boot-before-restart",
+      "boot-before-restart",
+      null,
+      null,
+      "boot-after-restart",
+    ];
     let now = 0;
     await waitForGuestReboot({
-      probe: async () => observations.shift() ?? true,
+      previousBootIdentity: "boot-before-restart",
+      probe: async () =>
+        observations.length > 0
+          ? (observations.shift() ?? null)
+          : "boot-after-restart",
       now: () => now,
       sleep: async (milliseconds) => {
         now += milliseconds;
@@ -332,11 +342,29 @@ describe("runtime testbed scheduler contract", () => {
     assert.deepEqual(observations, []);
   });
 
+  it("accepts a new Windows boot when polling misses the SSH disconnect", async () => {
+    const observations = ["boot-before-restart", "boot-after-restart"];
+    let now = 0;
+    await waitForGuestReboot({
+      previousBootIdentity: "boot-before-restart",
+      probe: async () => observations.shift() ?? "boot-after-restart",
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      pollMs: 10,
+      disconnectTimeoutMs: 30,
+      readyTimeoutMs: 30,
+    });
+    assert.deepEqual(observations, []);
+  });
+
   it("rejects a reboot that never disconnects the old Windows boot", async () => {
     let now = 0;
     await assert.rejects(
       waitForGuestReboot({
-        probe: async () => true,
+        previousBootIdentity: "boot-before-restart",
+        probe: async () => "boot-before-restart",
         now: () => now,
         sleep: async (milliseconds) => {
           now += milliseconds;
@@ -345,7 +373,34 @@ describe("runtime testbed scheduler contract", () => {
         disconnectTimeoutMs: 30,
         readyTimeoutMs: 30,
       }),
-      /did not disconnect/,
+      /did not expose a new boot/,
+    );
+  });
+
+  it("rejects an SSH interruption that returns to the same Windows boot", async () => {
+    const observations: Array<string | null> = [
+      null,
+      "boot-before-restart",
+      "boot-before-restart",
+      "boot-before-restart",
+    ];
+    let now = 0;
+    await assert.rejects(
+      waitForGuestReboot({
+        previousBootIdentity: "boot-before-restart",
+        probe: async () =>
+          observations.length > 0
+            ? (observations.shift() ?? null)
+            : "boot-before-restart",
+        now: () => now,
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+        },
+        pollMs: 10,
+        disconnectTimeoutMs: 30,
+        readyTimeoutMs: 30,
+      }),
+      /did not become ready on a new boot/,
     );
   });
 

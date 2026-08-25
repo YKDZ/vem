@@ -803,6 +803,7 @@ function scpArguments(guest: JsonRecord): string[] {
 }
 
 export async function waitForGuestReboot({
+  previousBootIdentity,
   probe,
   sleep = (milliseconds: number) =>
     new Promise<void>((resolvePromise) =>
@@ -813,7 +814,8 @@ export async function waitForGuestReboot({
   disconnectTimeoutMs = GUEST_REBOOT_DISCONNECT_TIMEOUT_MS,
   readyTimeoutMs = GUEST_REBOOT_READY_TIMEOUT_MS,
 }: {
-  probe: () => Promise<boolean>;
+  previousBootIdentity: string;
+  probe: () => Promise<string | null>;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   pollMs?: number;
@@ -827,28 +829,48 @@ export async function waitForGuestReboot({
   ) {
     throw new Error("guest reboot wait durations must be positive integers");
   }
-  const waitForState = async (
-    expectedReady: boolean,
+  const previousBoot = previousBootIdentity.trim();
+  if (!previousBoot) {
+    throw new Error("previous Windows boot identity must not be empty");
+  }
+  const observeBoot = async (): Promise<string | null> => {
+    const observation = await probe();
+    if (observation === null) return null;
+    const bootIdentity = observation.trim();
+    if (!bootIdentity) {
+      throw new Error(
+        "guest reboot probe returned an empty Windows boot identity",
+      );
+    }
+    return bootIdentity;
+  };
+  const waitForNewBoot = async (
     timeoutMs: number,
     failure: string,
-  ): Promise<void> => {
+    acceptDisconnect: boolean,
+  ): Promise<"new_boot" | "disconnected"> => {
     const deadline = now() + timeoutMs;
     while (true) {
-      if ((await probe()) === expectedReady) return;
+      const bootIdentity = await observeBoot();
+      if (bootIdentity !== null && bootIdentity !== previousBoot) {
+        return "new_boot";
+      }
+      if (bootIdentity === null && acceptDisconnect) return "disconnected";
       const remaining = deadline - now();
       if (remaining <= 0) throw new Error(failure);
       await sleep(Math.min(pollMs, remaining));
     }
   };
-  await waitForState(
-    false,
+  const initialObservation = await waitForNewBoot(
     disconnectTimeoutMs,
-    "Windows guest did not disconnect for the requested reboot",
-  );
-  await waitForState(
+    "Windows guest did not expose a new boot after the reboot request",
     true,
+  );
+  if (initialObservation === "new_boot") return;
+  await waitForNewBoot(
     readyTimeoutMs,
-    "Windows guest SSH did not become ready after reboot",
+    "Windows guest SSH did not become ready on a new boot after reboot",
+    false,
   );
 }
 
@@ -859,6 +881,31 @@ async function rebootGuestAfterOwnerInstall({
   remote: string;
   ssh: string[];
 }): Promise<void> {
+  const readBootIdentity = async (): Promise<string> => {
+    const script = [
+      "$bootTime = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime",
+      "if ($null -eq $bootTime) { throw 'Windows boot identity is unavailable' }",
+      "[Console]::Out.WriteLine($bootTime.ToUniversalTime().ToString('o'))",
+    ].join("; ");
+    const { stdout } = await capture(
+      "ssh",
+      [
+        ...ssh,
+        remote,
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        encodedPowerShell(script),
+      ],
+      {
+        timeoutMs: GUEST_REBOOT_PROBE_TIMEOUT_MS,
+        timeoutLabel: "guest Windows boot identity probe",
+      },
+    );
+    return required(stdout, "Windows guest boot identity");
+  };
+  const previousBootIdentity = await readBootIdentity();
   try {
     await runProcess(
       "ssh",
@@ -874,31 +921,14 @@ async function rebootGuestAfterOwnerInstall({
       throw error;
     }
   }
-  const probe = async (): Promise<boolean> => {
+  const probe = async (): Promise<string | null> => {
     try {
-      await runProcess(
-        "ssh",
-        [
-          ...ssh,
-          remote,
-          "powershell.exe",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          "exit 0",
-        ],
-        {
-          stdio: "ignore",
-          timeoutMs: GUEST_REBOOT_PROBE_TIMEOUT_MS,
-          timeoutLabel: "guest reboot SSH probe",
-        },
-      );
-      return true;
+      return await readBootIdentity();
     } catch {
-      return false;
+      return null;
     }
   };
-  await waitForGuestReboot({ probe });
+  await waitForGuestReboot({ previousBootIdentity, probe });
 }
 
 function encodedPowerShell(script: string): string {
