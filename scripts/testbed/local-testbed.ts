@@ -1906,6 +1906,17 @@ export function guestSourceGarmentPublicPath(asset: {
   return expectedPath;
 }
 
+export function planogramVersionForSlots(
+  slots: readonly Record<string, unknown>[],
+): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(slots))
+    .digest("hex")
+    .slice(0, 16)
+    .toUpperCase();
+  return `LOCAL-TESTBED-${digest}`;
+}
+
 export async function seedThroughSupportedApis({
   baseUrl,
   fixture,
@@ -2246,34 +2257,35 @@ export async function seedThroughSupportedApis({
       { method: "PUT", token, body: { variantIds: [longVariant.variantId] } },
     ),
   );
-  const planogramVersion = "LOCAL-TESTBED-V1";
+  const publishedSlots = planogramSeededSlots.map(
+    ({ slot, product, machineSlot, inventory }) => ({
+      slotId: machineSlot.id,
+      rowNo: slot.rowNo,
+      cellNo: slot.cellNo,
+      inventoryId: inventory.id,
+      variantId: product.variant.id,
+      productId: product.product.id,
+      productName: product.name,
+      productDescription: `${product.category} normalized testbed fixture`,
+      coverImageUrl: product.displayImageAsset.publicUrl,
+      categoryId: null,
+      categoryName: null,
+      sku: product.variant.sku,
+      size: product.size,
+      color: null,
+      priceCents: slot.priceCents,
+      productSortOrder: product.sourceRow,
+      capacity: slot.capacity,
+      parLevel: slot.lowStockThreshold,
+    }),
+  );
+  const planogramVersion = planogramVersionForSlots(publishedSlots);
   await request(baseUrl, `/machines/${machine.id}/planogram-versions`, {
     method: "POST",
     token,
     body: {
       planogramVersion,
-      slots: planogramSeededSlots.map(
-        ({ slot, product, machineSlot, inventory }) => ({
-          slotId: machineSlot.id,
-          rowNo: slot.rowNo,
-          cellNo: slot.cellNo,
-          inventoryId: inventory.id,
-          variantId: product.variant.id,
-          productId: product.product.id,
-          productName: product.name,
-          productDescription: `${product.category} normalized testbed fixture`,
-          coverImageUrl: product.displayImageAsset.publicUrl,
-          categoryId: null,
-          categoryName: null,
-          sku: product.variant.sku,
-          size: product.size,
-          color: null,
-          priceCents: slot.priceCents,
-          productSortOrder: product.sourceRow,
-          capacity: slot.capacity,
-          parLevel: slot.lowStockThreshold,
-        }),
-      ),
+      slots: publishedSlots,
     },
   });
   const claim = asRecord(

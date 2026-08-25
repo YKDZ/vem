@@ -1309,7 +1309,7 @@ export async function ensureFixtureStockReady({
       );
     }
     return {
-      slotId: fixture.slotId,
+      slotId: taskSlot.slotId,
       addition: Math.max(
         0,
         Number(fixture.onHandQty) - Number(taskSlot.currentQuantity),

@@ -41,6 +41,7 @@ import {
   lowerControllerSimCacheLayout,
   lowerControllerSimSourceFingerprint,
   parseOptions,
+  planogramVersionForSlots,
   paymentMockCreateGatePaths,
   paymentMockQueryFaultPaths,
   prepareInstallationOwnedPaymentProvider,
@@ -1408,6 +1409,32 @@ describe("local testbed orchestration", () => {
 });
 
 describe("supported API seeding", () => {
+  it("derives a stable planogram version from the exact seeded slot payload", () => {
+    const first = [
+      {
+        slotId: "slot-a",
+        rowNo: 1,
+        cellNo: 1,
+        inventoryId: "inventory-a",
+        variantId: "variant-a",
+      },
+    ];
+    const replacement = [{ ...first[0], slotId: "slot-b" }];
+
+    assert.equal(
+      planogramVersionForSlots(first),
+      planogramVersionForSlots(first),
+    );
+    assert.notEqual(
+      planogramVersionForSlots(first),
+      planogramVersionForSlots(replacement),
+    );
+    assert.match(
+      planogramVersionForSlots(first),
+      /^LOCAL-TESTBED-[0-9A-F]{16}$/,
+    );
+  });
+
   it("derives a guest-safe source garment path only from its managed reference", () => {
     const id = "550e8400-e29b-41d4-a716-446655440125";
     const asset = {
@@ -1829,6 +1856,10 @@ describe("supported API seeding", () => {
     );
     const planogramCall = requireCall(calls, (call) =>
       String(call.path).endsWith("/planogram-versions"),
+    );
+    assert.equal(
+      recordValue(planogramCall.body).planogramVersion,
+      result.planogramVersion,
     );
     const planogramSlots = arrayValue(
       recordValue(planogramCall.body).slots,
