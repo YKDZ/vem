@@ -210,7 +210,13 @@ export async function findArtifact({
     );
   }
   const parsed = JSON.parse(listing.stdout) as unknown;
-  const artifacts = Array.isArray(parsed) ? parsed : [parsed];
+  const artifacts = Array.isArray(parsed)
+    ? parsed
+    : parsed &&
+        typeof parsed === "object" &&
+        Array.isArray((parsed as JsonRecord).artifacts)
+      ? ((parsed as JsonRecord).artifacts as JsonRecord[])
+      : [parsed];
   const match = artifactName
     ? artifacts.find((candidate: JsonRecord) => candidate.name === artifactName)
     : artifacts.find(
@@ -226,10 +232,15 @@ export async function findArtifact({
   if (match.expired === true) {
     throw new Error(`artifact "${match.name}" has expired on GitHub`);
   }
+  const digest = String(match.digest ?? "");
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(`artifact "${match.name}" has no valid SHA-256 digest`);
+  }
   return {
     id: Number(match.id),
     name: String(match.name),
     sizeInBytes: Number(match.size_in_bytes),
+    sha256: digest.slice("sha256:".length),
   };
 }
 
@@ -332,7 +343,7 @@ export async function downloadArtifactParallel(
     } catch {
       currentSize = 0;
     }
-    if (currentSize === artifact.sizeInBytes) break;
+    if (result.code === 0 && currentSize === artifact.sizeInBytes) break;
     log(
       `aria2c exited ${result.code} at ${currentSize}/${artifact.sizeInBytes} bytes; refreshing signed URL`,
     );
@@ -347,9 +358,10 @@ export async function downloadArtifactParallel(
     );
   }
   const sha256 = await sha256File(output);
-  if (expectedSha256 && sha256 !== expectedSha256) {
+  const trustedSha256 = expectedSha256 ?? String(artifact.sha256);
+  if (sha256 !== trustedSha256) {
     throw new Error(
-      `artifact SHA-256 mismatch: expected ${expectedSha256}, got ${sha256}`,
+      `artifact SHA-256 mismatch: expected ${trustedSha256}, got ${sha256}`,
     );
   }
   return {

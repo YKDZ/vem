@@ -16,6 +16,8 @@ const ARTIFACT = {
   id: 42,
   name: "vending-vision-main-deadbeef",
   size_in_bytes: 8,
+  digest:
+    "sha256:db7e504ed0fd9d06b47a5d37f7e047cde77a24188406e47dc145722cfde55afd",
   expired: false,
 };
 
@@ -161,14 +163,22 @@ test("findArtifact resolves the artifact by id or name", async () => {
       artifactName: null,
       runProcess: byId,
     }),
-    { id: 42, name: ARTIFACT.name, sizeInBytes: 8 },
+    {
+      id: 42,
+      name: ARTIFACT.name,
+      sizeInBytes: 8,
+      sha256: ARTIFACT.digest.slice("sha256:".length),
+    },
   );
 
   const byName = runProcessFixture((_command, args) => {
     assert.match(args.join(" "), /artifacts\?per_page=100/);
     return {
       code: 0,
-      stdout: JSON.stringify([{ ...ARTIFACT, id: 7 }]),
+      stdout: JSON.stringify({
+        total_count: 1,
+        artifacts: [{ ...ARTIFACT, id: 7 }],
+      }),
       stderr: "",
     };
   });
@@ -255,7 +265,9 @@ test("downloadArtifactParallel resumes after partial attempts and verifies SHA-2
       if (command === "aria2c") {
         aria2cCalls += 1;
         if (aria2cCalls === 1) {
-          // First signed URL window is interrupted mid-transfer.
+          // aria2 preallocates the final byte length before every range has
+          // arrived. A nonzero attempt must resume even when stat looks full.
+          await writeFileSyncForTest(output, Buffer.from("bad-body"));
           return { code: 3, stdout: "", stderr: "expired" };
         }
         await writeFileSyncForTest(output, payload);
@@ -275,7 +287,7 @@ test("downloadArtifactParallel resumes after partial attempts and verifies SHA-2
       output,
       connections: 4,
       maxUrlRefreshes: 3,
-      expectedSha256: await sha256Buffer(payload),
+      expectedSha256: null,
       pollMs: 250,
       runProcess,
       fetchImpl,
