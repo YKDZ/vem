@@ -103,6 +103,27 @@ test("interactive owner launchers converge reentry without replacing a healthy o
   assert.doesNotMatch(installer, /while \(\$true\)/);
 });
 
+test("interactive owner launchers do not query listener ownership before a process exists", () => {
+  const installer = source(installerPath);
+  const readiness = installer.slice(
+    installer.indexOf("function Get-ReadyOwnerProcess"),
+    installer.indexOf(
+      "try {",
+      installer.indexOf("function Get-ReadyOwnerProcess"),
+    ),
+  );
+  const emptyOwnerGuard = readiness.indexOf(
+    "if (`$canonical.Count -eq 0) { return `$null }",
+  );
+  const listenerProbe = readiness.indexOf("Get-NetTCPConnection");
+
+  assert.ok(emptyOwnerGuard >= 0, "launcher omitted its empty-owner fast path");
+  assert.ok(
+    emptyOwnerGuard < listenerProbe,
+    "launcher queried the listener before ruling out an owner process",
+  );
+});
+
 test("registering an owner does not replay an already-missed logon", () => {
   const installer = source(installerPath);
   const registration = installer.slice(

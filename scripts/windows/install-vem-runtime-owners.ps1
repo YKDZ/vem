@@ -302,6 +302,7 @@ function Get-ReadyOwnerProcess([object[]]`$Processes) {
   `$canonical = @(`$Processes | Where-Object {
     (Test-ExpectedExecutable `$_) -and [int]`$_.SessionId -eq `$currentSessionId -and (Test-ExpectedArguments `$_)
   })
+  if (`$canonical.Count -eq 0) { return `$null }
   if (`$readinessPort -gt 0) {
     `$listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort `$readinessPort -State Listen -ErrorAction SilentlyContinue)
     if (`$listeners.Count -ne 1) { return `$null }
