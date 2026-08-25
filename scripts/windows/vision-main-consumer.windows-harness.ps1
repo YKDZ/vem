@@ -528,6 +528,20 @@ try {
   Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical listener was not stopped"
   Assert-True ($global:TestbedVisionListeners.Count -eq 0) "canonical listener remained bound"
 
+  $canonicalWorkerProcess = [pscustomobject]@{
+    ProcessId = 4108
+    ParentProcessId = 4101
+    ExecutablePath = $canonicalExecutablePath
+    CommandLine = "`"$canonicalExecutablePath`" --multiprocessing-fork parent_pid=4101"
+  }
+  Set-TestbedVisionCleanupFixture @(
+    [pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }
+  ) @{ 4101 = $canonicalProcess; 4108 = $canonicalWorkerProcess }
+  $global:TestbedUseRealVisionModule = $true
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedVisionStoppedProcessIds -contains 4108) "canonical multiprocessing worker was not stopped with its main process"
+  Assert-True ($global:TestbedVisionProcesses.Count -eq 0) "canonical multiprocessing worker survived owner cleanup"
+
   Set-TestbedVisionCleanupFixture @() @{ 4101 = $canonicalProcess }
   Clear-TestbedVisionProcesses $testbedGuestInput
   Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical non-listener was not stopped"

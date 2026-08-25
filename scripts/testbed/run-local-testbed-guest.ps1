@@ -1408,12 +1408,19 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
         $_.ExecutablePath -and
-        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalVisionExecutablePath -and
-        -not ($_.CommandLine -and $_.CommandLine.Contains("--multiprocessing-fork"))
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalVisionExecutablePath
       }
   )
-  $managedCanonicalVisionProcesses = @(
+  $canonicalVisionMainProcesses = @(
     $canonicalVisionProcesses | Where-Object {
+      -not ($_.CommandLine -and (& $visionModule {
+        param($CommandLine)
+        Test-VisionMainMultiprocessingForkCommandLine $CommandLine
+      } $_.CommandLine))
+    }
+  )
+  $managedCanonicalVisionProcesses = @(
+    $canonicalVisionMainProcesses | Where-Object {
       $_.CommandLine -and
       (& $visionModule {
         param($CommandLine, $CanonicalConfigurationPath)

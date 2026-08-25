@@ -578,38 +578,83 @@ function Get-VisionMainCanonicalProcessBinding([string]$AppDirectory, [string]$C
   }
 }
 
-function Get-VisionMainOwnedProcessIds([string]$AppDirectory, [string]$ConfigurationPath) {
+function Get-VisionMainOwnedProcesses(
+  [string]$AppDirectory,
+  [string]$ConfigurationPath,
+  [int[]]$KnownMainProcessIds = @()
+) {
   $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
   $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath)
-  return @(
+  $canonicalProcesses = @(
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
         $_.ExecutablePath -and
-        $_.CommandLine -and
-        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and
-        (Test-VisionMainCanonicalConfigurationCommandLine $_.CommandLine $canonicalConfigurationPath)
-      } |
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath
+      }
+  )
+  $mainProcesses = @(
+    $canonicalProcesses | Where-Object {
+      $_.CommandLine -and
+      (Test-VisionMainCanonicalConfigurationCommandLine $_.CommandLine $canonicalConfigurationPath)
+    }
+  )
+  $mainProcessIds = @(
+    $KnownMainProcessIds + @($mainProcesses | ForEach-Object { [int]$_.ProcessId }) |
+      Where-Object { $_ -gt 0 } |
+      Select-Object -Unique
+  )
+  $workerProcesses = @(
+    $canonicalProcesses | Where-Object {
+      $_.CommandLine -and
+      [int]$_.ParentProcessId -in $mainProcessIds -and
+      (Test-VisionMainMultiprocessingForkCommandLine $_.CommandLine)
+    }
+  )
+  return [pscustomobject]@{
+    mainProcesses = $mainProcesses
+    workerProcesses = $workerProcesses
+    processes = @($mainProcesses + $workerProcesses)
+  }
+}
+
+function Get-VisionMainOwnedProcessIds([string]$AppDirectory, [string]$ConfigurationPath) {
+  return @(
+    (Get-VisionMainOwnedProcesses $AppDirectory $ConfigurationPath).processes |
       Select-Object -ExpandProperty ProcessId
   )
 }
 
 function Stop-VisionMainTask([string]$AppDirectory, [string]$ConfigurationPath, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
+  $initialOwner = Get-VisionMainOwnedProcesses $AppDirectory $ConfigurationPath
+  $knownMainProcessIds = @(
+    $initialOwner.mainProcesses |
+      ForEach-Object { [int]$_.ProcessId } |
+      Select-Object -Unique
+  )
   $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
   if ($null -ne $task -and [string]$task.State -eq "Running") { Stop-ScheduledTask -InputObject $task -ErrorAction Stop }
-  foreach ($processId in @(Get-VisionMainOwnedProcessIds $AppDirectory $ConfigurationPath)) {
-    try {
-      Stop-Process -Id $processId -Force -ErrorAction Stop
-    } catch {
-      if ($_.FullyQualifiedErrorId -like "NoProcessFoundForGivenId,*") { continue }
-      throw
-    }
-  }
   $deadline = [DateTime]::UtcNow.AddSeconds(15)
   do {
-    if (@(Get-VisionMainOwnedProcessIds $AppDirectory $ConfigurationPath).Count -eq 0) { return }
+    $owner = Get-VisionMainOwnedProcesses $AppDirectory $ConfigurationPath $knownMainProcessIds
+    $knownMainProcessIds = @(
+      $knownMainProcessIds + @($owner.mainProcesses | ForEach-Object { [int]$_.ProcessId }) |
+        Where-Object { $_ -gt 0 } |
+        Select-Object -Unique
+    )
+    $owner = Get-VisionMainOwnedProcesses $AppDirectory $ConfigurationPath $knownMainProcessIds
+    $ownedProcesses = @($owner.mainProcesses) + @($owner.workerProcesses)
+    if ($ownedProcesses.Count -eq 0) { return }
+    foreach ($processId in @($ownedProcesses | ForEach-Object { [int]$_.ProcessId } | Select-Object -Unique)) {
+      try {
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+      } catch {
+        if ($_.FullyQualifiedErrorId -like "NoProcessFoundForGivenId,*") { continue }
+        throw
+      }
+    }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  throw "Vision main artifact: canonical Vision process did not stop"
+  throw "Vision main artifact: canonical Vision process topology did not stop"
 }
 
 function Ensure-VisionMainTask([string]$LauncherPath, [string]$WorkingDirectory, [string]$TaskUser, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {

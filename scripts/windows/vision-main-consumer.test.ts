@@ -95,7 +95,11 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.match(module, /Stop-VisionMainTask/);
   assert.match(
     module,
-    /Get-VisionMainOwnedProcessIds[\s\S]*Get-CimInstance Win32_Process[\s\S]*ExecutablePath[\s\S]*CommandLine[\s\S]*Stop-Process -Id \$processId/,
+    /Get-VisionMainOwnedProcesses[\s\S]*Get-CimInstance Win32_Process[\s\S]*ExecutablePath[\s\S]*CommandLine[\s\S]*Stop-Process -Id \$processId/,
+  );
+  assert.match(
+    module,
+    /Get-VisionMainOwnedProcesses[\s\S]*ParentProcessId[\s\S]*Test-VisionMainMultiprocessingForkCommandLine/,
   );
   assert.match(module, /Split-VisionWindowsCommandLine/);
   assert.match(module, /Test-VisionMainCanonicalConfigurationCommandLine/);

@@ -2532,26 +2532,18 @@ export async function stopInstalledVisionOwnerForControlledMock() {
   await runPowerShellScript(
     String.raw`
 $ErrorActionPreference = "Stop"
-Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
+$visionModule = Import-Module "C:\VEM\source\scripts\windows\vision-main-artifacts.psm1" -Force -PassThru -ErrorAction Stop
+& $visionModule {
+  Stop-VisionMainTask -AppDirectory "C:\VEM\vision\app" -ConfigurationPath "C:\ProgramData\VEM\vision\site.json" -TaskName "VEMVisionRuntime" -TaskPath "\"
+}
 $canonicalExecutablePath = [IO.Path]::GetFullPath("C:\VEM\vision\app\vending-vision.exe")
-$canonicalConfigurationPath = [IO.Path]::GetFullPath("C:\ProgramData\VEM\vision\site.json").ToLowerInvariant()
-$deadline = [DateTime]::UtcNow.AddSeconds(10)
-do {
-  $ownedProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ExecutablePath -and
-    [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and
-    $_.CommandLine -and
-    ([string]$_.CommandLine).ToLowerInvariant().Contains("--config") -and
-    ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigurationPath)
-  })
-  foreach ($process in $ownedProcesses) {
-    Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
-  }
-  if ($ownedProcesses.Count -eq 0) { break }
-  Start-Sleep -Milliseconds 250
-} while ([DateTime]::UtcNow -lt $deadline)
-if ($ownedProcesses.Count -ne 0) {
-  throw "installed Vision owner did not stop before controlled mock startup"
+$remainingProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  $_.ExecutablePath -and
+  [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath
+})
+if ($remainingProcesses.Count -ne 0) {
+  $remainingProcessIds = @($remainingProcesses | ForEach-Object { [int]$_.ProcessId }) -join ','
+  throw "installed Vision owner processes did not stop before controlled mock startup (pids=$remainingProcessIds)"
 }
 `,
     "stop installed Vision owner",

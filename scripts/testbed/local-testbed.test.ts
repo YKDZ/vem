@@ -1863,6 +1863,21 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
+  it("stops the installed Vision topology through the canonical module before starting the sale mock", () => {
+    const saleRunner = readFileSync(
+      new URL("./fast-route-stress-sale.ts", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      saleRunner,
+      /stopInstalledVisionOwnerForControlledMock[\s\S]*Import-Module[\s\S]*vision-main-artifacts\.psm1[\s\S]*Stop-VisionMainTask[\s\S]*VEMVisionRuntime/,
+    );
+    assert.match(
+      saleRunner,
+      /installed Vision owner processes did not stop before controlled mock startup/,
+    );
+  });
+
   it("cleans all canonical Vision processes and the acceptance-owned Node mock before both full and fast runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
