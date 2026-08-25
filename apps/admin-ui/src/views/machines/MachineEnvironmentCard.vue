@@ -206,7 +206,7 @@ function setVentSpeed(event: Event): void {
         v-else
         class="mt-5 border-t border-slate-200 pt-4 text-sm text-amber-700"
       >
-        daemon 权威设置尚未上报，控制暂不可用。
+        本机环境设置尚未上报，控制暂不可用。
       </div>
     </template>
   </a-card>

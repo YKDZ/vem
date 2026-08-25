@@ -917,7 +917,7 @@ describe("MachinesView environment controls", () => {
       "environment dialog",
     );
 
-    expect(dialog.textContent).toContain("daemon 权威设置尚未上报");
+    expect(dialog.textContent).toContain("本机环境设置尚未上报");
     expect(dialog.querySelector("select")).toBeNull();
     expect(commandEnvironment).not.toHaveBeenCalled();
   });
