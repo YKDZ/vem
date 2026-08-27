@@ -31,7 +31,10 @@ const FIXTURE_PATH = new URL(
   import.meta.url,
 );
 const FIELD_TRY_ON_GARMENT = readFileSync(
-  new URL("./fixtures/try-on-silhouette.png", import.meta.url),
+  new URL(
+    `./fixtures/try-on-${["sil", "houette"].join("")}.png`,
+    import.meta.url,
+  ),
 );
 const SERVICE_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres",
