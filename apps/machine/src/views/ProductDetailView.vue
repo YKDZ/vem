@@ -401,7 +401,6 @@ async function startTryOn(): Promise<void> {
               "
             />
             <span class="detail-bamboo" aria-hidden="true"></span>
-            <span class="detail-image-count">1/5</span>
           </div>
         </section>
 
@@ -810,20 +809,6 @@ async function startTryOn(): Promise<void> {
     center / contain no-repeat;
 }
 
-.detail-image-count {
-  position: absolute;
-  right: 1.4rem;
-  bottom: 1.1rem;
-  z-index: 3;
-  min-width: 58px;
-  border-radius: 999px;
-  background: rgba(124, 125, 110, 0.52);
-  color: #fffdf7;
-  font-size: 1rem;
-  line-height: 2rem;
-  text-align: center;
-}
-
 .detail-info {
   min-height: 0;
   overflow-y: auto;
@@ -1139,14 +1124,6 @@ async function startTryOn(): Promise<void> {
   .detail-image-inner img.detail-image-fallback {
     width: min(78%, 13rem);
     height: min(70%, 13rem);
-  }
-
-  .detail-image-count {
-    right: 1rem;
-    bottom: 0.9rem;
-    min-width: 50px;
-    font-size: 0.9rem;
-    line-height: 1.75rem;
   }
 
   .detail-info {
