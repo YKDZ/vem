@@ -342,6 +342,7 @@ export async function runSkuCatalogSyncGuest(options: {
             slotId: targetSlotId,
             sku: String(targetVariant.sku),
             quantity: Number(targetFixture?.onHandQty ?? 5),
+            enabled: true,
           },
         ],
       },
