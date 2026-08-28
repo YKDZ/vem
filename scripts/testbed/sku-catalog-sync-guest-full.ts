@@ -11,10 +11,8 @@ import {
   daemonGet,
   fetchJson,
   option,
-  platform,
   required,
   restoreBaselinePlanogramAndStock,
-  rows,
   writeJson,
   type HandoffRecord,
   type JsonRecord,
@@ -119,15 +117,8 @@ export async function runSkuCatalogSyncGuest(options: {
   try {
     const guestInput = readLocalJson(options.guestInputPath);
     const handoff = readLocalJson(options.handoffPath) as HandoffRecord;
-    const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
     const token = await adminToken(guestInput);
-    const baselineReport = (await platform(
-      guestInput,
-      runId,
-      machineCode,
-      null,
-    )) as JsonRecord;
     const machines = await adminListAll(guestInput, token, "/machines");
     const machine = machines.find(
       (candidate) => candidate.code === machineCode,
@@ -149,9 +140,9 @@ export async function runSkuCatalogSyncGuest(options: {
       if (productName.includes("内裤")) return "内裤";
       return "其他";
     };
-    const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
+    const inventories = await adminListAll(guestInput, token, "/inventories");
     if (variants.length === 0 || products.length === 0) {
-      throw new Error("fixture platform report has no products or variants");
+      throw new Error("fixture catalog has no products or variants");
     }
 
     const existingSlotsEnvelope = (await adminRequest(
@@ -194,7 +185,7 @@ export async function runSkuCatalogSyncGuest(options: {
     }
 
     const inventoryBySlot = new Map<string, JsonRecord>();
-    for (const inventory of inventoriesRows) {
+    for (const inventory of inventories) {
       inventoryBySlot.set(String(inventory.slotId), inventory);
     }
     const variantById = new Map(

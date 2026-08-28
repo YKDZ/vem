@@ -112,12 +112,6 @@ export async function runSkuRaceGuest(options: {
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
     const token = await adminToken(guestInput);
-    const baselineReport = (await platform(
-      guestInput,
-      runId,
-      machineCode,
-      null,
-    )) as JsonRecord;
     const machines = await adminListAll(guestInput, token, "/machines");
     const machine = machines.find(
       (candidate) => candidate.code === machineCode,
@@ -132,8 +126,8 @@ export async function runSkuRaceGuest(options: {
     );
     const products = await adminListAll(guestInput, token, "/products");
     const variants = await adminListAll(guestInput, token, "/product-variants");
-    const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
-    const targetInventory = inventoriesRows.find(
+    const inventories = await adminListAll(guestInput, token, "/inventories");
+    const targetInventory = inventories.find(
       (inventory) => inventory.slotId === targetSlotId,
     );
     const currentVariant = variants.find(
@@ -307,6 +301,15 @@ export async function runSkuRaceGuest(options: {
     } while (Date.now() < fenceDeadline);
 
     await control(guestInput, `/v1/serial-sessions/${sessionId}/release-f0`);
+    await control(guestInput, `/v1/serial-sessions/${sessionId}/wait-frame`, {
+      parsedOpcode: "F0",
+      timeoutMs: 30_000,
+    });
+    await control(guestInput, `/v1/serial-sessions/${sessionId}/wait-frame`, {
+      parsedOpcode: "F1",
+      timeoutMs: 30_000,
+    });
+    await control(guestInput, `/v1/serial-sessions/${sessionId}/release-f2`);
     await control(guestInput, `/v1/serial-sessions/${sessionId}/wait-frame`, {
       parsedOpcode: "F2",
       timeoutMs: 30_000,
