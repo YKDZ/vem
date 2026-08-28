@@ -57,6 +57,16 @@ export function createCustomerJourneyAudioRuntime(
   let disposed = false;
   let environmentActionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let latestStableEnvironmentEdgeId: string | null = null;
+  // The daemon deduplicates environment actions by action id forever. A plain
+  // per-load edge id (presence-1:arrival) would collide with every historical
+  // admission after any UI restart, silently swallowing the stable-presence
+  // vent policy. Bind each runtime session to one fresh nonce instead; the
+  // daemon still deduplicates transport retries of the same edge within this
+  // session.
+  const environmentActionSessionNonce =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `env-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const projector = createCustomerJourneyTransitionProjector();
   const coordinator = createCustomerJourneyAudioCoordinator({
     preferences: () => useMachineStore(pinia).customerAudio,
@@ -82,7 +92,7 @@ export function createCustomerJourneyAudioRuntime(
     ): void => {
       void daemonClient
         .submitEnvironmentControlAction({
-          actionId: edgeId,
+          actionId: `${environmentActionSessionNonce}:${edgeId}`,
           source: "stable_presence",
           action,
         })

@@ -335,11 +335,13 @@ describe("Customer journey audio runtime", () => {
             entry.transitionId.endsWith(":welcome"),
         ),
     ).toHaveLength(1);
-    expect(submitEnvironmentControlAction).toHaveBeenCalledWith({
-      actionId: "presence-1:arrival",
-      source: "stable_presence",
-      action: { type: "restore_base_vent_speed" },
-    });
+    expect(submitEnvironmentControlAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: expect.stringMatching(/:presence-1:arrival$/),
+        source: "stable_presence",
+        action: { type: "restore_base_vent_speed" },
+      }),
+    );
     expect(submitEnvironmentControlAction).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
@@ -415,16 +417,22 @@ describe("Customer journey audio runtime", () => {
     await nextTick();
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(250);
-    expect(submitEnvironmentControlAction).toHaveBeenNthCalledWith(1, {
-      actionId: "presence-1:arrival",
-      source: "stable_presence",
-      action: { type: "restore_base_vent_speed" },
-    });
-    expect(submitEnvironmentControlAction).toHaveBeenNthCalledWith(2, {
-      actionId: "presence-1:arrival",
-      source: "stable_presence",
-      action: { type: "restore_base_vent_speed" },
-    });
+    expect(submitEnvironmentControlAction).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        actionId: expect.stringMatching(/:presence-1:arrival$/),
+        source: "stable_presence",
+        action: { type: "restore_base_vent_speed" },
+      }),
+    );
+    expect(submitEnvironmentControlAction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        actionId: expect.stringMatching(/:presence-1:arrival$/),
+        source: "stable_presence",
+        action: { type: "restore_base_vent_speed" },
+      }),
+    );
 
     visionStore.applyPersonDeparted({
       source: "top",
@@ -434,11 +442,13 @@ describe("Customer journey audio runtime", () => {
       reason: "left_frame",
     });
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(submitEnvironmentControlAction).toHaveBeenLastCalledWith({
-      actionId: "presence-2:departure",
-      source: "stable_presence",
-      action: { type: "temporarily_stop_vent" },
-    });
+    expect(submitEnvironmentControlAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        actionId: expect.stringMatching(/:presence-2:departure$/),
+        source: "stable_presence",
+        action: { type: "temporarily_stop_vent" },
+      }),
+    );
     expect(submitEnvironmentControlAction).toHaveBeenCalledTimes(3);
     vi.useRealTimers();
   });
@@ -558,5 +568,47 @@ describe("Customer journey audio runtime", () => {
               "transaction:ORD-AUDIO-PICKUP-001:dispense-succeeded",
         ),
     ).toHaveLength(0);
+  });
+
+  it("uses a session-unique environment action id after a stable presence session reset", async () => {
+    vi.useFakeTimers();
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    const visionStore = useVisionStore(pinia);
+    const present = {
+      source: "top",
+      eventId: "VISION-PRESENT-SESSION-001",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-07-19T08:00:00.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.91 },
+    } as const;
+
+    visionStore.applyPresenceStatus(present);
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
+    const firstCall = submitEnvironmentControlAction.mock.calls[0]?.[0] as {
+      actionId: string;
+    };
+    expect(firstCall?.actionId).toMatch(/:presence-1:arrival$/);
+
+    await runtime.dispose();
+    runtime = null;
+    resetStableVisionPresenceSessionForTests();
+
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    visionStore.applyPresenceStatus(present);
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
+    const secondCall = submitEnvironmentControlAction.mock.calls[1]?.[0] as {
+      actionId: string;
+    };
+    expect(secondCall?.actionId).toMatch(/:presence-1:arrival$/);
+    expect(secondCall?.actionId).not.toBe(firstCall?.actionId);
+    vi.useRealTimers();
   });
 });
