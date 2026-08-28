@@ -438,6 +438,18 @@ export async function runFaultRecoveryGuest(options: {
     evidence.baseline = {
       platform: await platform(guestInput, runId, machineCode, null),
     };
+    const baselineInventory = (
+      rows(
+        (evidence.baseline as JsonRecord).platform as JsonRecord,
+        "inventories",
+      ) as JsonRecord[]
+    ).find(
+      (candidate) =>
+        candidate.slotId ===
+        ((
+          guestInput.fixtureAllocation as JsonRecord | undefined
+        )?.[options.fixtureKey] as JsonRecord | undefined)?.slotId,
+    );
 
     stage = "start-mechanical-host-serial-session";
     session = (await control(guestInput, "/v1/serial-sessions/start", {
@@ -710,6 +722,35 @@ export async function runFaultRecoveryGuest(options: {
       throw new Error(
         `faulted slot did not return to sale_ready: ${JSON.stringify(finalItem)}`,
       );
+    }
+    const baselineQty = Number(baselineInventory?.onHandQty ?? -1);
+    if (baselineQty >= 0) {
+      const restoredReport = (await platform(
+        guestInput,
+        runId,
+        machineCode,
+        String(activeSession.sessionId),
+      )) as JsonRecord;
+      const restoredInventory = (rows(restoredReport, "inventories") as JsonRecord[])
+        .find((candidate) => candidate.id === inventoryId);
+      const currentQty = Number(restoredInventory?.onHandQty ?? -1);
+      if (currentQty >= 0 && currentQty !== baselineQty) {
+        evidence.restore = await fetchJson(
+          `${serviceApiBase}/inventories/adjust`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              inventoryId,
+              deltaQty: baselineQty - currentQty,
+              note: "fault-recovery fixture restore",
+            }),
+          },
+        );
+      }
     }
     await snapshot("catalog-after-recovery");
     await cleanup();
