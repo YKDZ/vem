@@ -6,6 +6,7 @@ import type { ProductRecommendationProjection } from "@/recommendation/implicit-
 import type { MachineCatalogItem } from "@/types/catalog";
 import {
   genderForItem,
+  genderFiltersForCategory,
   genderLabelForFilter,
   type ProductGenderFilter,
 } from "@/catalog/gender-filter";
@@ -111,16 +112,12 @@ const homeCategoryEntries = (
   key,
   ...homeCategoryMeta[key],
 }));
-const genderFilters: {
-  key: ProductGenderFilter;
-  label: string;
-}[] = [
-  { key: "all", label: "全部" },
-  { key: "male", label: "男款" },
-  { key: "female", label: "女款" },
-  { key: "kids", label: "儿童" },
-  { key: "elder", label: "老人" },
-];
+const genderFilters = computed(() =>
+  genderFiltersForCategory(selectedTopCategoryKey.value ?? "").map((key) => ({
+    key,
+    label: genderLabelForFilter(key),
+  })),
+);
 
 const categoryGroups = computed(() =>
   groupItemsByTopCategory(catalogStore.availableItems),

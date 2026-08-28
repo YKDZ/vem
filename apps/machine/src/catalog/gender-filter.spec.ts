@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import {
+  genderFiltersForCategory,
   genderForItem,
   genderLabelForFilter,
   type ProductGenderFilter,
@@ -109,4 +110,36 @@ describe("genderLabelForFilter", () => {
       expect(genderLabelForFilter(filter)).toBe(label);
     },
   );
+});
+
+describe("genderFiltersForCategory", () => {
+  it("keeps all filters for tshirts and underwear", () => {
+    expect(genderFiltersForCategory("tshirts")).toEqual([
+      "all",
+      "male",
+      "female",
+      "kids",
+      "elder",
+    ]);
+    expect(genderFiltersForCategory("underwear")).toEqual([
+      "all",
+      "male",
+      "female",
+      "kids",
+      "elder",
+    ]);
+  });
+
+  it("hides kids and elder filters for socks", () => {
+    expect(genderFiltersForCategory("socks")).toEqual([
+      "all",
+      "male",
+      "female",
+    ]);
+  });
+
+  it("keeps all filters for fallback and unknown categories", () => {
+    expect(genderFiltersForCategory("other")).toHaveLength(5);
+    expect(genderFiltersForCategory("")).toHaveLength(5);
+  });
 });

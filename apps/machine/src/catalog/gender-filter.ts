@@ -2,6 +2,32 @@ import type { MachineCatalogItem } from "@/types/catalog";
 
 export type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
 
+const ALL_GENDER_FILTERS: readonly ProductGenderFilter[] = [
+  "all",
+  "male",
+  "female",
+  "kids",
+  "elder",
+];
+
+const GENDER_FILTERS_WITHOUT_AGE: readonly ProductGenderFilter[] = [
+  "all",
+  "male",
+  "female",
+];
+
+/**
+ * 返回某个商品大类可用的性别/年龄筛选。袜子没有年龄区分，
+ * 不展示儿童/老人；其余大类保留全部筛选项。
+ */
+export function genderFiltersForCategory(
+  categoryKey: string,
+): readonly ProductGenderFilter[] {
+  return categoryKey === "socks"
+    ? GENDER_FILTERS_WITHOUT_AGE
+    : ALL_GENDER_FILTERS;
+}
+
 export function genderForItem(item: MachineCatalogItem): ProductGenderFilter {
   const text = `${item.productName} ${item.categoryName ?? ""}`;
   // 年龄群体优先于性别：童装/老年商品同时带有 targetGender，
