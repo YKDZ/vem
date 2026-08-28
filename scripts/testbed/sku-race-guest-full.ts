@@ -264,11 +264,6 @@ export async function runSkuRaceGuest(options: {
       parsedOpcode: "VEND",
       timeoutMs: 30_000,
     });
-    await control(guestInput, `/v1/serial-sessions/${sessionId}/wait-frame`, {
-      parsedOpcode: "F0",
-      timeoutMs: 30_000,
-    });
-
     const newPlanogramVersion = `PLAN-SKU-RACE-${Date.now()}`;
     const payloadSlots = (oldSaleView.items as JsonRecord[]).map((item) => ({
       slotId: item.slotId,

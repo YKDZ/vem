@@ -184,18 +184,16 @@ export async function runSkuCatalogSyncGuest(options: {
       "GET",
       `/machines/${machineId}/slots`,
     )) as JsonRecord;
-    const existingSlots = {
-      items:
-        (existingSlotsEnvelope.data as JsonRecord | undefined)?.items ?? [],
-    };
+    const existingSlots =
+      (existingSlotsEnvelope.data as JsonRecord[] | undefined) ?? [];
     const slotsByKey = new Map<string, JsonRecord>();
-    for (const slot of (existingSlots.items ?? []) as JsonRecord[]) {
+    for (const slot of existingSlots) {
       slotsByKey.set(`${slot.rowNo}:${slot.cellNo}`, slot);
     }
     for (const coordinate of slotCoordinates()) {
       const key = `${coordinate.rowNo}:${coordinate.cellNo}`;
       if (slotsByKey.has(key)) continue;
-      const created = (await adminRequest(
+      const createdEnvelope = (await adminRequest(
         guestInput,
         token,
         "POST",
@@ -207,7 +205,10 @@ export async function runSkuCatalogSyncGuest(options: {
           status: "enabled",
         },
       )) as JsonRecord;
-      slotsByKey.set(key, created);
+      slotsByKey.set(
+        key,
+        (createdEnvelope.data as JsonRecord | undefined) ?? createdEnvelope,
+      );
     }
     const allSlots = [...slotsByKey.values()];
     if (allSlots.length !== TARGET_SLOT_COUNT) {
@@ -232,7 +233,7 @@ export async function runSkuCatalogSyncGuest(options: {
       if (inventoryBySlot.has(slotId)) continue;
       const variant = variants[variantIndex % variants.length] as JsonRecord;
       variantIndex += 1;
-      const created = (await adminRequest(
+      const createdEnvelope = (await adminRequest(
         guestInput,
         token,
         "POST",
@@ -246,7 +247,10 @@ export async function runSkuCatalogSyncGuest(options: {
           note: "sku-catalog-sync fixture inventory",
         },
       )) as JsonRecord;
-      inventoryBySlot.set(slotId, created);
+      inventoryBySlot.set(
+        slotId,
+        (createdEnvelope.data as JsonRecord | undefined) ?? createdEnvelope,
+      );
     }
 
     const targetFixture = (
