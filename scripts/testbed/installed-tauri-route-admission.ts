@@ -174,12 +174,57 @@ export async function admitInstalledTauriCatalog(
           throw directRouteError;
         }
         dismissedTerminalOrderNo = dismissedOrderNo;
-        route = (
-          await waitForRouteFn(client, "#/catalog", {
-            timeoutMs: 30_000,
-            pollMs,
-          })
-        ).route;
+        try {
+          route = (
+            await waitForRouteFn(client, "#/catalog", {
+              timeoutMs: 30_000,
+              pollMs,
+            })
+          ).route;
+        } catch (postDismissError) {
+          // 重启后的终态结果可能再次投影；回到正常返回路径重试直到可操作。
+          const retryDeadline = now() + 30_000;
+          do {
+            try {
+              const retried = await returnToCatalog({
+                client,
+                evaluateExpressionFn: evaluate,
+              });
+              route = String(
+                (retried as { route?: unknown } | null | undefined)?.route ??
+                  "",
+              );
+              if (route === "#/catalog") break;
+            } catch {
+              // 结果页尚未可操作时继续等待重试。
+            }
+            if (now() < retryDeadline) {
+              await sleepFor(
+                Math.min(pollMs, Math.max(0, retryDeadline - now())),
+              );
+            }
+          } while (now() < retryDeadline);
+          if (route !== "#/catalog") {
+            const pageState = await evaluate(
+              client,
+              `(() => {
+                const page = document.querySelector("[data-test='result-page']");
+                return {
+                  orderNo: page?.dataset.orderNo ?? null,
+                  returnButton: Boolean(
+                    document.querySelector(
+                      "[data-test='result-return-catalog']:not(:disabled)",
+                    ),
+                  ),
+                };
+              })()`,
+            ).catch(() => null);
+            throw new Error(
+              `stale result dismissal did not reach catalog; page=${JSON.stringify(pageState)}`,
+              { cause: postDismissError },
+            );
+          }
+        }
       }
     }
     const finalRoute = await evaluate(client, "location.hash");
