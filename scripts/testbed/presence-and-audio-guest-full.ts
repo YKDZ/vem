@@ -1048,29 +1048,38 @@ async function submitDuplicateStablePresenceAction(
 ): Promise<unknown> {
   const daemon = handoff?.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const response = await (
-    dependencies.fetchJson as (
-      url: string,
-      options: JsonRecord,
-    ) => Promise<unknown>
-  )(`${daemonBaseUrl(handoff)}/v1/environment-control/actions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      actionId: edgeId,
-      source: "stable_presence",
-      action: { type: "restore_base_vent_speed" },
-    }),
-  });
-  if ((response as JsonRecord | null)?.outcome !== "deduplicated") {
+  const submit = (actionId: string) =>
+    (
+      dependencies.fetchJson as (
+        url: string,
+        options: JsonRecord,
+      ) => Promise<unknown>
+    )(`${daemonBaseUrl(handoff)}/v1/environment-control/actions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        actionId,
+        source: "stable_presence",
+        action: { type: "restore_base_vent_speed" },
+      }),
+    });
+  const actionId = `presence-and-audio-test-${dependencies.randomUUID()}:${edgeId}`;
+  const first = (await submit(actionId)) as JsonRecord;
+  if (first?.outcome !== "accepted") {
     throw new Error(
-      `duplicate stable-presence action was not deduplicated: ${JSON.stringify(response)}`,
+      `stable-presence action was not accepted: ${JSON.stringify(first)}`,
     );
   }
-  return { ...(response as JsonRecord), actionId: edgeId };
+  const second = (await submit(actionId)) as JsonRecord;
+  if (second?.outcome !== "deduplicated") {
+    throw new Error(
+      `duplicate stable-presence action was not deduplicated: ${JSON.stringify(second)}`,
+    );
+  }
+  return { first, second, actionId };
 }
 
 function defaultDependencies(): PresenceAudioDependencies {
