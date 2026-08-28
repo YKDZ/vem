@@ -8,6 +8,7 @@ import {
   DaemonApiClient,
   DaemonUnavailableError,
   isDaemonTransportFailure,
+  readDaemonResponseText,
 } from "./client";
 
 vi.mock("@/native/daemon-connection", () => ({
@@ -892,5 +893,33 @@ describe("DaemonApiClient direct runtime intents", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(MockWebSocket.instances).toHaveLength(2);
     subscription.close();
+  });
+});
+
+describe("readDaemonResponseText", () => {
+  it("accepts a full expanded sale view well beyond 64 KiB", async () => {
+    const payload = JSON.stringify({
+      items: Array.from({ length: 40 }, (_, index) => ({
+        slotId: `slot-${index}`,
+        productName: `商品${index}`,
+        description: "x".repeat(2_000),
+      })),
+    });
+    expect(payload.length).toBeGreaterThan(64 * 1024);
+    const body = await readDaemonResponseText(
+      new Response(payload, {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(body.exceeded).toBe(false);
+    if (!body.exceeded) {
+      expect(body.text).toBe(payload);
+    }
+  });
+
+  it("still rejects responses beyond the safe read limit", async () => {
+    const payload = "x".repeat(3 * 1024 * 1024);
+    const body = await readDaemonResponseText(new Response(payload));
+    expect(body.exceeded).toBe(true);
   });
 });

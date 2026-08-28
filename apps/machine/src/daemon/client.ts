@@ -244,14 +244,17 @@ const MAX_SEEN_EVENT_IDS = 1000;
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 15_000;
 // Network setup failures carry five independently typed diagnostics.  Leave
 // ample room for all operator guidance while bounding untrusted daemon output
-// in the kiosk renderer.  Never parse a truncated JSON prefix.
-const MAX_DAEMON_RESPONSE_BYTES = 64 * 1024;
+// in the kiosk renderer.  Never parse a truncated JSON prefix.  The bound must
+// also cover the full machine sale view: a fully stocked catalog with media
+// descriptors and try-on garments is several hundred KiB, so a 64 KiB cap
+// silently froze the UI on the last accepted planogram snapshot.
+const MAX_DAEMON_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 type BoundedResponseText =
   | { exceeded: false; text: string }
   | { exceeded: true };
 
-async function readDaemonResponseText(
+export async function readDaemonResponseText(
   response: Response,
 ): Promise<BoundedResponseText> {
   const declaredLength = response.headers.get("content-length");
