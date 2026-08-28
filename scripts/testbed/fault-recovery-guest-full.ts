@@ -674,6 +674,7 @@ export async function runFaultRecoveryGuest(options: {
       )?.inventoryId,
       "faulted slot inventoryId",
     );
+    const slotId = required(fixture?.slotId, `${options.fixtureKey} slotId`);
     const token = await adminToken(guestInput);
     const serviceApiBase = required(
       (guestInput.runtimeBootstrap as JsonRecord | undefined)
