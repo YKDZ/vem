@@ -407,19 +407,31 @@ export async function runSkuCatalogSyncGuest(options: {
       { kind: "touch", timeoutMs: 30_000 },
     );
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    await evaluateExpression(
-      client,
-      `(() => {
-        const el = document.querySelector('[data-test="catalog-product"][data-variant-id="${String(
-          targetVariant.id,
-        )}"]');
-        return el !== null;
-      })()`,
-    ).then((visible) => {
-      if (visible !== true) {
-        throw new Error("changed SKU product is not visible in the catalog");
+    const catalogVisibleDeadline = Date.now() + 45_000;
+    let catalogVisible = false;
+    do {
+      catalogVisible = Boolean(
+        await evaluateExpression(
+          client,
+          `Boolean(document.querySelector('[data-test="catalog-product"][data-variant-id="${String(
+            targetVariant.id,
+          )}"]'))`,
+        ),
+      );
+      if (!catalogVisible) {
+        await activateVisibleSelector(
+          client,
+          `[data-test="catalog-category"][data-category-key="${String(
+            targetFixture?.categoryKey ?? "socks",
+          )}"]:not(:disabled)`,
+          { kind: "touch", timeoutMs: 5_000 },
+        ).catch(() => undefined);
+        await sleep(500);
       }
-    });
+    } while (!catalogVisible && Date.now() < catalogVisibleDeadline);
+    if (!catalogVisible) {
+      throw new Error("changed SKU product is not visible in the catalog");
+    }
     const screenshotPath = join(
       dirname(localPath(options.outPath)),
       "sku-catalog-sync-artifacts",
