@@ -317,6 +317,22 @@ async function enterMaintenance(
     timeoutMs: 30_000,
     pollMs: 250,
   });
+  const entryDeadline = Date.now() + 30_000;
+  let entryReady = false;
+  while (Date.now() < entryDeadline && !entryReady) {
+    const state = (await evaluateExpression(
+      client,
+      `(() => ({
+        ready: document.readyState === "complete",
+        entry: Boolean(document.querySelector(${JSON.stringify(
+          MAINTENANCE_ENTRY_SELECTOR,
+        )})),
+      }))()`,
+    )) as JsonRecord | null;
+    if (state?.ready === true && state.entry === true) entryReady = true;
+    if (!entryReady) await sleep(250);
+  }
+  if (!entryReady) throw new Error("maintenance entry is unavailable");
   for (let count = 0; count < 7; count += 1) {
     const dispatched = await evaluateExpression(
       client,
