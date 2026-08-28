@@ -554,7 +554,12 @@ export async function runFaultRecoveryGuest(options: {
     report.runId = runId;
     report.machineCode = machineCode;
     evidence.baseline = {
-      platform: await platform(guestInput as GuestInputRecord, runId, machineCode, null),
+      platform: await platform(
+        guestInput as GuestInputRecord,
+        runId,
+        machineCode,
+        null,
+      ),
     };
     const baselineInventory = (
       rows(
@@ -564,9 +569,11 @@ export async function runFaultRecoveryGuest(options: {
     ).find(
       (candidate) =>
         candidate.slotId ===
-        ((
-          guestInput.fixtureAllocation as JsonRecord | undefined
-        )?.[options.fixtureKey] as JsonRecord | undefined)?.slotId,
+        (
+          (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
+            options.fixtureKey
+          ] as JsonRecord | undefined
+        )?.slotId,
     );
 
     stage = "start-mechanical-host-serial-session";
@@ -703,10 +710,9 @@ export async function runFaultRecoveryGuest(options: {
     ).catch(() => null);
     const transactionClearDeadline = Date.now() + 30_000;
     do {
-      const tx = (await daemonGet(
-        handoff,
-        "/v1/transactions/current",
-      ).catch(() => null)) as JsonRecord | null;
+      const tx = (await daemonGet(handoff, "/v1/transactions/current").catch(
+        () => null,
+      )) as JsonRecord | null;
       if (!tx?.orderId) break;
       await sleep(500);
     } while (Date.now() < transactionClearDeadline);
@@ -855,8 +861,9 @@ export async function runFaultRecoveryGuest(options: {
         machineCode,
         String(activeSession.sessionId),
       )) as JsonRecord;
-      const restoredInventory = (rows(restoredReport, "inventories") as JsonRecord[])
-        .find((candidate) => candidate.id === inventoryId);
+      const restoredInventory = (
+        rows(restoredReport, "inventories") as JsonRecord[]
+      ).find((candidate) => candidate.id === inventoryId);
       const currentQty = Number(restoredInventory?.onHandQty ?? -1);
       if (currentQty >= 0 && currentQty !== baselineQty) {
         evidence.restore = await fetchJson(
@@ -884,6 +891,7 @@ export async function runFaultRecoveryGuest(options: {
     await waitForRoute(client, "#/catalog", {
       timeoutMs: 15_000,
       pollMs: 250,
+      forbiddenRoutes: [],
     });
     await snapshot("catalog-after-recovery");
     await cleanup();
@@ -903,11 +911,9 @@ export async function runFaultRecoveryGuest(options: {
     throw error;
   } finally {
     if (guestInput && handoff) {
-      await daemonPost(
-        handoff,
-        "/v1/hardware/fault-reset",
-        { operatorNote: "testbed fault recovery cleanup" },
-      ).catch(() => undefined);
+      await daemonPost(handoff, "/v1/hardware/fault-reset", {
+        operatorNote: "testbed fault recovery cleanup",
+      }).catch(() => undefined);
     }
     await cleanup();
     writeJson(options.outPath, report);
