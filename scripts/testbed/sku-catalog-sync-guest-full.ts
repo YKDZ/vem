@@ -330,6 +330,16 @@ export async function runSkuCatalogSyncGuest(options: {
     }
     (report.evidence as JsonRecord).saleView = saleView;
     const attestationId = `sku-catalog-sync-${Date.now()}`;
+    const attestationSlots = (saleView.items as JsonRecord[]).map((item) => ({
+      slotId: String(item.slotId),
+      sku: String(item.sku ?? ""),
+      quantity: Number(
+        String(item.slotId) === targetSlotId
+          ? (targetFixture?.onHandQty ?? 5)
+          : item.physicalStock,
+      ),
+      enabled: true,
+    }));
     (report.evidence as JsonRecord).attestation = await daemonPost(
       handoff,
       "/v1/stock/attestation",
@@ -337,14 +347,7 @@ export async function runSkuCatalogSyncGuest(options: {
         attestationId,
         planogramVersion,
         operatorId: "testbed-sku-catalog-sync",
-        slots: [
-          {
-            slotId: targetSlotId,
-            sku: String(targetVariant.sku),
-            quantity: Number(targetFixture?.onHandQty ?? 5),
-            enabled: true,
-          },
-        ],
+        slots: attestationSlots,
       },
     );
     const attestationDeadline = Date.now() + 60_000;
