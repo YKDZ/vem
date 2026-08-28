@@ -288,6 +288,14 @@ function reportTrace(
       "evidence.ui.trace",
       recordValue(recordValue(reportRecord.evidence).ui).trace,
     ],
+    faultRecovery: [
+      "evidence.ui.trace",
+      recordValue(recordValue(reportRecord.evidence).ui).trace,
+    ],
+    skuRace: [
+      "evidence.ui.trace",
+      recordValue(recordValue(reportRecord.evidence).ui).trace,
+    ],
   }[track] as [string, unknown] | undefined;
   if (direct && nonEmptyArray(direct[1])) {
     return virtualRecord(
@@ -363,6 +371,14 @@ function reportLog(
       recordValue(reportRecord.serial).rawFrames,
     ],
     fulfillmentRecovery: ["evidence.platformLog", evidence.platformLog],
+    faultRecovery: [
+      "evidence.serial.rawFrames",
+      recordValue(reportRecord.evidence).serial.rawFrames,
+    ],
+    skuRace: [
+      "evidence.serial.rawFrames",
+      recordValue(reportRecord.evidence).serial.rawFrames,
+    ],
   }[track] as [string, unknown] | undefined;
   if (!source || !meaningfulLog(source[1])) return null;
   return virtualRecord(reportPath, source[0], "logs", track, source[1]);

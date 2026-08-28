@@ -174,6 +174,19 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     validator: "fulfillmentRecovery",
   }),
   descriptor({
+    name: "faultRecovery",
+    core: true,
+    restoreFixtureStock: true,
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/fault-recovery-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "fault-recovery.json",
+      artifactDirectory: "fault-recovery-artifacts",
+    },
+    validator: "faultRecovery",
+  }),
+  descriptor({
     name: "paymentRecovery",
     fixtureKey: "sale",
     allowActiveTransactionHandoff: true,
@@ -212,6 +225,52 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
       artifactDirectory: "stock-maintenance-artifacts",
     },
     validator: "stockMaintenance",
+  }),
+  descriptor({
+    name: "skuCatalogSync",
+    core: true,
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/sku-catalog-sync-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "sku-catalog-sync.json",
+      artifactDirectory: "sku-catalog-sync-artifacts",
+    },
+    validator: "skuCatalogSync",
+    evidence: {
+      passed: { trace: false, logs: false, screenshot: true },
+      failed: failedEvidence,
+    },
+  }),
+  descriptor({
+    name: "skuStockSync",
+    core: true,
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/sku-stock-sync-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "sku-stock-sync.json",
+      artifactDirectory: "sku-stock-sync-artifacts",
+    },
+    validator: "skuStockSync",
+    evidence: {
+      passed: { trace: false, logs: false, screenshot: false },
+      failed: failedEvidence,
+    },
+  }),
+  descriptor({
+    name: "skuRace",
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/sku-race-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "sku-race.json",
+      artifactDirectory: "sku-race-artifacts",
+    },
+    validator: "skuRace",
   }),
   descriptor({
     name: "hardwareLifecycle",

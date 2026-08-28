@@ -45,9 +45,10 @@ const SERIAL_SCENARIOS = Object.freeze({
   NORMAL: "normal",
   DELAYED_PICKUP: "delayed-pickup",
   E6: "e6",
+  MECHANICAL: "mechanical",
 });
 
-type SerialScenario = "normal" | "delayed-pickup" | "e6";
+type SerialScenario = "normal" | "delayed-pickup" | "e6" | "mechanical";
 
 interface ControlPlaneOptions {
   workspace: string;
@@ -337,7 +338,9 @@ function normalizeSerialScenario(value: unknown): SerialScenario {
   if (value == null) return SERIAL_SCENARIOS.NORMAL;
   const scenario = String(value).trim().toLowerCase();
   if (!Object.values(SERIAL_SCENARIOS).includes(scenario as SerialScenario)) {
-    throw new Error("serialScenario must be normal, delayed-pickup, or e6");
+    throw new Error(
+      "serialScenario must be normal, delayed-pickup, e6, or mechanical",
+    );
   }
   return scenario as SerialScenario;
 }
@@ -1172,6 +1175,10 @@ export async function waitForRawSerialFrame({
       VEND: ["VEND"],
       F0: ["VEND", "F0"],
       E6: ["VEND", "F0", "E5", "E5", "F1", "E6"],
+    },
+    [SERIAL_SCENARIOS.MECHANICAL]: {
+      VEND: ["VEND"],
+      E3: ["VEND", "E3"],
     },
   };
   const expected = scenarioExpected[scenario]?.[opcode];

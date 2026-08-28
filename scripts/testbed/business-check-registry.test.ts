@@ -21,9 +21,13 @@ describe("runtime business-check registry", () => {
         "presenceAndAudio",
         "ipcRecovery",
         "fulfillmentRecovery",
+        "faultRecovery",
         "paymentRecovery",
         "paymentProvider",
         "stockMaintenance",
+        "skuCatalogSync",
+        "skuStockSync",
+        "skuRace",
         "hardwareLifecycle",
         "localOperations",
         "environmentControl",
@@ -33,7 +37,14 @@ describe("runtime business-check registry", () => {
       BUSINESS_CHECK_REGISTRY.filter((descriptor) => descriptor.core).map(
         (descriptor) => descriptor.name,
       ),
-      ["sale", "implicitRecommendation", "stockMaintenance"],
+      [
+        "sale",
+        "implicitRecommendation",
+        "faultRecovery",
+        "stockMaintenance",
+        "skuCatalogSync",
+        "skuStockSync",
+      ],
     );
     assert.deepEqual(
       BUSINESS_CHECK_REGISTRY.filter(
@@ -50,8 +61,12 @@ describe("runtime business-check registry", () => {
         "presenceAndAudio",
         "ipcRecovery",
         "fulfillmentRecovery",
+        "faultRecovery",
         "paymentRecovery",
         "stockMaintenance",
+        "skuCatalogSync",
+        "skuStockSync",
+        "skuRace",
         "hardwareLifecycle",
         "localOperations",
         "environmentControl",
@@ -91,6 +106,66 @@ describe("runtime business-check registry", () => {
         (descriptor) => descriptor.name === "fulfillmentRecovery",
       )?.restoreFixtureStock,
       true,
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "faultRecovery",
+      )?.runner?.script,
+      "scripts/testbed/fault-recovery-guest-full.ts",
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "faultRecovery",
+      )?.core,
+      true,
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "faultRecovery",
+      )?.restoreFixtureStock,
+      true,
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuCatalogSync",
+      )?.runner?.script,
+      "scripts/testbed/sku-catalog-sync-guest-full.ts",
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuCatalogSync",
+      )?.core,
+      true,
+    );
+    assert.deepEqual(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuCatalogSync",
+      )?.evidence?.passed,
+      { trace: false, logs: false, screenshot: true },
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuStockSync",
+      )?.runner?.script,
+      "scripts/testbed/sku-stock-sync-guest-full.ts",
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuStockSync",
+      )?.core,
+      true,
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuRace",
+      )?.runner?.script,
+      "scripts/testbed/sku-race-guest-full.ts",
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "skuRace",
+      )?.core,
+      false,
     );
     const paymentProvider = BUSINESS_CHECK_REGISTRY.find(
       (descriptor) => descriptor.name === "paymentProvider",
@@ -221,7 +296,14 @@ describe("runtime business-check registry", () => {
       selectBusinessChecks({ mode: "fast" }).map(
         (descriptor) => descriptor.name,
       ),
-      ["sale", "implicitRecommendation", "stockMaintenance"],
+      [
+        "sale",
+        "implicitRecommendation",
+        "faultRecovery",
+        "stockMaintenance",
+        "skuCatalogSync",
+        "skuStockSync",
+      ],
     );
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast", focus: ["paymentProvider"] }).map(

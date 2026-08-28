@@ -631,12 +631,32 @@ function startSession(request: JsonRecord): JsonRecord {
         ? "pickup-timeout-success"
         : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "e6"
           ? "pickup-timeout-blocked"
+          : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "mechanical"
+            ? "mechanical-fault"
           : "normal",
       "--trace",
       "--f0-release-file",
       releaseF0Path,
       "--f2-release-file",
       releaseF2Path,
+      ...(process.env.VEM_LOCAL_TESTBED_FAULT_RESET_DOOR_CLOSE_MS
+        ? [
+            "--fault-reset-door-close-ms",
+            process.env.VEM_LOCAL_TESTBED_FAULT_RESET_DOOR_CLOSE_MS,
+          ]
+        : []),
+      ...(process.env.VEM_LOCAL_TESTBED_FAULT_RESET_Y_HOME_MS
+        ? [
+            "--fault-reset-y-home-ms",
+            process.env.VEM_LOCAL_TESTBED_FAULT_RESET_Y_HOME_MS,
+          ]
+        : []),
+      ...(process.env.VEM_LOCAL_TESTBED_FAULT_RESET_XY_HOME_MS
+        ? [
+            "--fault-reset-xy-home-ms",
+            process.env.VEM_LOCAL_TESTBED_FAULT_RESET_XY_HOME_MS,
+          ]
+        : []),
     ],
     {
       detached: true,
@@ -668,6 +688,8 @@ function startSession(request: JsonRecord): JsonRecord {
         ? "delayed-pickup"
         : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "e6"
           ? "e6"
+          : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "mechanical"
+            ? "mechanical"
           : "normal",
     journalPath,
     releaseF0Path,

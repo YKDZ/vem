@@ -450,6 +450,127 @@ function validateFulfillmentFailureTrack(
   );
 }
 
+function validateFaultRecoveryTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  if (
+    report?.schemaVersion !== "vem-fault-recovery-guest-full/v1" ||
+    report?.ok !== true
+  ) {
+    return failedTrack(
+      "faultRecovery",
+      "fault recovery",
+      reportPath,
+      "fault recovery track did not finish successfully",
+    );
+  }
+  const assertions = recordValue(report.assertions);
+  const evidence = recordValue(report.evidence);
+  const faultReset = recordValue(evidence.faultReset);
+  const capabilityAfter = recordValue(evidence.capabilityAfter);
+  const lockedAfter =
+    (arrayValue(capabilityAfter.blockers) as JsonRecord[]).some(
+      (blocker) => blocker.code === "WHOLE_MACHINE_LOCKED",
+    ) ?? false;
+  if (
+    assertions.mechanicalFaultRaisedLock !== true ||
+    assertions.maintenanceResetButtonCaptured !== true ||
+    assertions.faultResetAutoClearedLock !== true ||
+    assertions.refillRestoredSaleReady !== true ||
+    faultReset.wholeMachineLockCleared !== true ||
+    lockedAfter
+  ) {
+    return failedTrack(
+      "faultRecovery",
+      "fault recovery",
+      reportPath,
+      "fault recovery evidence is incomplete or the lock was not auto-cleared",
+      {
+        assertions,
+        faultReset,
+        capabilityAfter,
+      },
+    );
+  }
+  return passedTrack("faultRecovery", "fault recovery", reportPath, {
+    resetStatus: (faultReset.reset as JsonRecord | undefined)?.status,
+    wholeMachineLockCleared: faultReset.wholeMachineLockCleared,
+  });
+}
+
+function validateSkuCatalogSyncTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  const assertions = recordValue(report.assertions);
+  const passed =
+    report?.schemaVersion === "vem-sku-catalog-sync-guest-full/v1" &&
+    report?.ok === true &&
+    assertions.planogramAdopted === true &&
+    assertions.fortySlotSaleView === true &&
+    assertions.targetSkuChanged === true &&
+    assertions.catalogShowsChangedSku === true;
+  return passed
+    ? passedTrack("skuCatalogSync", "SKU catalog sync", reportPath, {
+        assertions: Object.keys(assertions).length,
+      })
+    : failedTrack(
+        "skuCatalogSync",
+        "SKU catalog sync",
+        reportPath,
+        "SKU catalog sync evidence is incomplete",
+        report ?? null,
+      );
+}
+
+function validateSkuStockSyncTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  const assertions = recordValue(report.assertions);
+  const passed =
+    report?.schemaVersion === "vem-sku-stock-sync-guest-full/v1" &&
+    report?.ok === true &&
+    assertions.platformAdjustReachedMachine === true &&
+    assertions.machineRefillReachedPlatform === true;
+  return passed
+    ? passedTrack("skuStockSync", "SKU stock sync", reportPath, {
+        assertions: Object.keys(assertions).length,
+      })
+    : failedTrack(
+        "skuStockSync",
+        "SKU stock sync",
+        reportPath,
+        "SKU stock sync evidence is incomplete",
+        report ?? null,
+      );
+}
+
+function validateSkuRaceTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  const assertions = recordValue(report.assertions);
+  const passed =
+    report?.schemaVersion === "vem-sku-race-guest-full/v1" &&
+    report?.ok === true &&
+    assertions.daemonFencedDuringActiveSale === true &&
+    assertions.saleCompletedWithOldPlanogram === true &&
+    assertions.newPlanogramAdoptedAfterSale === true;
+  return passed
+    ? passedTrack("skuRace", "SKU race", reportPath, {
+        assertions: Object.keys(assertions).length,
+      })
+    : failedTrack(
+        "skuRace",
+        "SKU race",
+        reportPath,
+        "SKU race evidence is incomplete",
+        report ?? null,
+      );
+}
+
 function validatePaymentRecoveryTrack(
   report: JsonRecord,
   reportPath: string,
@@ -1293,6 +1414,10 @@ export function validateBusinessCheckReport(
     presenceAndAudio: validatePresenceAndAudioTrack,
     ipcRecovery: validateIpcRecoveryTrack,
     fulfillmentRecovery: validateFulfillmentFailureTrack,
+    faultRecovery: validateFaultRecoveryTrack,
+    skuCatalogSync: validateSkuCatalogSyncTrack,
+    skuStockSync: validateSkuStockSyncTrack,
+    skuRace: validateSkuRaceTrack,
     paymentRecovery: validatePaymentRecoveryTrack,
     paymentProvider: validatePaymentProviderTrack,
     stockMaintenance: validateStockMaintenanceTrack,
