@@ -2500,8 +2500,7 @@ fn same_whole_machine_fault(
     current: &crate::state::store::WholeMachineMaintenanceLock,
     previous: &crate::state::store::WholeMachineMaintenanceLock,
 ) -> bool {
-    current.code == previous.code
-        && current.error_code == previous.error_code
+    current.code == previous.code && current.error_code == previous.error_code
 }
 
 async fn clear_whole_machine_maintenance_lock(
