@@ -349,6 +349,7 @@ async function enterMaintenance(
   await waitForRoute(client, "#/maintenance?source=operator", {
     timeoutMs: 30_000,
     pollMs: 250,
+    forbiddenRoutes: [],
   });
 }
 
@@ -613,12 +614,6 @@ export async function runFaultRecoveryGuest(options: {
     } else {
       throw new Error("dispense-failed result did not offer a return button");
     }
-    await evaluateExpression(client, "location.reload()");
-    await waitForRoute(client, "#/catalog", {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    await enablePageRuntime(client).catch(() => undefined);
     await enterMaintenance(client);
     await snapshot("maintenance-lock-reset-button");
     await evaluateExpression(
