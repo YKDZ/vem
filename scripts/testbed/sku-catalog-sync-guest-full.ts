@@ -127,13 +127,17 @@ export async function runSkuCatalogSyncGuest(options: {
       machineCode,
       null,
     )) as JsonRecord;
-    const machinesPage = (await adminRequest(
+    const machinesEnvelope = (await adminRequest(
       guestInput,
       token,
       "GET",
       "/machines?page=1&pageSize=100",
-    )) as { items?: unknown[] };
-    const machine = (machinesPage.items as JsonRecord[]).find(
+    )) as JsonRecord;
+    const machine = (
+      (machinesEnvelope.data as JsonRecord | undefined)?.items as
+        | JsonRecord[]
+        | undefined
+    )?.find(
       (candidate) => candidate.code === machineCode,
     );
     const machineId = required(machine?.id, "machine id");
@@ -155,12 +159,16 @@ export async function runSkuCatalogSyncGuest(options: {
       throw new Error("fixture platform report has no products or variants");
     }
 
-    const existingSlots = (await adminRequest(
+    const existingSlotsEnvelope = (await adminRequest(
       guestInput,
       token,
       "GET",
       `/machines/${machineId}/slots`,
-    )) as { items?: unknown[] };
+    )) as JsonRecord;
+    const existingSlots = {
+      items:
+        (existingSlotsEnvelope.data as JsonRecord | undefined)?.items ?? [],
+    };
     const slotsByKey = new Map<string, JsonRecord>();
     for (const slot of (existingSlots.items ?? []) as JsonRecord[]) {
       slotsByKey.set(`${slot.rowNo}:${slot.cellNo}`, slot);

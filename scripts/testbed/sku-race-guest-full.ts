@@ -117,13 +117,17 @@ export async function runSkuRaceGuest(options: {
       machineCode,
       null,
     )) as JsonRecord;
-    const machinesPage = (await adminRequest(
+    const machinesEnvelope = (await adminRequest(
       guestInput,
       token,
       "GET",
       "/machines?page=1&pageSize=100",
-    )) as { items?: unknown[] };
-    const machine = (machinesPage.items as JsonRecord[]).find(
+    )) as JsonRecord;
+    const machine = (
+      (machinesEnvelope.data as JsonRecord | undefined)?.items as
+        | JsonRecord[]
+        | undefined
+    )?.find(
       (candidate) => candidate.code === machineCode,
     );
     const machineId = required(machine?.id, "machine id");
