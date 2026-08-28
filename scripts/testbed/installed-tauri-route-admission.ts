@@ -118,7 +118,12 @@ export async function admitInstalledTauriCatalog(
         evaluateExpressionFn: evaluate,
       });
     } catch (error) {
-      if (!/^#\/result(?:\/|$)/.test(String(initialRoute ?? ""))) throw error;
+      const routeAtFailure = String(
+        await evaluate(client, "location.hash").catch(() =>
+          String(initialRoute ?? ""),
+        ),
+      );
+      if (!/^#\/result(?:\/|$)/.test(routeAtFailure)) throw error;
       staleResultFallback = true;
       await evaluate(client, 'location.hash = "#/catalog"');
       try {
