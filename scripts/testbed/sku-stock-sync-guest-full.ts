@@ -12,6 +12,7 @@ import {
   option,
   platform,
   required,
+  restoreBaselinePlanogramAndStock,
   rows,
   writeJson,
   type HandoffRecord,
@@ -105,6 +106,10 @@ export async function runSkuStockSyncGuest(options: {
       options.fixtureKey
     ] as JsonRecord | undefined;
     const slotId = required(fixture?.slotId, `${options.fixtureKey} slotId`);
+    const baselineSaleView = (await daemonGet(
+      handoff,
+      "/v1/sale-view",
+    )) as JsonRecord;
     const baselineReport = (await platform(
       guestInput,
       runId,
@@ -176,6 +181,20 @@ export async function runSkuStockSyncGuest(options: {
         `platform did not adopt machine refill: expected ${baselinePlatformQty + 15}, saw ${platformQtyAfterRefill}`,
       );
     }
+
+    const machine = (rows(baselineReport, "machines") as JsonRecord[]).find(
+      (candidate) => candidate.code === machineCode,
+    );
+    (report.evidence as JsonRecord).restore =
+      await restoreBaselinePlanogramAndStock({
+        guestInput,
+        handoff,
+        token,
+        machineId: required(machine?.id, "machine id"),
+        baselineSaleView,
+        fixtures:
+          (guestInput.fixtureAllocation as JsonRecord | undefined) ?? {},
+      });
 
     report.assertions = {
       platformAdjustReachedMachine: true,

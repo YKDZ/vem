@@ -177,6 +177,124 @@ export async function adminToken(input: GuestInputRecord): Promise<string> {
   return required(data?.accessToken, "admin access token");
 }
 
+export async function adminRequest(
+  input: GuestInputRecord,
+  token: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<unknown> {
+  const bootstrap = input.runtimeBootstrap as JsonRecord | undefined;
+  const base = required(
+    bootstrap?.provisioningApiBaseUrl,
+    "runtimeBootstrap.provisioningApiBaseUrl",
+  ).replace(/\/+$/, "");
+  return fetchJson(`${base}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+export async function restoreBaselinePlanogramAndStock({
+  guestInput,
+  handoff,
+  token,
+  machineId,
+  baselineSaleView,
+  fixtures,
+}: {
+  guestInput: GuestInputRecord;
+  handoff: HandoffRecord;
+  token: string;
+  machineId: string;
+  baselineSaleView: JsonRecord;
+  fixtures: JsonRecord;
+}): Promise<JsonRecord> {
+  const items = (baselineSaleView.items as JsonRecord[] | undefined) ?? [];
+  const version = `PLAN-RESTORE-${Date.now()}`;
+  const slots = items.map((item) => ({
+    slotId: item.slotId,
+    rowNo: item.rowNo,
+    cellNo: item.cellNo,
+    capacity: item.capacity,
+    parLevel: item.parLevel,
+    inventoryId: item.inventoryId,
+    variantId: item.variantId,
+    productId: item.productId,
+    productName: item.productName,
+    productDescription: item.productDescription,
+    coverImageUrl: item.coverImageUrl,
+    categoryId: item.categoryId,
+    categoryName: item.categoryName,
+    sku: item.sku,
+    size: item.size,
+    color: item.color,
+    priceCents: item.priceCents,
+    productSortOrder: item.productSortOrder,
+    targetGender: item.targetGender,
+  }));
+  await adminRequest(
+    guestInput,
+    token,
+    "POST",
+    `/machines/${machineId}/planogram-versions`,
+    { planogramVersion: version, slots },
+  );
+  const adoptDeadline = Date.now() + 90_000;
+  let saleView: JsonRecord | null = null;
+  do {
+    saleView = (await daemonGet(handoff, "/v1/sale-view")) as JsonRecord;
+    if (saleView.planogramVersion === version) break;
+    await sleep(1_000);
+  } while (Date.now() < adoptDeadline);
+  if (saleView?.planogramVersion !== version) {
+    throw new Error(
+      `baseline planogram restore was not adopted: ${String(saleView?.planogramVersion)}`,
+    );
+  }
+  saleView = saleView as JsonRecord;
+  const fixtureEntries = Object.values(fixtures) as JsonRecord[];
+  for (const fixture of fixtureEntries) {
+    const slotId = String(fixture.slotId ?? "");
+    if (!slotId) continue;
+    const item = ((saleView.items as JsonRecord[]) ?? []).find(
+      (candidate) => candidate.slotId === slotId,
+    );
+    if (!item) continue;
+    const desired = Number(fixture.onHandQty);
+    const current = Number(item.saleableStock ?? item.physicalStock ?? -1);
+    if (current >= 0 && current !== desired) {
+      await adminRequest(guestInput, token, "POST", "/inventories/adjust", {
+        inventoryId: item.inventoryId,
+        deltaQty: desired - current,
+        note: "baseline fixture restore",
+      });
+    }
+  }
+  const stockDeadline = Date.now() + 60_000;
+  do {
+    const view = (await daemonGet(handoff, "/v1/sale-view")) as JsonRecord;
+    saleView = view;
+    const ready = fixtureEntries.every((fixture) => {
+      const slotId = String(fixture.slotId ?? "");
+      const item = ((view.items as JsonRecord[]) ?? []).find(
+        (candidate) => candidate.slotId === slotId,
+      );
+      return (
+        item?.slotSalesState === "sale_ready" &&
+        Number(item?.saleableStock ?? -1) === Number(fixture.onHandQty)
+      );
+    });
+    if (ready) break;
+    await sleep(1_000);
+  } while (Date.now() < stockDeadline);
+  return { planogramVersion: version, saleView };
+}
+
 export async function selectMockPaymentAndSubmit(
   client: InstanceType<typeof CdpClient>,
 ): Promise<void> {
@@ -360,8 +478,8 @@ export async function runFaultRecoveryGuest(options: {
   outPath: string;
   fixtureKey: string;
 }): Promise<JsonRecord> {
-  let guestInput: GuestInputRecord | null = null;
-  let handoff: HandoffRecord | null = null;
+  let guestInput!: GuestInputRecord;
+  let handoff!: HandoffRecord;
   let client: InstanceType<typeof CdpClient> | null = null;
   let session: JsonRecord | null = null;
   let cleaned = false;
@@ -436,7 +554,7 @@ export async function runFaultRecoveryGuest(options: {
     report.runId = runId;
     report.machineCode = machineCode;
     evidence.baseline = {
-      platform: await platform(guestInput, runId, machineCode, null),
+      platform: await platform(guestInput as GuestInputRecord, runId, machineCode, null),
     };
     const baselineInventory = (
       rows(

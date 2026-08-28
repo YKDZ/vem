@@ -15,6 +15,7 @@ import {
   readPaymentSurface,
   readUi,
   required,
+  restoreBaselinePlanogramAndStock,
   rows,
   selectMockPaymentAndSubmit,
   waitForCommand,
@@ -357,6 +358,16 @@ export async function runSkuRaceGuest(options: {
       );
     }
     (report.evidence as JsonRecord).order = order;
+    (report.evidence as JsonRecord).restore =
+      await restoreBaselinePlanogramAndStock({
+        guestInput,
+        handoff,
+        token,
+        machineId,
+        baselineSaleView: oldSaleView,
+        fixtures:
+          (guestInput.fixtureAllocation as JsonRecord | undefined) ?? {},
+      });
     report.assertions = {
       daemonFencedDuringActiveSale: true,
       saleCompletedWithOldPlanogram: true,

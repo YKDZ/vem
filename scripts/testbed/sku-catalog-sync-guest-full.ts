@@ -12,6 +12,7 @@ import {
   option,
   platform,
   required,
+  restoreBaselinePlanogramAndStock,
   rows,
   writeJson,
   type HandoffRecord,
@@ -131,6 +132,11 @@ export async function runSkuCatalogSyncGuest(options: {
     );
     const machineId = required(machine?.id, "machine id");
     report.machineId = machineId;
+    const baselineSaleView = (await daemonGet(
+      handoff,
+      "/v1/sale-view",
+    )) as JsonRecord;
+    (report.evidence as JsonRecord).baselineSaleView = baselineSaleView;
 
     const variants = rows(baselineReport, "product_variants") as JsonRecord[];
     const products = rows(baselineReport, "products") as JsonRecord[];
@@ -349,6 +355,16 @@ export async function runSkuCatalogSyncGuest(options: {
       },
     });
     (report.evidence as JsonRecord).screenshot = screenshotPath;
+    (report.evidence as JsonRecord).restore =
+      await restoreBaselinePlanogramAndStock({
+        guestInput,
+        handoff,
+        token,
+        machineId,
+        baselineSaleView,
+        fixtures:
+          (guestInput.fixtureAllocation as JsonRecord | undefined) ?? {},
+      });
     report.assertions = {
       planogramAdopted: true,
       fortySlotSaleView: true,
