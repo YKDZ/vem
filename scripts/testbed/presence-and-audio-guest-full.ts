@@ -1080,7 +1080,7 @@ async function submitDuplicateStablePresenceAction(
       `duplicate stable-presence action was not deduplicated: ${JSON.stringify(second)}`,
     );
   }
-  return { first, second, actionId };
+  return { first, second, actionId, outcome: second?.outcome };
 }
 
 function defaultDependencies(): PresenceAudioDependencies {
