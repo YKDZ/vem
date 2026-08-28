@@ -2501,10 +2501,6 @@ fn same_whole_machine_fault(
     previous: &crate::state::store::WholeMachineMaintenanceLock,
 ) -> bool {
     current.code == previous.code
-        && current.source == previous.source
-        && current.order_no == previous.order_no
-        && current.command_no == previous.command_no
-        && current.slot_id == previous.slot_id
         && current.error_code == previous.error_code
 }
 
