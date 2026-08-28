@@ -12,12 +12,10 @@ import {
   daemonGet,
   fetchJson,
   option,
-  platform,
   readPaymentSurface,
   readUi,
   required,
   restoreBaselinePlanogramAndStock,
-  rows,
   selectMockPaymentAndSubmit,
   waitForCommand,
   writeJson,
@@ -344,21 +342,35 @@ export async function runSkuRaceGuest(options: {
       );
     }
     (report.evidence as JsonRecord).saleViewAfter = saleViewAfter;
-    const finalReport = (await platform(
+    const orderDetail = (await adminRequest(
       guestInput,
-      runId,
-      machineCode,
-      sessionId,
+      token,
+      "GET",
+      `/orders/${sale.orderId}`,
     )) as JsonRecord;
-    const order = (rows(finalReport, "orders") as JsonRecord[]).find(
-      (candidate) => candidate.id === sale.orderId,
-    );
-    if (String(order?.planogramVersion ?? "") !== oldPlanogramVersion) {
+    const orderData = (orderDetail.data as JsonRecord | undefined) ?? {};
+    const orderItems = (orderData.items as JsonRecord[] | undefined) ?? [];
+    const orderItem =
+      orderItems.find(
+        (candidate) =>
+          String(candidate.variantId) === String(currentVariant?.id),
+      ) ?? orderItems[0];
+    const snapshot =
+      (orderItem?.productSnapshot as JsonRecord | undefined) ?? {};
+    if (String(snapshot.planogramVersion ?? "") !== oldPlanogramVersion) {
       throw new Error(
-        `sale order did not retain the old planogram: ${String(order?.planogramVersion)}`,
+        `sale order did not retain the old planogram: ${String(snapshot.planogramVersion)}`,
       );
     }
-    (report.evidence as JsonRecord).order = order;
+    if (
+      !orderItem ||
+      String(orderItem.variantId ?? "") !== String(currentVariant?.id)
+    ) {
+      throw new Error(
+        `sale order item did not retain the old variant: ${JSON.stringify(orderItem ?? null)}`,
+      );
+    }
+    (report.evidence as JsonRecord).orderDetail = orderDetail;
     (report.evidence as JsonRecord).restore =
       await restoreBaselinePlanogramAndStock({
         guestInput,

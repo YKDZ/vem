@@ -236,10 +236,29 @@ export async function runSkuCatalogSyncGuest(options: {
     const currentVariant = currentInventory
       ? variantById.get(String(currentInventory.variantId))
       : null;
+    const categoryLabelForFixture = (fixtureKey?: string): string => {
+      switch (fixtureKey) {
+        case "tshirts":
+          return "T恤";
+        case "socks":
+          return "袜子";
+        case "underwear":
+          return "内裤";
+        default:
+          return "";
+      }
+    };
+    const targetCategoryLabel = categoryLabelForFixture(
+      String(targetFixture?.categoryKey ?? ""),
+    );
     const targetVariant = variants.find(
       (candidate) =>
         String(candidate.id) !== String(currentVariant?.id) &&
-        candidate.status === "active",
+        candidate.status === "active" &&
+        (targetCategoryLabel === "" ||
+          categoryNameFor(
+            String(productById.get(String(candidate.productId))?.name ?? ""),
+          ) === targetCategoryLabel),
     ) as JsonRecord | undefined;
     if (!targetVariant) throw new Error("no replacement variant available");
     const planogramVersion = `PLAN-SKU-CATALOG-${Date.now()}`;
