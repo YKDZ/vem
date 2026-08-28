@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import {
+  adminListAll,
   adminToken,
   control,
   daemonGet,
@@ -117,17 +118,10 @@ export async function runSkuRaceGuest(options: {
       machineCode,
       null,
     )) as JsonRecord;
-    const machinesEnvelope = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      "/machines?page=1&pageSize=100",
-    )) as JsonRecord;
-    const machine = (
-      (machinesEnvelope.data as JsonRecord | undefined)?.items as
-        | JsonRecord[]
-        | undefined
-    )?.find((candidate) => candidate.code === machineCode);
+    const machines = await adminListAll(guestInput, token, "/machines");
+    const machine = machines.find(
+      (candidate) => candidate.code === machineCode,
+    );
     const machineId = required(machine?.id, "machine id");
     const fixture = (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
       options.fixtureKey
@@ -136,26 +130,8 @@ export async function runSkuRaceGuest(options: {
       fixture?.slotId,
       `${options.fixtureKey} slotId`,
     );
-    const productsEnvelope = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      "/products?page=1&pageSize=100",
-    )) as JsonRecord;
-    const variantsEnvelope = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      "/product-variants?page=1&pageSize=100",
-    )) as JsonRecord;
-    const products =
-      ((productsEnvelope.data as JsonRecord | undefined)?.items as
-        | JsonRecord[]
-        | undefined) ?? [];
-    const variants =
-      ((variantsEnvelope.data as JsonRecord | undefined)?.items as
-        | JsonRecord[]
-        | undefined) ?? [];
+    const products = await adminListAll(guestInput, token, "/products");
+    const variants = await adminListAll(guestInput, token, "/product-variants");
     const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
     const targetInventory = inventoriesRows.find(
       (inventory) => inventory.slotId === targetSlotId,
@@ -303,12 +279,12 @@ export async function runSkuRaceGuest(options: {
           : item.color,
       priceCents:
         item.slotId === targetSlotId
-          ? Number(replacementVariant.price_cents)
+          ? Number(replacementVariant.priceCents)
           : item.priceCents,
       productSortOrder: item.productSortOrder,
       targetGender:
         item.slotId === targetSlotId
-          ? (replacementVariant.target_gender ?? null)
+          ? (replacementVariant.targetGender ?? null)
           : item.targetGender,
     }));
     (report.evidence as JsonRecord).publishedDuringSale = await adminRequest(

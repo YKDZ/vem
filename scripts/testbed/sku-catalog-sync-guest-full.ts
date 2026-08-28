@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import {
+  adminListAll,
   adminToken,
   daemonGet,
   fetchJson,
@@ -127,17 +128,10 @@ export async function runSkuCatalogSyncGuest(options: {
       machineCode,
       null,
     )) as JsonRecord;
-    const machinesEnvelope = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      "/machines?page=1&pageSize=100",
-    )) as JsonRecord;
-    const machine = (
-      (machinesEnvelope.data as JsonRecord | undefined)?.items as
-        | JsonRecord[]
-        | undefined
-    )?.find((candidate) => candidate.code === machineCode);
+    const machines = await adminListAll(guestInput, token, "/machines");
+    const machine = machines.find(
+      (candidate) => candidate.code === machineCode,
+    );
     const machineId = required(machine?.id, "machine id");
     report.machineId = machineId;
     const baselineSaleView = (await daemonGet(
@@ -146,26 +140,8 @@ export async function runSkuCatalogSyncGuest(options: {
     )) as JsonRecord;
     (report.evidence as JsonRecord).baselineSaleView = baselineSaleView;
 
-    const productsEnvelope = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      "/products?page=1&pageSize=100",
-    )) as JsonRecord;
-    const variantsEnvelope = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      "/product-variants?page=1&pageSize=100",
-    )) as JsonRecord;
-    const products =
-      ((productsEnvelope.data as JsonRecord | undefined)?.items as
-        | JsonRecord[]
-        | undefined) ?? [];
-    const variants =
-      ((variantsEnvelope.data as JsonRecord | undefined)?.items as
-        | JsonRecord[]
-        | undefined) ?? [];
+    const products = await adminListAll(guestInput, token, "/products");
+    const variants = await adminListAll(guestInput, token, "/product-variants");
     const categoryNameFor = (productName: string): string => {
       if (productName.includes("T恤") || productName.includes("T·"))
         return "T恤";
@@ -296,9 +272,9 @@ export async function runSkuCatalogSyncGuest(options: {
         sku: String(variant.sku),
         size: String(variant.size ?? ""),
         color: String(variant.color ?? ""),
-        priceCents: Number(variant.price_cents),
-        productSortOrder: Number(product.sort_order ?? 0),
-        targetGender: variant.target_gender ?? null,
+        priceCents: Number(variant.priceCents),
+        productSortOrder: Number(product.sortOrder ?? 0),
+        targetGender: variant.targetGender ?? null,
       };
     });
     (report.evidence as JsonRecord).published = await adminRequest(

@@ -199,6 +199,31 @@ export async function adminRequest(
   });
 }
 
+export async function adminListAll(
+  input: GuestInputRecord,
+  token: string,
+  path: string,
+): Promise<JsonRecord[]> {
+  const pageSize = 100;
+  const items: JsonRecord[] = [];
+  for (let page = 1; ; page += 1) {
+    const separator = path.includes("?") ? "&" : "?";
+    const envelope = (await adminRequest(
+      input,
+      token,
+      "GET",
+      `${path}${separator}page=${page}&pageSize=${pageSize}`,
+    )) as JsonRecord;
+    const pageItems = (envelope.data as JsonRecord | undefined)?.items;
+    if (!Array.isArray(pageItems)) {
+      throw new Error(`admin list response for ${path} has no items array`);
+    }
+    items.push(...(pageItems as JsonRecord[]));
+    if (pageItems.length < pageSize) break;
+  }
+  return items;
+}
+
 export async function restoreBaselinePlanogramAndStock({
   guestInput,
   handoff,
