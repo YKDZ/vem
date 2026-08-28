@@ -581,6 +581,22 @@ export async function runFaultRecoveryGuest(options: {
     }
 
     stage = "capture-maintenance-lock-ui";
+    const canReturnToCatalog = await evaluateExpression(
+      client,
+      `document.querySelector(".failure-return-button") !== null`,
+    );
+    if (canReturnToCatalog) {
+      await activateVisibleSelector(client, ".failure-return-button", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      });
+      await waitForRoute(client, "#/catalog", {
+        timeoutMs: 10_000,
+        pollMs: 100,
+      });
+    } else {
+      throw new Error("dispense-failed result did not offer a return button");
+    }
     await enterMaintenance(client);
     await snapshot("maintenance-lock-reset-button");
     await evaluateExpression(
