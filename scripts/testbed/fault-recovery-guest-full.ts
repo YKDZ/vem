@@ -724,7 +724,6 @@ export async function runFaultRecoveryGuest(options: {
     if (client) await snapshot("failure").catch(() => undefined);
     throw error;
   } finally {
-    await cleanup();
     if (guestInput && handoff) {
       await daemonPost(
         handoff,
@@ -732,6 +731,7 @@ export async function runFaultRecoveryGuest(options: {
         { operatorNote: "testbed fault recovery cleanup" },
       ).catch(() => undefined);
     }
+    await cleanup();
     writeJson(options.outPath, report);
     await client?.close().catch(() => undefined);
   }
