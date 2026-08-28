@@ -668,7 +668,7 @@ export async function runFaultRecoveryGuest(options: {
         ?.provisioningApiBaseUrl,
       "runtimeBootstrap.provisioningApiBaseUrl",
     ).replace(/\/+$/, "");
-    evidence.refill = await fetchJson(`${serviceApiBase}/inventories/adjust`, {
+    evidence.refillAdjust = await fetchJson(`${serviceApiBase}/inventories/adjust`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -676,6 +676,15 @@ export async function runFaultRecoveryGuest(options: {
       },
       body: JSON.stringify({ inventoryId, deltaQty: 10 }),
     });
+    evidence.refillTask = await daemonPost(
+      handoff,
+      "/v1/stock/maintenance-task",
+      {
+        taskId: `fault-recovery-refill-${Date.now()}`,
+        mode: "routine_refill",
+        slots: [{ slotId, addition: 10 }],
+      },
+    );
     const saleReadyDeadline = Date.now() + 60_000;
     let saleViewAfter: JsonRecord | null = null;
     do {
