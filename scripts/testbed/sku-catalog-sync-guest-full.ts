@@ -127,7 +127,13 @@ export async function runSkuCatalogSyncGuest(options: {
       machineCode,
       null,
     )) as JsonRecord;
-    const machine = (rows(baselineReport, "machines") as JsonRecord[]).find(
+    const machinesPage = (await adminRequest(
+      guestInput,
+      token,
+      "GET",
+      "/machines?page=1&pageSize=100",
+    )) as { items?: unknown[] };
+    const machine = (machinesPage.items as JsonRecord[]).find(
       (candidate) => candidate.code === machineCode,
     );
     const machineId = required(machine?.id, "machine id");

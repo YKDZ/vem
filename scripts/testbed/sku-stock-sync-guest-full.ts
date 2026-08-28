@@ -185,7 +185,13 @@ export async function runSkuStockSyncGuest(options: {
       );
     }
 
-    const machine = (rows(baselineReport, "machines") as JsonRecord[]).find(
+    const machinesPage = (await adminRequest(
+      guestInput,
+      token,
+      "GET",
+      "/machines?page=1&pageSize=100",
+    )) as { items?: unknown[] };
+    const machine = (machinesPage.items as JsonRecord[]).find(
       (candidate) => candidate.code === machineCode,
     );
     (report.evidence as JsonRecord).restore =

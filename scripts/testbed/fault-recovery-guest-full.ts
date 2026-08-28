@@ -867,6 +867,15 @@ export async function runFaultRecoveryGuest(options: {
         );
       }
     }
+    await activateVisibleSelector(
+      client,
+      "[data-test='maintenance-return-catalog']",
+      { kind: "touch", timeoutMs: 10_000 },
+    );
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs: 15_000,
+      pollMs: 250,
+    });
     await snapshot("catalog-after-recovery");
     await cleanup();
     report.assertions = {
