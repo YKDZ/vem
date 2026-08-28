@@ -19,9 +19,12 @@ import {
   gt,
   inArray,
   inventories,
+  inventoryMovements,
+  inventoryReservations,
   isNotNull,
   isNull,
   lte,
+  ne,
   or,
   machineRawStockMovementConflicts,
   machineClaimCodes,
@@ -1491,6 +1494,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         .returning();
 
       if (version) {
+        await this.remapInventoriesToActivePlanogramInTx(
+          tx,
+          machine.id,
+          version.id,
+          version.planogramVersion,
+          now,
+        );
         return version;
       }
 
@@ -1503,6 +1513,72 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     });
 
     return planogramVersionSnapshot(machine, activated, []);
+  }
+
+  private async remapInventoriesToActivePlanogramInTx(
+    tx: DrizzleTransaction,
+    machineId: string,
+    planogramVersionId: string,
+    planogramVersion: string,
+    now: Date,
+  ): Promise<void> {
+    const mismatches = await tx
+      .select({
+        slotId: machinePlanogramSlots.slotId,
+        inventoryId: machinePlanogramSlots.inventoryId,
+        newVariantId: machinePlanogramSlots.variantId,
+        oldVariantId: inventories.variantId,
+        onHandQty: inventories.onHandQty,
+      })
+      .from(machinePlanogramSlots)
+      .innerJoin(
+        inventories,
+        eq(inventories.slotId, machinePlanogramSlots.slotId),
+      )
+      .where(
+        and(
+          eq(
+            machinePlanogramSlots.machinePlanogramVersionId,
+            planogramVersionId,
+          ),
+          eq(inventories.machineId, machineId),
+          ne(inventories.variantId, machinePlanogramSlots.variantId),
+        ),
+      );
+
+    await Promise.all(
+      mismatches.map(async (mismatch) => {
+        await tx
+          .update(inventories)
+          .set({
+            variantId: mismatch.newVariantId,
+            onHandQty: 0,
+            reservedQty: 0,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(inventories.id, mismatch.inventoryId),
+              eq(inventories.slotId, mismatch.slotId),
+            ),
+          );
+        await tx
+          .update(inventoryReservations)
+          .set({ status: "released", updatedAt: now })
+          .where(
+            and(
+              eq(inventoryReservations.inventoryId, mismatch.inventoryId),
+              eq(inventoryReservations.status, "active"),
+            ),
+          );
+        await tx.insert(inventoryMovements).values({
+          inventoryId: mismatch.inventoryId,
+          deltaQty: -mismatch.onHandQty,
+          reason: "hardware_sync",
+          note: `planogram_remap:${planogramVersion}`,
+        });
+      }),
+    );
   }
 
   async handleMachineMessage(topic: string, payload: string): Promise<void> {

@@ -2726,6 +2726,9 @@ describe("MachinesService planogram lifecycle", () => {
         })
         .mockReturnValueOnce({
           from: () => ({ where: () => ({ limit: async () => [] }) }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({ innerJoin: () => ({ where: async () => [] }) }),
         }),
       update: vi
         .fn()
@@ -2758,6 +2761,101 @@ describe("MachinesService planogram lifecycle", () => {
       planogramVersion: "PLAN-1",
       status: "active",
       activeAt: expect.any(String),
+    });
+  });
+
+  it("remaps inventory variant and zeroes stock when acknowledgement activates a changed slot", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const published = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-1",
+      status: "published",
+      publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+      acknowledgedAt: null,
+      activeAt: null,
+      createdAt: new Date("2026-06-04T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:00:00.000Z"),
+    };
+    const activated = {
+      ...published,
+      status: "active",
+      acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
+      activeAt: new Date("2026-06-04T12:05:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:05:00.000Z"),
+    };
+    const mismatch = {
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      newVariantId: "550e8400-e29b-41d4-a716-446655440003",
+      oldVariantId: "550e8400-e29b-41d4-a716-446655440004",
+      onHandQty: 5,
+    };
+    const retireSet = vi.fn().mockReturnValue({ where: async () => undefined });
+    const activateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [activated] }),
+    });
+    const inventorySet = vi.fn().mockReturnValue({
+      where: async () => undefined,
+    });
+    const reservationSet = vi.fn().mockReturnValue({
+      where: async () => undefined,
+    });
+    const movementValues = vi.fn().mockResolvedValue(undefined);
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ limit: async () => [published] }) }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ limit: async () => [] }) }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({ innerJoin: () => ({ where: async () => [mismatch] }) }),
+        }),
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: retireSet })
+        .mockReturnValueOnce({ set: activateSet })
+        .mockReturnValueOnce({ set: inventorySet })
+        .mockReturnValueOnce({ set: reservationSet }),
+      insert: vi.fn().mockReturnValueOnce({ values: movementValues }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const result = await service.acknowledgeMachinePlanogramVersion(
+      "M001",
+      "PLAN-1",
+    );
+
+    expect(inventorySet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variantId: mismatch.newVariantId,
+        onHandQty: 0,
+        reservedQty: 0,
+      }),
+    );
+    expect(movementValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inventoryId: mismatch.inventoryId,
+        deltaQty: -5,
+        reason: "hardware_sync",
+        note: "planogram_remap:PLAN-1",
+      }),
+    );
+    expect(result).toMatchObject({
+      planogramVersion: "PLAN-1",
+      status: "active",
     });
   });
 
