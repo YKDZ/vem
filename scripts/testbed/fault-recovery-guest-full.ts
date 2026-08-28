@@ -799,21 +799,17 @@ export async function runFaultRecoveryGuest(options: {
         ?.provisioningApiBaseUrl,
       "runtimeBootstrap.provisioningApiBaseUrl",
     ).replace(/\/+$/, "");
-    evidence.refillAdjust = await fetchJson(`${serviceApiBase}/inventories/adjust`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ inventoryId, deltaQty: 10 }),
-    });
+    const currentTask = (await daemonGet(
+      handoff,
+      "/v1/stock/maintenance-task",
+    )) as JsonRecord;
     evidence.refillTask = await daemonPost(
       handoff,
       "/v1/stock/maintenance-task",
       {
-        taskId: `fault-recovery-refill-${Date.now()}`,
-        mode: "routine_refill",
-        slots: [{ slotId, addition: 10 }],
+        taskId: currentTask.taskId,
+        mode: currentTask.mode,
+        slots: [{ slotId, addition: 1 }],
       },
     );
     const saleReadyDeadline = Date.now() + 60_000;

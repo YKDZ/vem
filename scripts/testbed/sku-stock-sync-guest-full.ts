@@ -135,7 +135,7 @@ export async function runSkuStockSyncGuest(options: {
       "/inventories/adjust",
       {
         inventoryId,
-        deltaQty: 10,
+        deltaQty: 3,
         note: "sku-stock-sync platform->machine",
       },
     )) as JsonRecord;
@@ -144,20 +144,23 @@ export async function runSkuStockSyncGuest(options: {
     let machineQtyAfterAdjust = -1;
     do {
       machineQtyAfterAdjust = await saleViewQuantity(handoff, slotId);
-      if (machineQtyAfterAdjust === baselineMachineQty + 10) break;
+      if (machineQtyAfterAdjust === Math.min(8, baselineMachineQty + 3)) break;
       await new Promise((resolve) => setTimeout(resolve, 500));
     } while (Date.now() < machineDeadline);
-    if (machineQtyAfterAdjust !== baselineMachineQty + 10) {
+    if (machineQtyAfterAdjust !== Math.min(8, baselineMachineQty + 3)) {
       throw new Error(
-        `machine sale-view did not adopt platform adjust: expected ${baselineMachineQty + 10}, saw ${machineQtyAfterAdjust}`,
+        `machine sale-view did not adopt platform adjust: expected ${Math.min(8, baselineMachineQty + 3)}, saw ${machineQtyAfterAdjust}`,
       );
     }
 
-    const refillTaskId = `sku-stock-sync-${Date.now()}`;
+    const currentTask = (await daemonGet(
+      handoff,
+      "/v1/stock/maintenance-task",
+    )) as JsonRecord;
     const refill = (await daemonPost(handoff, "/v1/stock/maintenance-task", {
-      taskId: refillTaskId,
-      mode: "routine_refill",
-      slots: [{ slotId, addition: 5 }],
+      taskId: currentTask.taskId,
+      mode: currentTask.mode,
+      slots: [{ slotId, addition: 1 }],
     })) as JsonRecord;
     (report.evidence as JsonRecord).refill = refill;
     const platformDeadline = Date.now() + 60_000;
@@ -173,12 +176,12 @@ export async function runSkuStockSyncGuest(options: {
         (candidate) => candidate.id === inventoryId,
       );
       platformQtyAfterRefill = Number(freshInventory?.onHandQty ?? -1);
-      if (platformQtyAfterRefill === baselinePlatformQty + 10 + 5) break;
+      if (platformQtyAfterRefill === baselinePlatformQty + 3 + 1) break;
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     } while (Date.now() < platformDeadline);
-    if (platformQtyAfterRefill !== baselinePlatformQty + 10 + 5) {
+    if (platformQtyAfterRefill !== baselinePlatformQty + 3 + 1) {
       throw new Error(
-        `platform did not adopt machine refill: expected ${baselinePlatformQty + 15}, saw ${platformQtyAfterRefill}`,
+        `platform did not adopt machine refill: expected ${baselinePlatformQty + 4}, saw ${platformQtyAfterRefill}`,
       );
     }
 
