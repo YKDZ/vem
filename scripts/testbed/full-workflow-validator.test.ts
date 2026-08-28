@@ -1139,7 +1139,7 @@ function presenceAndAudioReport() {
             capturedAt: "2026-07-22T08:00:05.000Z",
           },
           duplicateSameEdge: {
-            actionId: "presence-1:arrival",
+            actionId: "session-nonce:presence-1:arrival",
             outcome: "deduplicated",
           },
         },
