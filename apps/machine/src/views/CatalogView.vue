@@ -4,6 +4,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
 import type { ProductRecommendationProjection } from "@/recommendation/implicit-recommendation-session";
 import type { MachineCatalogItem } from "@/types/catalog";
+import {
+  genderForItem,
+  genderLabelForFilter,
+  type ProductGenderFilter,
+} from "@/catalog/gender-filter";
 
 import carouselImage1 from "@/assets/home/carousel-1.jpg";
 import carouselImage2 from "@/assets/home/carousel-2.jpg";
@@ -61,7 +66,6 @@ const activeCarouselIndex = ref(0);
 const carouselSwipeStartX = ref<number | null>(null);
 let carouselAutoAdvanceTimer: number | null = null;
 
-type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
 type CatalogSelectionKey = CatalogTopCategoryKey | "other";
 
 type DisplayProduct = {
@@ -280,24 +284,6 @@ function backToHome(): void {
   selectedTopCategoryKey.value = null;
   activeGenderFilter.value = "all";
   customerJourneyStore.leaveCategory();
-}
-
-function genderForItem(item: MachineCatalogItem): ProductGenderFilter {
-  if (item.targetGender === "male" || item.targetGender === "female") {
-    return item.targetGender;
-  }
-  const text = `${item.productName} ${item.categoryName ?? ""}`;
-  if (text.includes("儿童") || text.includes("童")) return "kids";
-  if (text.includes("老年") || text.includes("老人")) return "elder";
-  return "all";
-}
-
-function genderLabelForFilter(filter: ProductGenderFilter): string {
-  if (filter === "male") return "男款";
-  if (filter === "female") return "女款";
-  if (filter === "kids") return "儿童";
-  if (filter === "elder") return "老人";
-  return "通用";
 }
 
 function fallbackImageForCategory(key: CatalogSelectionKey): string {
