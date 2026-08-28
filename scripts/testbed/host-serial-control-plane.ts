@@ -1021,6 +1021,7 @@ const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
   E5: "controller-to-daemon",
   F1: "controller-to-daemon",
   AF: "controller-to-daemon",
+  E3: "controller-to-daemon",
   E6: "controller-to-daemon",
   F2: "controller-to-daemon",
 });
