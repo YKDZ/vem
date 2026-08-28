@@ -598,6 +598,11 @@ describe("ResultView", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();
+    const page = host.querySelector('[data-test="result-page"]');
+    expect(page?.getAttribute("data-order-no")).toBe("ORD-FAILED-001");
+    expect(page?.getAttribute("data-order-id")).toBe(
+      "550e8400-e29b-41d4-a716-446655440010",
+    );
   });
 
   it("uses projected maintenance-review visibility for manual-handling results", async () => {

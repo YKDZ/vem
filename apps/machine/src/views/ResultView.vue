@@ -308,6 +308,11 @@ onUnmounted(stopAutoReturn);
       data-test="result-page"
       :data-result-kind="kind"
       :data-result-display-intent="displayIntent"
+      :data-order-id="checkoutStore.transaction?.orderId ?? ''"
+      :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
+      :data-order-no="checkoutStore.transaction?.orderNo ?? ''"
+      :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
+      :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
     >
       <div class="failure-mist failure-mist-left"></div>
       <div class="failure-mist failure-mist-right"></div>
