@@ -18,10 +18,13 @@ use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits
 use crate::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressObserver, DispenseProgressStage,
     DispenseResultPayload, HardwareAdapter, HardwareStatus, LowerControllerFault,
+    LowerControllerResetResult, LowerControllerResetStatus,
 };
 
 pub const FRAME_HEAD: u8 = 0x55;
 pub const DEBUG_DISPENSE_FAULT_FRAME: [u8; 4] = [FRAME_HEAD, 0xFF, 0xFF, 0xFF];
+/// F4 协议：E3/E6 故障态的复位指令，HEX 模式、4 字节、不带换行。
+pub const FAULT_RESET_FRAME: [u8; 4] = [FRAME_HEAD, 0xAA, FRAME_HEAD, 0xAA];
 const HANDSHAKE: [u8; 2] = build_status_query_frame();
 const SERIAL_BAUD_RATE: u32 = 115_200;
 const COMMAND_ACK_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
@@ -33,6 +36,10 @@ const DISPENSE_COMPLETION_GRACE: TokioDuration = TokioDuration::from_secs(10);
 /// 收到 Busy 回复后，下次重发出货指令前需等待的最小间隔
 const BUSY_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const COMMAND_ATTEMPTS: usize = 3;
+/// 复位三段超时（关门 5s / Y 归零 10s / XY 回原点 10s）加上帧间隙余量。
+const FAULT_RESET_DEADLINE: TokioDuration = TokioDuration::from_secs(35);
+/// 成功标志：连续三帧 F2 播报后回到空闲心跳。
+const REQUIRED_RESET_COMPLETED_FRAMES: usize = 3;
 const SERIAL_OPEN_ATTEMPTS: usize = 6;
 const SERIAL_OPEN_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const SERIAL_PROTOCOL_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -1049,6 +1056,29 @@ impl HardwareAdapter for SerialHardwareAdapter {
         }
     }
 
+    async fn reset_from_fault(&self) -> LowerControllerResetResult {
+        let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
+        let _guard = self.op_lock.lock().await;
+        let opened = match self.open_resolved_serial_port_locked().await {
+            Ok(value) => value,
+            Err(error) => {
+                return reset_result(
+                    LowerControllerResetStatus::Failed,
+                    format!(
+                        "failed to open lower controller for fault reset: {}",
+                        error.message
+                    ),
+                    None,
+                    None,
+                );
+            }
+        };
+        let mut base_entry = SerialProtocolLogEntry::new("fault_reset", "event");
+        base_entry.port_path = Some(opened.resolved.port_path.clone());
+        let OpenResolvedSerialPort { mut port, .. } = opened;
+        run_fault_reset_on_port(&mut port, self, base_entry).await
+    }
+
     async fn dispense(&self, command: DispenseCommandPayload) -> DispenseResultPayload {
         self.dispense_with_progress(command, None).await
     }
@@ -1897,6 +1927,210 @@ where
     Err(last_error)
 }
 
+fn reset_result(
+    status: LowerControllerResetStatus,
+    message: impl Into<String>,
+    port_path: Option<String>,
+    fault: Option<LowerControllerFault>,
+) -> LowerControllerResetResult {
+    LowerControllerResetResult {
+        adapter: "serial".to_string(),
+        status,
+        message: message.into(),
+        reported_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        port_path,
+        lower_controller_fault: fault,
+    }
+}
+
+/// F4 故障复位协议状态机。无论当前状态如何都发送四字节复位帧，
+/// 由下位机以 `55 00`（生效）或 `55 E4`（非故障态/复位中拒绝）应答。
+async fn run_fault_reset_on_port<S>(
+    port: &mut S,
+    adapter: &SerialHardwareAdapter,
+    base_entry: SerialProtocolLogEntry,
+) -> LowerControllerResetResult
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let port_path = base_entry.port_path.clone();
+
+    if let Err(error) = port.write_all(&FAULT_RESET_FRAME).await {
+        return reset_result(
+            LowerControllerResetStatus::Failed,
+            format!("serial fault reset write failed: {error}"),
+            port_path,
+            None,
+        );
+    }
+    if let Err(error) = port.flush().await {
+        return reset_result(
+            LowerControllerResetStatus::Failed,
+            format!("serial fault reset flush failed: {error}"),
+            port_path,
+            None,
+        );
+    }
+    let mut tx_entry = base_entry.clone();
+    tx_entry.operation = "fault_reset".to_string();
+    adapter
+        .log_frame(
+            tx_entry,
+            "tx",
+            &FAULT_RESET_FRAME,
+            Some("fault reset command"),
+        )
+        .await;
+
+    let mut rx_entry = base_entry.clone();
+    rx_entry.operation = "fault_reset_ack".to_string();
+    let ack_deadline = Instant::now() + COMMAND_ACK_TIMEOUT;
+    loop {
+        let ack_remaining = ack_deadline.saturating_duration_since(Instant::now());
+        if ack_remaining.is_zero() {
+            return reset_result(
+                LowerControllerResetStatus::Failed,
+                "fault reset ack timed out",
+                port_path,
+                None,
+            );
+        }
+        match adapter
+            .read_lower_frame_logged(port, ack_remaining, rx_entry.clone())
+            .await
+        {
+            Ok(LowerFrame::Ack) => break,
+            Ok(LowerFrame::Busy) => {
+                return reset_result(
+                    LowerControllerResetStatus::RejectedNotFaulted,
+                    "lower controller rejected fault reset (not faulted or reset already in progress)",
+                    port_path,
+                    None,
+                );
+            }
+            Ok(LowerFrame::BoundaryError) => {
+                return reset_result(
+                    LowerControllerResetStatus::Failed,
+                    "fault reset frame rejected (format error, expected 4-byte HEX frame without newline)",
+                    port_path,
+                    None,
+                );
+            }
+            Ok(LowerFrame::CrcError) => {
+                return reset_result(
+                    LowerControllerResetStatus::Failed,
+                    "fault reset frame rejected (crc error)",
+                    port_path,
+                    None,
+                );
+            }
+            Ok(LowerFrame::MechanicalError) => {
+                return reset_result(
+                    LowerControllerResetStatus::MechanicalFault,
+                    "lower controller reported mechanical fault while accepting reset",
+                    port_path,
+                    Some(LowerControllerFault::SharedMechanical),
+                );
+            }
+            Ok(LowerFrame::PickupPlatformBlocked) => {
+                return reset_result(
+                    LowerControllerResetStatus::PickupPlatformBlocked,
+                    "lower controller reported pickup platform blocked while accepting reset",
+                    port_path,
+                    Some(LowerControllerFault::PickupPlatformBlocked),
+                );
+            }
+            Ok(frame) if frame.is_heartbeat() => continue,
+            Ok(frame) => {
+                return reset_result(
+                    LowerControllerResetStatus::Failed,
+                    format!(
+                        "unexpected frame while waiting for fault reset ack: {}",
+                        frame.describe()
+                    ),
+                    port_path,
+                    None,
+                );
+            }
+            Err(error) => {
+                return reset_result(
+                    LowerControllerResetStatus::Failed,
+                    format!("fault reset ack read failed: {error}"),
+                    port_path,
+                    None,
+                );
+            }
+        }
+    }
+
+    let deadline = Instant::now() + FAULT_RESET_DEADLINE;
+    let mut completed_frames = 0usize;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return reset_result(
+                LowerControllerResetStatus::Failed,
+                "fault reset timed out before completion",
+                port_path,
+                None,
+            );
+        }
+        let mut rx_entry = base_entry.clone();
+        rx_entry.operation = "fault_reset_observation".to_string();
+        match adapter
+            .read_lower_frame_logged(port, remaining, rx_entry)
+            .await
+        {
+            Ok(LowerFrame::ResetCompletedFrame) => {
+                completed_frames += 1;
+            }
+            Ok(LowerFrame::IdleHeartbeat)
+                if completed_frames >= REQUIRED_RESET_COMPLETED_FRAMES =>
+            {
+                return reset_result(
+                    LowerControllerResetStatus::Succeeded,
+                    "lower controller fault reset completed",
+                    port_path,
+                    None,
+                );
+            }
+            Ok(
+                LowerFrame::IdleHeartbeat
+                | LowerFrame::ResetHeartbeat
+                | LowerFrame::DispensingHeartbeat
+                | LowerFrame::PickupHeartbeat
+                | LowerFrame::Ack
+                | LowerFrame::Unknown(_),
+            ) => continue,
+            Ok(LowerFrame::MechanicalError) => {
+                return reset_result(
+                    LowerControllerResetStatus::MechanicalFault,
+                    "lower controller reported mechanical fault during reset",
+                    port_path,
+                    Some(LowerControllerFault::SharedMechanical),
+                );
+            }
+            Ok(LowerFrame::PickupPlatformBlocked) => {
+                return reset_result(
+                    LowerControllerResetStatus::PickupPlatformBlocked,
+                    "pickup platform still blocked after reset",
+                    port_path,
+                    Some(LowerControllerFault::PickupPlatformBlocked),
+                );
+            }
+            Ok(_) => continue,
+            Err(error) => {
+                return reset_result(
+                    LowerControllerResetStatus::Failed,
+                    format!("fault reset observation failed: {error}"),
+                    port_path,
+                    None,
+                );
+            }
+        }
+    }
+}
+
 /// 当心跳中断（2s 内无有效帧）时，主动向下位机发送状态查询。
 /// 收到任意心跳/持续故障状态视为探测成功；200ms 无回应返回 Err。
 async fn probe_handshake<S>(
@@ -2246,6 +2480,180 @@ mod tests {
     use tokio::io::duplex;
 
     use super::*;
+
+    fn fault_reset_entry() -> SerialProtocolLogEntry {
+        let mut entry = SerialProtocolLogEntry::new("fault_reset", "event");
+        entry.port_path = Some("COM-TEST".to_string());
+        entry
+    }
+
+    #[tokio::test]
+    async fn fault_reset_completes_after_ack_reset_frames_and_idle_heartbeat() {
+        let (mut host, mut controller) = duplex(64);
+        let adapter = SerialHardwareAdapter::new("COM-TEST".to_string());
+        let entry = fault_reset_entry();
+        let reset =
+            tokio::spawn(async move { run_fault_reset_on_port(&mut host, &adapter, entry).await });
+
+        let mut sent = [0u8; 4];
+        controller
+            .read_exact(&mut sent)
+            .await
+            .expect("read fault reset frame");
+        assert_eq!(sent, FAULT_RESET_FRAME);
+        controller
+            .write_all(&LowerFrame::Ack.protocol_bytes())
+            .await
+            .expect("write ack");
+        controller
+            .write_all(&LowerFrame::ResetHeartbeat.protocol_bytes())
+            .await
+            .expect("write reset heartbeat");
+        controller
+            .write_all(&LowerFrame::ResetCompletedFrame.protocol_bytes())
+            .await
+            .expect("write f2");
+        controller
+            .write_all(&LowerFrame::ResetCompletedFrame.protocol_bytes())
+            .await
+            .expect("write f2");
+        controller
+            .write_all(&LowerFrame::ResetCompletedFrame.protocol_bytes())
+            .await
+            .expect("write f2");
+        controller
+            .write_all(&LowerFrame::IdleHeartbeat.protocol_bytes())
+            .await
+            .expect("write idle heartbeat");
+
+        let result = reset.await.expect("reset task");
+        assert_eq!(result.status, LowerControllerResetStatus::Succeeded);
+        assert_eq!(result.port_path.as_deref(), Some("COM-TEST"));
+        assert_eq!(result.lower_controller_fault, None);
+    }
+
+    #[tokio::test]
+    async fn fault_reset_maps_busy_reply_to_rejected() {
+        let (mut host, mut controller) = duplex(64);
+        let adapter = SerialHardwareAdapter::new("COM-TEST".to_string());
+        let reset = tokio::spawn(async move {
+            run_fault_reset_on_port(&mut host, &adapter, fault_reset_entry()).await
+        });
+
+        let mut sent = [0u8; 4];
+        controller
+            .read_exact(&mut sent)
+            .await
+            .expect("read fault reset frame");
+        controller
+            .write_all(&LowerFrame::Busy.protocol_bytes())
+            .await
+            .expect("write busy");
+
+        let result = reset.await.expect("reset task");
+        assert_eq!(
+            result.status,
+            LowerControllerResetStatus::RejectedNotFaulted
+        );
+    }
+
+    #[tokio::test]
+    async fn fault_reset_maps_mechanical_error_during_reset() {
+        let (mut host, mut controller) = duplex(64);
+        let adapter = SerialHardwareAdapter::new("COM-TEST".to_string());
+        let reset = tokio::spawn(async move {
+            run_fault_reset_on_port(&mut host, &adapter, fault_reset_entry()).await
+        });
+
+        let mut sent = [0u8; 4];
+        controller
+            .read_exact(&mut sent)
+            .await
+            .expect("read fault reset frame");
+        controller
+            .write_all(&LowerFrame::Ack.protocol_bytes())
+            .await
+            .expect("write ack");
+        controller
+            .write_all(&LowerFrame::ResetHeartbeat.protocol_bytes())
+            .await
+            .expect("write reset heartbeat");
+        controller
+            .write_all(&LowerFrame::MechanicalError.protocol_bytes())
+            .await
+            .expect("write e3");
+
+        let result = reset.await.expect("reset task");
+        assert_eq!(result.status, LowerControllerResetStatus::MechanicalFault);
+        assert_eq!(
+            result.lower_controller_fault,
+            Some(LowerControllerFault::SharedMechanical)
+        );
+    }
+
+    #[tokio::test]
+    async fn fault_reset_maps_pickup_platform_blocked_after_reset() {
+        let (mut host, mut controller) = duplex(64);
+        let adapter = SerialHardwareAdapter::new("COM-TEST".to_string());
+        let reset = tokio::spawn(async move {
+            run_fault_reset_on_port(&mut host, &adapter, fault_reset_entry()).await
+        });
+
+        let mut sent = [0u8; 4];
+        controller
+            .read_exact(&mut sent)
+            .await
+            .expect("read fault reset frame");
+        controller
+            .write_all(&LowerFrame::Ack.protocol_bytes())
+            .await
+            .expect("write ack");
+        controller
+            .write_all(&LowerFrame::ResetHeartbeat.protocol_bytes())
+            .await
+            .expect("write reset heartbeat");
+        controller
+            .write_all(&LowerFrame::ResetCompletedFrame.protocol_bytes())
+            .await
+            .expect("write f2");
+        controller
+            .write_all(&LowerFrame::PickupPlatformBlocked.protocol_bytes())
+            .await
+            .expect("write e6");
+
+        let result = reset.await.expect("reset task");
+        assert_eq!(
+            result.status,
+            LowerControllerResetStatus::PickupPlatformBlocked
+        );
+        assert_eq!(
+            result.lower_controller_fault,
+            Some(LowerControllerFault::PickupPlatformBlocked)
+        );
+    }
+
+    #[tokio::test]
+    async fn fault_reset_maps_frame_format_error_to_failed() {
+        let (mut host, mut controller) = duplex(64);
+        let adapter = SerialHardwareAdapter::new("COM-TEST".to_string());
+        let reset = tokio::spawn(async move {
+            run_fault_reset_on_port(&mut host, &adapter, fault_reset_entry()).await
+        });
+
+        let mut sent = [0u8; 4];
+        controller
+            .read_exact(&mut sent)
+            .await
+            .expect("read fault reset frame");
+        controller
+            .write_all(&LowerFrame::BoundaryError.protocol_bytes())
+            .await
+            .expect("write e1");
+
+        let result = reset.await.expect("reset task");
+        assert_eq!(result.status, LowerControllerResetStatus::Failed);
+        assert!(result.message.contains("format error"));
+    }
 
     #[test]
     fn serial_open_retry_recognizes_windows_access_denied_errors() {

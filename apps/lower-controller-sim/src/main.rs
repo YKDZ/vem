@@ -11,7 +11,7 @@ use clap::{Parser, ValueEnum};
 use lower_controller_sim::run_lower_controller_simulator_with_halves;
 use lower_controller_sim::{
     run_lower_controller_simulator, run_lower_controller_simulator_with_state, ControlCommand,
-    DispenseScenario, SimulatorOptions, SimulatorState,
+    DispenseScenario, FaultResetJamStage, SimulatorOptions, SimulatorState,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -104,6 +104,33 @@ struct Cli {
 
     #[arg(
         long,
+        default_value_t = 5000,
+        env = "VEM_LOWER_CONTROLLER_SIM_FAULT_RESET_DOOR_CLOSE_MS"
+    )]
+    fault_reset_door_close_ms: u64,
+
+    #[arg(
+        long,
+        default_value_t = 10000,
+        env = "VEM_LOWER_CONTROLLER_SIM_FAULT_RESET_Y_HOME_MS"
+    )]
+    fault_reset_y_home_ms: u64,
+
+    #[arg(
+        long,
+        default_value_t = 10000,
+        env = "VEM_LOWER_CONTROLLER_SIM_FAULT_RESET_XY_HOME_MS"
+    )]
+    fault_reset_xy_home_ms: u64,
+
+    #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_FAULT_RESET_STUCK_ITEM")]
+    fault_reset_stuck_item: bool,
+
+    #[arg(long, value_enum, env = "VEM_LOWER_CONTROLLER_SIM_FAULT_RESET_JAM")]
+    fault_reset_jam: Option<FaultResetJamArg>,
+
+    #[arg(
+        long,
         default_value_t = 24,
         env = "VEM_LOWER_CONTROLLER_SIM_TEMPERATURE_C"
     )]
@@ -144,6 +171,23 @@ enum ScenarioArg {
     MechanicalFault,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FaultResetJamArg {
+    Door,
+    YHome,
+    XyHome,
+}
+
+impl From<FaultResetJamArg> for FaultResetJamStage {
+    fn from(value: FaultResetJamArg) -> Self {
+        match value {
+            FaultResetJamArg::Door => Self::Door,
+            FaultResetJamArg::YHome => Self::YHome,
+            FaultResetJamArg::XyHome => Self::XyHome,
+        }
+    }
+}
+
 impl From<ScenarioArg> for DispenseScenario {
     fn from(value: ScenarioArg) -> Self {
         match value {
@@ -176,6 +220,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         pickup_warning_2_after: Duration::from_millis(cli.pickup_warning_2_ms),
         pickup_final_timeout_after: Duration::from_millis(cli.pickup_final_timeout_ms),
         event_repeat_interval: Duration::from_millis(cli.event_repeat_ms),
+        fault_reset_door_close: Duration::from_millis(cli.fault_reset_door_close_ms),
+        fault_reset_y_home: Duration::from_millis(cli.fault_reset_y_home_ms),
+        fault_reset_xy_home: Duration::from_millis(cli.fault_reset_xy_home_ms),
+        fault_reset_stuck_item: cli.fault_reset_stuck_item,
+        fault_reset_jam_stage: cli.fault_reset_jam.map(Into::into),
         environment_sample: if cli.no_environment_sample {
             None
         } else {

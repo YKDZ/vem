@@ -4,7 +4,10 @@ use std::{
     future::Future,
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -38,6 +41,13 @@ pub enum DispenseScenario {
     MechanicalFault,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultResetJamStage {
+    Door,
+    YHome,
+    XyHome,
+}
+
 #[derive(Debug, Clone)]
 pub struct SimulatorOptions {
     pub scenario: DispenseScenario,
@@ -50,6 +60,11 @@ pub struct SimulatorOptions {
     pub pickup_warning_2_after: Duration,
     pub pickup_final_timeout_after: Duration,
     pub event_repeat_interval: Duration,
+    pub fault_reset_door_close: Duration,
+    pub fault_reset_y_home: Duration,
+    pub fault_reset_xy_home: Duration,
+    pub fault_reset_stuck_item: bool,
+    pub fault_reset_jam_stage: Option<FaultResetJamStage>,
     pub environment_sample: Option<EnvironmentSample>,
     pub trace: bool,
     pub frame_journal_path: Option<PathBuf>,
@@ -70,6 +85,11 @@ impl Default for SimulatorOptions {
             pickup_warning_2_after: Duration::from_secs(25),
             pickup_final_timeout_after: Duration::from_secs(30),
             event_repeat_interval: Duration::from_millis(50),
+            fault_reset_door_close: Duration::from_secs(5),
+            fault_reset_y_home: Duration::from_secs(10),
+            fault_reset_xy_home: Duration::from_secs(10),
+            fault_reset_stuck_item: false,
+            fault_reset_jam_stage: None,
             environment_sample: Some(EnvironmentSample {
                 temperature_celsius: 24,
                 relative_humidity_percent: 45,
@@ -148,12 +168,14 @@ type SharedWriter<W> = Arc<Mutex<W>>;
 #[derive(Debug, Clone)]
 pub struct SimulatorState {
     inner: SharedState,
+    informing: Arc<AtomicBool>,
 }
 
 impl Default for SimulatorState {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(ControllerState::Idle)),
+            informing: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -180,11 +202,20 @@ impl SimulatorState {
             ControlCommand::Quit => false,
         }
     }
+
+    pub fn set_informing(&self, value: bool) {
+        self.informing.store(value, Ordering::SeqCst);
+    }
+
+    pub fn informing(&self) -> bool {
+        self.informing.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum UpperFrame {
     BoundaryError,
+    FaultReset,
     StatusQuery,
     EnvironmentQuery(u8),
     AirConditionerTargetQuery,
@@ -280,9 +311,11 @@ where
 {
     let writer = Arc::new(Mutex::new(writer));
     trace(&options, "started");
+    let informing = state.informing.clone();
     let heartbeat_task = tokio::spawn(heartbeat_loop(
         writer.clone(),
         state.inner.clone(),
+        informing.clone(),
         options.clone(),
     ));
 
@@ -319,7 +352,14 @@ where
             frame = read_upper_frame(reader, options.command_frame_gap) => {
                 match frame {
                     Ok(frame) => {
-                        handle_upper_frame(frame, writer.clone(), state.inner.clone(), options.clone()).await?;
+                        handle_upper_frame(
+                            frame,
+                            writer.clone(),
+                            state.inner.clone(),
+                            informing.clone(),
+                            options.clone(),
+                        )
+                        .await?;
                     }
                     Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
                         trace(&options, "serial stream closed");
@@ -350,6 +390,7 @@ async fn recv_control(
 async fn heartbeat_loop<W>(
     writer: SharedWriter<W>,
     state: SharedState,
+    informing: Arc<AtomicBool>,
     options: SimulatorOptions,
 ) -> Result<(), SimulatorError>
 where
@@ -359,6 +400,9 @@ where
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
+        if informing.load(Ordering::SeqCst) {
+            continue;
+        }
         let frame = current_state(&state).await.status_frame();
         send_and_journal_controller_frame(&writer, frame, &options).await?;
     }
@@ -368,6 +412,7 @@ async fn handle_upper_frame<W>(
     frame: UpperFrame,
     writer: SharedWriter<W>,
     state: SharedState,
+    informing: Arc<AtomicBool>,
     options: SimulatorOptions,
 ) -> Result<(), SimulatorError>
 where
@@ -378,6 +423,9 @@ where
         UpperFrame::BoundaryError => {
             trace(&options, "rx out-of-bound command");
             send_frame(&writer, LowerFrame::BoundaryError).await?;
+        }
+        UpperFrame::FaultReset => {
+            handle_fault_reset(writer, state, informing, options).await?;
         }
         UpperFrame::StatusQuery => {
             let status = current_state(&state).await.status_frame();
@@ -480,6 +528,100 @@ where
             handle_single_dispense(row_no, cell_no, crc, raw, writer, state, options).await?;
         }
     }
+    Ok(())
+}
+
+async fn handle_fault_reset<W>(
+    writer: SharedWriter<W>,
+    state: SharedState,
+    informing: Arc<AtomicBool>,
+    options: SimulatorOptions,
+) -> Result<(), SimulatorError>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let current = current_state(&state).await;
+    if !matches!(
+        current,
+        ControllerState::MechanicalFault | ControllerState::PickupPlatformBlocked
+    ) {
+        trace(
+            &options,
+            &format!("rx fault reset while {:?} -> E4 (not faulted)", current),
+        );
+        send_frame(&writer, LowerFrame::Busy).await?;
+        return Ok(());
+    }
+    set_state(&state, ControllerState::Resetting).await;
+    trace(&options, "rx fault reset -> ACK, reset sequence started");
+    send_frame(&writer, LowerFrame::Ack).await?;
+    tokio::spawn(run_fault_reset_sequence(writer, state, informing, options));
+    Ok(())
+}
+
+async fn run_fault_reset_sequence<W>(
+    writer: SharedWriter<W>,
+    state: SharedState,
+    informing: Arc<AtomicBool>,
+    options: SimulatorOptions,
+) -> Result<(), SimulatorError>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    sleep(options.fault_reset_door_close).await;
+    if matches!(
+        options.fault_reset_jam_stage,
+        Some(FaultResetJamStage::Door)
+    ) && current_state(&state).await == ControllerState::Resetting
+    {
+        set_state(&state, ControllerState::MechanicalFault).await;
+        trace(&options, "fault reset door close jammed -> E3");
+        send_frame(&writer, LowerFrame::MechanicalError).await?;
+        return Ok(());
+    }
+
+    sleep(options.fault_reset_y_home).await;
+    if matches!(
+        options.fault_reset_jam_stage,
+        Some(FaultResetJamStage::YHome)
+    ) && current_state(&state).await == ControllerState::Resetting
+    {
+        set_state(&state, ControllerState::MechanicalFault).await;
+        trace(&options, "fault reset y home jammed -> E3");
+        send_frame(&writer, LowerFrame::MechanicalError).await?;
+        return Ok(());
+    }
+
+    sleep(options.fault_reset_xy_home).await;
+    if matches!(
+        options.fault_reset_jam_stage,
+        Some(FaultResetJamStage::XyHome)
+    ) && current_state(&state).await == ControllerState::Resetting
+    {
+        set_state(&state, ControllerState::MechanicalFault).await;
+        trace(&options, "fault reset xy home jammed -> E3");
+        send_frame(&writer, LowerFrame::MechanicalError).await?;
+        return Ok(());
+    }
+
+    if current_state(&state).await != ControllerState::Resetting {
+        return Ok(());
+    }
+    if options.fault_reset_stuck_item {
+        set_state(&state, ControllerState::PickupPlatformBlocked).await;
+        trace(&options, "fault reset found pickup item -> E6");
+        send_frame(&writer, LowerFrame::PickupPlatformBlocked).await?;
+        return Ok(());
+    }
+
+    informing.store(true, Ordering::SeqCst);
+    for _ in 0..3 {
+        send_frame(&writer, LowerFrame::ResetCompletedFrame).await?;
+        sleep(options.event_repeat_interval).await;
+    }
+    informing.store(false, Ordering::SeqCst);
+    set_state(&state, ControllerState::Idle).await;
+    trace(&options, "fault reset completed -> idle");
     Ok(())
 }
 
@@ -692,6 +834,14 @@ where
         }
 
         let code = reader.read_u8().await?;
+        if code == 0xAA {
+            let mut rest = [0u8; 2];
+            reader.read_exact(&mut rest).await?;
+            if rest == [FRAME_HEAD, 0xAA] {
+                return Ok(UpperFrame::FaultReset);
+            }
+            return Ok(UpperFrame::BoundaryError);
+        }
         if is_lower_echo_code(code) {
             continue;
         }
@@ -924,6 +1074,12 @@ fn journal_upper_frame(options: &SimulatorOptions, frame: &UpperFrame) -> io::Re
         UpperFrame::StatusQuery => {
             append_raw_frame(options, "daemon-to-controller", "A0", &[FRAME_HEAD, 0xA0])
         }
+        UpperFrame::FaultReset => append_raw_frame(
+            options,
+            "daemon-to-controller",
+            "FAULT_RESET",
+            &[FRAME_HEAD, 0xAA, FRAME_HEAD, 0xAA],
+        ),
         UpperFrame::SingleDispense { raw, .. } => {
             append_raw_frame(options, "daemon-to-controller", "VEND", raw)
         }
@@ -972,7 +1128,7 @@ mod tests {
         serial::{
             build_air_conditioner_switch_frame, build_dispense_frame,
             build_environment_sample_query_frame, build_status_query_frame, read_lower_frame,
-            SerialHardwareAdapter, DEBUG_DISPENSE_FAULT_FRAME,
+            SerialHardwareAdapter, DEBUG_DISPENSE_FAULT_FRAME, FAULT_RESET_FRAME,
         },
     };
 
@@ -988,6 +1144,11 @@ mod tests {
             pickup_warning_2_after: Duration::from_millis(40),
             pickup_final_timeout_after: Duration::from_millis(60),
             event_repeat_interval: Duration::from_millis(5),
+            fault_reset_door_close: Duration::from_millis(20),
+            fault_reset_y_home: Duration::from_millis(20),
+            fault_reset_xy_home: Duration::from_millis(20),
+            fault_reset_stuck_item: false,
+            fault_reset_jam_stage: None,
             environment_sample: Some(EnvironmentSample {
                 temperature_celsius: 22,
                 relative_humidity_percent: 55,
@@ -1006,15 +1167,47 @@ mod tests {
         mpsc::UnboundedSender<ControlCommand>,
         tokio::task::JoinHandle<Result<(), SimulatorError>>,
     ) {
+        start_test_simulator_with_options(fast_options(scenario)).await
+    }
+
+    async fn start_test_simulator_with_options(
+        options: SimulatorOptions,
+    ) -> (
+        tokio::io::DuplexStream,
+        mpsc::UnboundedSender<ControlCommand>,
+        tokio::task::JoinHandle<Result<(), SimulatorError>>,
+    ) {
         let (client, server) = duplex(1024);
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let handle = tokio::spawn(run_lower_controller_simulator(
             server,
-            fast_options(scenario),
+            options,
             control_rx,
             std::future::pending(),
         ));
         (client, control_tx, handle)
+    }
+
+    async fn read_until_idle_after_reset<R>(stream: &mut R) -> LowerFrame
+    where
+        R: AsyncRead + Unpin,
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut f2_count = 0usize;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let frame = timeout(remaining, read_lower_frame(stream, Duration::from_secs(1)))
+                .await
+                .expect("timed out waiting for reset completion")
+                .expect("read lower frame");
+            if frame == LowerFrame::ResetCompletedFrame {
+                f2_count += 1;
+                continue;
+            }
+            if frame == LowerFrame::IdleHeartbeat && f2_count >= 3 {
+                return frame;
+            }
+        }
     }
 
     async fn read_until_code<R>(stream: &mut R, code: u8) -> LowerFrame
@@ -1260,6 +1453,102 @@ mod tests {
             read_until_code(&mut stream, 0xAA).await,
             LowerFrame::IdleHeartbeat
         );
+        control_tx.send(ControlCommand::Quit).expect("quit");
+        handle.await.expect("join").expect("sim exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn simulator_fault_reset_recovers_mechanical_fault_to_idle() {
+        let (mut stream, control_tx, handle) = start_test_simulator(DispenseScenario::Normal).await;
+
+        control_tx
+            .send(ControlCommand::MechanicalFault)
+            .expect("inject fault");
+        assert_eq!(
+            read_until_code(&mut stream, 0xE3).await,
+            LowerFrame::MechanicalError
+        );
+
+        stream
+            .write_all(&FAULT_RESET_FRAME)
+            .await
+            .expect("write fault reset");
+        assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
+        assert_eq!(
+            read_until_idle_after_reset(&mut stream).await,
+            LowerFrame::IdleHeartbeat
+        );
+
+        control_tx.send(ControlCommand::Quit).expect("quit");
+        handle.await.expect("join").expect("sim exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn simulator_fault_reset_rejects_when_idle() {
+        let (mut stream, control_tx, handle) = start_test_simulator(DispenseScenario::Normal).await;
+
+        stream
+            .write_all(&FAULT_RESET_FRAME)
+            .await
+            .expect("write fault reset");
+        assert_eq!(read_until_code(&mut stream, 0xE4).await, LowerFrame::Busy);
+
+        control_tx.send(ControlCommand::Quit).expect("quit");
+        handle.await.expect("join").expect("sim exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn simulator_fault_reset_reports_e6_when_item_stuck() {
+        let mut options = fast_options(DispenseScenario::Normal);
+        options.fault_reset_stuck_item = true;
+        let (mut stream, control_tx, handle) = start_test_simulator_with_options(options).await;
+
+        control_tx
+            .send(ControlCommand::MechanicalFault)
+            .expect("inject fault");
+        assert_eq!(
+            read_until_code(&mut stream, 0xE3).await,
+            LowerFrame::MechanicalError
+        );
+
+        stream
+            .write_all(&FAULT_RESET_FRAME)
+            .await
+            .expect("write fault reset");
+        assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
+        assert_eq!(
+            read_until_code(&mut stream, 0xE6).await,
+            LowerFrame::PickupPlatformBlocked
+        );
+
+        control_tx.send(ControlCommand::Quit).expect("quit");
+        handle.await.expect("join").expect("sim exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn simulator_fault_reset_reports_e3_when_door_jammed() {
+        let mut options = fast_options(DispenseScenario::Normal);
+        options.fault_reset_jam_stage = Some(FaultResetJamStage::Door);
+        let (mut stream, control_tx, handle) = start_test_simulator_with_options(options).await;
+
+        control_tx
+            .send(ControlCommand::MechanicalFault)
+            .expect("inject fault");
+        assert_eq!(
+            read_until_code(&mut stream, 0xE3).await,
+            LowerFrame::MechanicalError
+        );
+
+        stream
+            .write_all(&FAULT_RESET_FRAME)
+            .await
+            .expect("write fault reset");
+        assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
+        assert_eq!(
+            read_until_code(&mut stream, 0xE3).await,
+            LowerFrame::MechanicalError
+        );
+
         control_tx.send(ControlCommand::Quit).expect("quit");
         handle.await.expect("join").expect("sim exits cleanly");
     }

@@ -110,6 +110,37 @@ pub struct HardwareStatus {
     pub lower_controller_fault: Option<LowerControllerFault>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LowerControllerResetStatus {
+    /// 复位成功：连续三帧 F2 后回到空闲心跳。
+    Succeeded,
+    /// 当前不是 E3/E6 故障态，或下位机回复 E4 拒绝复位。
+    RejectedNotFaulted,
+    /// 复位过程中出现机械故障（E3）。
+    MechanicalFault,
+    /// 回原点后发现取货口仍有物品（E6）。
+    PickupPlatformBlocked,
+    /// 串口打开、写入、应答或复位观察失败/超时。
+    Failed,
+    /// 当前硬件适配器不支持下位机故障复位。
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LowerControllerResetResult {
+    pub adapter: String,
+    pub status: LowerControllerResetStatus,
+    pub message: String,
+    pub reported_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_path: Option<String>,
+    /// 复位后的最新下位机故障分类；成功时为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower_controller_fault: Option<LowerControllerFault>,
+}
+
 #[async_trait]
 pub trait HardwareAdapter: Send + Sync {
     fn adapter_name(&self) -> &str;
@@ -131,6 +162,19 @@ pub trait HardwareAdapter: Send + Sync {
     }
     async fn set_vent_speed(&self, _speed: u8) -> Result<(), String> {
         Err("vent speed control is not supported by this hardware adapter".to_string())
+    }
+    async fn reset_from_fault(&self) -> LowerControllerResetResult {
+        LowerControllerResetResult {
+            adapter: self.adapter_name().to_string(),
+            status: LowerControllerResetStatus::Unsupported,
+            message: format!(
+                "{} hardware adapter does not support lower-controller fault reset",
+                self.adapter_name()
+            ),
+            reported_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            port_path: None,
+            lower_controller_fault: None,
+        }
     }
     async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload;
     async fn dispense_with_progress(
