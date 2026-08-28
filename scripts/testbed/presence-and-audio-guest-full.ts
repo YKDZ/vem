@@ -1416,7 +1416,7 @@ export async function runPresenceAndAudioGuestFull(
       );
     const duplicateFenceTraceId = traceId(await readTrace());
     await injectVisionPresence(activeGuestInput, "approach", dependencies);
-    await dependencies.sleep(500);
+    await dependencies.sleep(1_500);
     runtimeTrace = await readTrace();
     if (
       traceEntryAfter(

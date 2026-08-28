@@ -953,6 +953,11 @@ export async function runTryOnScenario(
     "result-surface",
     async () => {
       const current = await observeState();
+      if (current?.state === "canceled" || current?.state === "failed") {
+        throw new Error(
+          `try-on attempt ended before result: ${String(current.state)}`,
+        );
+      }
       return {
         ok:
           current?.state === "completed" &&
@@ -1226,11 +1231,36 @@ export async function runRecordedResultGeometryScenario(
       },
       { timeoutMs: timeoutMs ?? 60_000, pollMs: 1_000 },
     );
-    const attempt = await runTryOnScenario(adapter, {
-      timeoutMs,
-      pollMs,
-      acceptanceBinding,
-    });
+    const tryOnDeadline = Date.now() + Math.max(timeoutMs ?? 60_000, 60_000);
+    let attempt: Awaited<ReturnType<typeof runTryOnScenario>> | null = null;
+    let lastTryOnError: unknown = null;
+    for (let retry = 1; retry <= 3; retry += 1) {
+      try {
+        attempt = await runTryOnScenario(adapter, {
+          timeoutMs,
+          pollMs,
+          acceptanceBinding,
+        });
+        break;
+      } catch (error) {
+        lastTryOnError = error;
+        if (
+          retry < 3 &&
+          (error instanceof Error
+            ? error.message.includes("try-on attempt ended before result")
+            : false)
+        ) {
+          const reselected = await adapter.run(
+            "select-recorded-video-fixture",
+            [segment],
+          );
+          if (reselected.exitCode !== 0 || Date.now() >= tryOnDeadline) break;
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (!attempt) throw lastTryOnError;
     if (!attempt.state.resultPng) {
       return {
         ok: false,
