@@ -794,6 +794,7 @@ export async function runFaultRecoveryGuest(options: {
         return true;
       })()`,
     );
+    await sleep(600);
     await snapshot("maintenance-vision-debug");
 
     stage = "fault-reset-and-auto-unlock";
