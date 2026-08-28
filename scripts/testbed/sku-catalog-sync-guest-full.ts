@@ -9,6 +9,7 @@ import {
   adminListAll,
   adminToken,
   daemonGet,
+  daemonPost,
   fetchJson,
   option,
   required,
@@ -328,6 +329,57 @@ export async function runSkuCatalogSyncGuest(options: {
       );
     }
     (report.evidence as JsonRecord).saleView = saleView;
+    const attestationId = `sku-catalog-sync-${Date.now()}`;
+    (report.evidence as JsonRecord).attestation = await daemonPost(
+      handoff,
+      "/v1/stock/attestation",
+      {
+        attestationId,
+        planogramVersion,
+        operatorId: "testbed-sku-catalog-sync",
+        slots: [
+          {
+            slotId: targetSlotId,
+            sku: String(targetVariant.sku),
+            quantity: Number(targetFixture?.onHandQty ?? 5),
+          },
+        ],
+      },
+    );
+    const attestationDeadline = Date.now() + 60_000;
+    do {
+      const status = (await daemonGet(
+        handoff,
+        "/v1/stock/attestation",
+      )) as JsonRecord;
+      if (
+        status?.status === "ready" &&
+        status?.attestationId === attestationId &&
+        (Array.isArray(status?.inconsistentSlots)
+          ? (status.inconsistentSlots as unknown[]).length
+          : 0) === 0
+      ) {
+        break;
+      }
+      await sleep(500);
+    } while (Date.now() < attestationDeadline);
+    const saleReadyDeadline = Date.now() + 60_000;
+    do {
+      const refreshed = (await daemonGet(
+        handoff,
+        "/v1/sale-view",
+      )) as JsonRecord;
+      const item = (refreshed.items as JsonRecord[] | undefined)?.find(
+        (candidate) => candidate.slotId === targetSlotId,
+      );
+      if (
+        item?.slotSalesState === "sale_ready" &&
+        Number(item?.saleableStock ?? 0) > 0
+      ) {
+        break;
+      }
+      await sleep(500);
+    } while (Date.now() < saleReadyDeadline);
 
     const handoffCdp = handoff.cdp as JsonRecord;
     const cdpTarget = await discoverMachineUiTarget({
