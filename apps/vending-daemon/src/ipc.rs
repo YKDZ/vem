@@ -2440,7 +2440,7 @@ async fn fault_reset(
 
         if let Some(previous) = previous_lock {
             match ctx.state.whole_machine_maintenance_lock().await {
-                Ok(Some(current)) if current == previous => {
+                Ok(Some(current)) if same_whole_machine_fault(&current, &previous) => {
                     let audit = crate::state::store::WholeMachineMaintenanceLockClearAudit {
                         id: uuid::Uuid::new_v4().to_string(),
                         operator_note: input.operator_note.trim().to_string(),
@@ -2494,6 +2494,18 @@ async fn fault_reset(
         message,
     })
     .into_response()
+}
+
+fn same_whole_machine_fault(
+    current: &crate::state::store::WholeMachineMaintenanceLock,
+    previous: &crate::state::store::WholeMachineMaintenanceLock,
+) -> bool {
+    current.code == previous.code
+        && current.source == previous.source
+        && current.order_no == previous.order_no
+        && current.command_no == previous.command_no
+        && current.slot_id == previous.slot_id
+        && current.error_code == previous.error_code
 }
 
 async fn clear_whole_machine_maintenance_lock(
