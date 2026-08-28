@@ -137,9 +137,7 @@ export async function runSkuCatalogSyncGuest(options: {
       (machinesEnvelope.data as JsonRecord | undefined)?.items as
         | JsonRecord[]
         | undefined
-    )?.find(
-      (candidate) => candidate.code === machineCode,
-    );
+    )?.find((candidate) => candidate.code === machineCode);
     const machineId = required(machine?.id, "machine id");
     report.machineId = machineId;
     const baselineSaleView = (await daemonGet(
@@ -158,7 +156,7 @@ export async function runSkuCatalogSyncGuest(options: {
       guestInput,
       token,
       "GET",
-      "/product-variants?page=1&pageSize=200",
+      "/product-variants?page=1&pageSize=100",
     )) as JsonRecord;
     const products =
       ((productsEnvelope.data as JsonRecord | undefined)?.items as
