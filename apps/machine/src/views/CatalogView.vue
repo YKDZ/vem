@@ -4,12 +4,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
 import type { ProductRecommendationProjection } from "@/recommendation/implicit-recommendation-session";
 import type { MachineCatalogItem } from "@/types/catalog";
-import {
-  genderForItem,
-  genderFiltersForCategory,
-  genderLabelForFilter,
-  type ProductGenderFilter,
-} from "@/catalog/gender-filter";
 
 import carouselImage1 from "@/assets/home/carousel-1.jpg";
 import carouselImage2 from "@/assets/home/carousel-2.jpg";
@@ -22,6 +16,12 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import listTitleImage from "@/assets/home/list-title.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
+import {
+  genderForItem,
+  genderFiltersForCategory,
+  genderLabelForFilter,
+  type ProductGenderFilter,
+} from "@/catalog/gender-filter";
 import {
   groupItemsByTopCategory,
   usesFallbackTopCategory,
@@ -115,7 +115,7 @@ const homeCategoryEntries = (
 const genderFilters = computed(() =>
   genderFiltersForCategory(selectedTopCategoryKey.value ?? "").map((key) => ({
     key,
-    label: genderLabelForFilter(key),
+    label: key === "all" ? "全部" : genderLabelForFilter(key),
   })),
 );
 

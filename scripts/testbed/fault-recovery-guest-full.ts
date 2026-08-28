@@ -65,7 +65,10 @@ export function writeJson(path: string, value: unknown): void {
   writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-export function rows(report: JsonRecord | null | undefined, name: string): unknown[] {
+export function rows(
+  report: JsonRecord | null | undefined,
+  name: string,
+): unknown[] {
   const raw = report?.raw as JsonRecord | undefined;
   return Array.isArray(raw?.[name]) ? (raw?.[name] as unknown[]) : [];
 }
@@ -93,7 +96,10 @@ export async function fetchJson(
   return payload;
 }
 
-export function daemonGet(handoff: HandoffRecord, path: string): Promise<unknown> {
+export function daemonGet(
+  handoff: HandoffRecord,
+  path: string,
+): Promise<unknown> {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
@@ -272,7 +278,9 @@ export async function readPaymentSurface(
   return surface;
 }
 
-export function readUi(client: InstanceType<typeof CdpClient>): Promise<unknown> {
+export function readUi(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   return evaluateExpression(
     client,
     `(() => {
@@ -326,14 +334,6 @@ async function enterMaintenance(
     timeoutMs: 30_000,
     pollMs: 250,
   });
-  await evaluateExpression(
-    client,
-    `(() => {
-      const panel = document.querySelector('.maintenance-vision-panel');
-      if (panel) panel.scrollIntoView({ block: 'center' });
-      return true;
-    })()`,
-  );
 }
 
 export async function runFaultRecoveryGuest(options: {
@@ -455,9 +455,9 @@ export async function runFaultRecoveryGuest(options: {
     );
 
     stage = "physical-tauri-payment";
-    const fixture = (
-      guestInput.fixtureAllocation as JsonRecord | undefined
-    )?.[options.fixtureKey] as JsonRecord | undefined;
+    const fixture = (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
+      options.fixtureKey
+    ] as JsonRecord | undefined;
     await openFixtureProductFromCatalog({
       client,
       slotId: required(fixture?.slotId, `${options.fixtureKey} slotId`),
@@ -565,11 +565,8 @@ export async function runFaultRecoveryGuest(options: {
     )) as JsonRecord;
     evidence.saleViewBefore = saleViewBefore;
     if (
-      !(
-        (capabilityBefore.blockers as unknown[] | undefined)?.some(
-          (blocker) =>
-            (blocker as JsonRecord).code === "WHOLE_MACHINE_LOCKED",
-        )
+      !(capabilityBefore.blockers as unknown[] | undefined)?.some(
+        (blocker) => (blocker as JsonRecord).code === "WHOLE_MACHINE_LOCKED",
       )
     ) {
       throw new Error("mechanical fault did not raise the whole-machine lock");
@@ -586,6 +583,15 @@ export async function runFaultRecoveryGuest(options: {
     stage = "capture-maintenance-lock-ui";
     await enterMaintenance(client);
     await snapshot("maintenance-lock-reset-button");
+    await evaluateExpression(
+      client,
+      `(() => {
+        const panel = document.querySelector('.maintenance-vision-panel');
+        if (panel) panel.scrollIntoView({ block: 'center' });
+        return true;
+      })()`,
+    );
+    await snapshot("maintenance-vision-debug");
 
     stage = "fault-reset-and-auto-unlock";
     const reset = (await daemonPost(handoff, "/v1/hardware/fault-reset", {
@@ -593,7 +599,10 @@ export async function runFaultRecoveryGuest(options: {
     })) as JsonRecord;
     evidence.faultReset = reset;
     const resetResult = reset.reset as JsonRecord | undefined;
-    if (resetResult?.status !== "succeeded" || reset.wholeMachineLockCleared !== true) {
+    if (
+      resetResult?.status !== "succeeded" ||
+      reset.wholeMachineLockCleared !== true
+    ) {
       throw new Error(
         `fault reset did not succeed and auto-clear: ${JSON.stringify(reset)}`,
       );
@@ -637,21 +646,25 @@ export async function runFaultRecoveryGuest(options: {
     const saleReadyDeadline = Date.now() + 60_000;
     let saleViewAfter: JsonRecord | null = null;
     do {
-      saleViewAfter = (await daemonGet(
-        handoff,
-        "/v1/sale-view",
-      )) as JsonRecord;
-      const item = (saleViewAfter.items as unknown[] | undefined)?.find(
+      saleViewAfter = (await daemonGet(handoff, "/v1/sale-view")) as JsonRecord;
+      const item = (saleViewAfter.items as JsonRecord[] | undefined)?.find(
         (entry) => (entry as JsonRecord).slotId === fixture?.slotId,
       ) as JsonRecord | undefined;
-      if (item?.slotSalesState === "sale_ready" && item.saleableStock > 0) break;
+      if (
+        item?.slotSalesState === "sale_ready" &&
+        Number(item?.saleableStock ?? 0) > 0
+      )
+        break;
       await sleep(500);
     } while (Date.now() < saleReadyDeadline);
     evidence.saleViewAfter = saleViewAfter;
-    const finalItem = (saleViewAfter.items as unknown[] | undefined)?.find(
+    const finalItem = (saleViewAfter.items as JsonRecord[] | undefined)?.find(
       (entry) => (entry as JsonRecord).slotId === fixture?.slotId,
     ) as JsonRecord | undefined;
-    if (finalItem?.slotSalesState !== "sale_ready" || finalItem.saleableStock <= 0) {
+    if (
+      finalItem?.slotSalesState !== "sale_ready" ||
+      Number(finalItem?.saleableStock ?? 0) <= 0
+    ) {
       throw new Error(
         `faulted slot did not return to sale_ready: ${JSON.stringify(finalItem)}`,
       );
@@ -661,6 +674,7 @@ export async function runFaultRecoveryGuest(options: {
     report.assertions = {
       mechanicalFaultRaisedLock: true,
       maintenanceResetButtonCaptured: true,
+      maintenanceVisionDebugCaptured: true,
       faultResetAutoClearedLock: true,
       refillRestoredSaleReady: true,
     };

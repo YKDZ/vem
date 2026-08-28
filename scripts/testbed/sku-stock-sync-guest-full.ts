@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   adminToken,
@@ -11,7 +11,6 @@ import {
   fetchJson,
   option,
   platform,
-  readJson,
   required,
   rows,
   writeJson,
@@ -102,9 +101,9 @@ export async function runSkuStockSyncGuest(options: {
     const handoff = readLocalJson(options.handoffPath) as HandoffRecord;
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
-    const fixture = (
-      guestInput.fixtureAllocation as JsonRecord | undefined
-    )?.[options.fixtureKey] as JsonRecord | undefined;
+    const fixture = (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
+      options.fixtureKey
+    ] as JsonRecord | undefined;
     const slotId = required(fixture?.slotId, `${options.fixtureKey} slotId`);
     const baselineReport = (await platform(
       guestInput,
@@ -112,9 +111,9 @@ export async function runSkuStockSyncGuest(options: {
       machineCode,
       null,
     )) as JsonRecord;
-    const inventory = (rows(baselineReport, "inventories") as JsonRecord[]).find(
-      (candidate) => candidate.slotId === slotId,
-    );
+    const inventory = (
+      rows(baselineReport, "inventories") as JsonRecord[]
+    ).find((candidate) => candidate.slotId === slotId);
     const inventoryId = required(inventory?.id, "fixture inventory id");
     const baselinePlatformQty = Number(inventory?.onHandQty ?? -1);
     const baselineMachineQty = await saleViewQuantity(handoff, slotId);
@@ -124,11 +123,17 @@ export async function runSkuStockSyncGuest(options: {
     };
 
     const token = await adminToken(guestInput);
-    const adjust = (await adminRequest(guestInput, token, "POST", "/inventories/adjust", {
-      inventoryId,
-      deltaQty: 10,
-      note: "sku-stock-sync platform->machine",
-    })) as JsonRecord;
+    const adjust = (await adminRequest(
+      guestInput,
+      token,
+      "POST",
+      "/inventories/adjust",
+      {
+        inventoryId,
+        deltaQty: 10,
+        note: "sku-stock-sync platform->machine",
+      },
+    )) as JsonRecord;
     (report.evidence as JsonRecord).adjust = adjust;
     const machineDeadline = Date.now() + 60_000;
     let machineQtyAfterAdjust = -1;

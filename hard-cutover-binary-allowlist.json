@@ -404,7 +404,7 @@
       "gitMode": "100644",
       "path": "apps/machine/public/audio/voice/interaction/awakened.mp3",
       "reason": "Production Machine audio asset.",
-      "sha256": "8e9f7f55698b3b6a4f1631d7abbd39309f33f5cf37cde3a2c36b25c5aa086a4b"
+      "sha256": "70571d0c69c82f653a649d6854c39ec1eebb091780a68bc3dd9dadc38912b47f"
     },
     {
       "category": "machine-audio",
@@ -460,21 +460,21 @@
       "gitMode": "100644",
       "path": "apps/machine/public/audio/voice/product/socks.mp3",
       "reason": "Production Machine audio asset.",
-      "sha256": "6f66a0ce2226f14c7f9d408e430f3b1d0fe63995cc981de8eb56d265d9e99f03"
+      "sha256": "c856380c4339ff4358ff1c716b0627748c841786e4f12cf948d6882808a85ba6"
     },
     {
       "category": "machine-audio",
       "gitMode": "100644",
       "path": "apps/machine/public/audio/voice/product/tshirt.mp3",
       "reason": "Production Machine audio asset.",
-      "sha256": "addaab39875cb71acb81de7c561ebcc7ef9c0d3002757bb74a713e6d19f32fff"
+      "sha256": "9cef6e3a2c032a73b8547a206f8eec9fcce29f977d1877123b5489257f6f71f9"
     },
     {
       "category": "machine-audio",
       "gitMode": "100644",
       "path": "apps/machine/public/audio/voice/product/underwear.mp3",
       "reason": "Production Machine audio asset.",
-      "sha256": "3d409787d240c3afc07bc9c53521103653f59cfc6a18205e2c83f23c4f5eea03"
+      "sha256": "9f3a046f254579c3800acc07ff00b098dc8a653ecea125fab12d9524a3511db5"
     },
     {
       "category": "machine-audio",

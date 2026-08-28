@@ -373,11 +373,11 @@ function reportLog(
     fulfillmentRecovery: ["evidence.platformLog", evidence.platformLog],
     faultRecovery: [
       "evidence.serial.rawFrames",
-      recordValue(reportRecord.evidence).serial.rawFrames,
+      recordValue(recordValue(reportRecord.evidence).serial).rawFrames,
     ],
     skuRace: [
       "evidence.serial.rawFrames",
-      recordValue(reportRecord.evidence).serial.rawFrames,
+      recordValue(recordValue(reportRecord.evidence).serial).rawFrames,
     ],
   }[track] as [string, unknown] | undefined;
   if (!source || !meaningfulLog(source[1])) return null;

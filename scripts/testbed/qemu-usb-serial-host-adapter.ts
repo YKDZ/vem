@@ -633,7 +633,7 @@ function startSession(request: JsonRecord): JsonRecord {
           ? "pickup-timeout-blocked"
           : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "mechanical"
             ? "mechanical-fault"
-          : "normal",
+            : "normal",
       "--trace",
       "--f0-release-file",
       releaseF0Path,
@@ -690,7 +690,7 @@ function startSession(request: JsonRecord): JsonRecord {
           ? "e6"
           : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "mechanical"
             ? "mechanical"
-          : "normal",
+            : "normal",
     journalPath,
     releaseF0Path,
     releaseF2Path,

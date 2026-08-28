@@ -476,6 +476,7 @@ function validateFaultRecoveryTrack(
   if (
     assertions.mechanicalFaultRaisedLock !== true ||
     assertions.maintenanceResetButtonCaptured !== true ||
+    assertions.maintenanceVisionDebugCaptured !== true ||
     assertions.faultResetAutoClearedLock !== true ||
     assertions.refillRestoredSaleReady !== true ||
     faultReset.wholeMachineLockCleared !== true ||

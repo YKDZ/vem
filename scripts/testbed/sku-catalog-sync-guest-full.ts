@@ -6,6 +6,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import {
+  adminToken,
+  daemonGet,
+  fetchJson,
+  option,
+  platform,
+  required,
+  rows,
+  writeJson,
+  type HandoffRecord,
+  type JsonRecord,
+} from "./fault-recovery-guest-full.ts";
+import {
   activateVisibleSelector,
   captureCheckpoint,
   CdpClient,
@@ -15,19 +27,6 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
-import {
-  adminToken,
-  daemonGet,
-  fetchJson,
-  option,
-  platform,
-  readJson,
-  required,
-  rows,
-  writeJson,
-  type HandoffRecord,
-  type JsonRecord,
-} from "./fault-recovery-guest-full.ts";
 
 const SCHEMA_VERSION = "vem-sku-catalog-sync-guest-full/v1";
 const TARGET_SLOT_COUNT = 40;
@@ -135,7 +134,10 @@ export async function runSkuCatalogSyncGuest(options: {
 
     const variants = rows(baselineReport, "product_variants") as JsonRecord[];
     const products = rows(baselineReport, "products") as JsonRecord[];
-    const categories = rows(baselineReport, "product_categories") as JsonRecord[];
+    const categories = rows(
+      baselineReport,
+      "product_categories",
+    ) as JsonRecord[];
     const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
     if (variants.length === 0 || products.length === 0) {
       throw new Error("fixture platform report has no products or variants");
@@ -229,11 +231,6 @@ export async function runSkuCatalogSyncGuest(options: {
         candidate.status === "active",
     ) as JsonRecord | undefined;
     if (!targetVariant) throw new Error("no replacement variant available");
-    const targetProduct = productById.get(String(targetVariant.productId));
-    const targetCategory = categoryById.get(
-      String(targetProduct?.categoryId ?? ""),
-    );
-
     const planogramVersion = `PLAN-SKU-CATALOG-${Date.now()}`;
     const slotsPayload = allSlots.map((slot) => {
       const slotId = String(slot.id);
@@ -286,7 +283,9 @@ export async function runSkuCatalogSyncGuest(options: {
         `daemon did not adopt ${planogramVersion}; saw ${String(saleView?.planogramVersion)}`,
       );
     }
-    if ((saleView.items as unknown[] | undefined)?.length !== TARGET_SLOT_COUNT) {
+    if (
+      (saleView.items as unknown[] | undefined)?.length !== TARGET_SLOT_COUNT
+    ) {
       throw new Error(
         `expected ${TARGET_SLOT_COUNT} sale-view items, got ${String((saleView.items as unknown[] | undefined)?.length)}`,
       );

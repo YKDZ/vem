@@ -387,7 +387,8 @@ beforeEach(() => {
       lowerControllerFault: null,
     },
     wholeMachineLockCleared: true,
-    message: "lower controller fault reset completed and whole-machine lock cleared",
+    message:
+      "lower controller fault reset completed and whole-machine lock cleared",
   });
   client.submitStockMaintenanceBatch.mockImplementation(async (request) => ({
     task: {

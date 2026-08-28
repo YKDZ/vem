@@ -6,24 +6,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import {
-  activateVisibleSelector,
-  CdpClient,
-  discoverMachineUiTarget,
-  enablePageRuntime,
-  rewriteWebSocketDebuggerUrl,
-  waitForRoute,
-} from "./machine-ui-cdp-driver.ts";
-import { openFixtureProductFromCatalog } from "./payment-recovery-guest-full.ts";
-import { waitForSaleStartCapability } from "./scanner-payment-code-guest-full.ts";
-import {
   adminToken,
   control,
   daemonGet,
-  daemonPost,
   fetchJson,
   option,
   platform,
-  readJson,
   readPaymentSurface,
   readUi,
   required,
@@ -34,6 +22,16 @@ import {
   type HandoffRecord,
   type JsonRecord,
 } from "./fault-recovery-guest-full.ts";
+import {
+  activateVisibleSelector,
+  CdpClient,
+  discoverMachineUiTarget,
+  enablePageRuntime,
+  rewriteWebSocketDebuggerUrl,
+  waitForRoute,
+} from "./machine-ui-cdp-driver.ts";
+import { openFixtureProductFromCatalog } from "./payment-recovery-guest-full.ts";
+import { waitForSaleStartCapability } from "./scanner-payment-code-guest-full.ts";
 
 const SCHEMA_VERSION = "vem-sku-race-guest-full/v1";
 
@@ -122,16 +120,19 @@ export async function runSkuRaceGuest(options: {
       (candidate) => candidate.code === machineCode,
     );
     const machineId = required(machine?.id, "machine id");
-    const fixture = (
-      guestInput.fixtureAllocation as JsonRecord | undefined
-    )?.[options.fixtureKey] as JsonRecord | undefined;
+    const fixture = (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
+      options.fixtureKey
+    ] as JsonRecord | undefined;
     const targetSlotId = required(
       fixture?.slotId,
       `${options.fixtureKey} slotId`,
     );
     const variants = rows(baselineReport, "product_variants") as JsonRecord[];
     const products = rows(baselineReport, "products") as JsonRecord[];
-    const categories = rows(baselineReport, "product_categories") as JsonRecord[];
+    const categories = rows(
+      baselineReport,
+      "product_categories",
+    ) as JsonRecord[];
     const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
     const targetInventory = inventoriesRows.find(
       (inventory) => inventory.slotId === targetSlotId,
@@ -143,7 +144,8 @@ export async function runSkuRaceGuest(options: {
       (variant) =>
         variant.id !== currentVariant?.id && variant.status === "active",
     ) as JsonRecord | undefined;
-    if (!replacementVariant) throw new Error("no replacement variant available");
+    if (!replacementVariant)
+      throw new Error("no replacement variant available");
     const replacementProduct = products.find(
       (product) => product.id === replacementVariant.productId,
     ) as JsonRecord | undefined;
@@ -173,10 +175,9 @@ export async function runSkuRaceGuest(options: {
     await client.connect();
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    await waitForSaleStartCapability(
-      (path) => daemonGet(handoff, path),
-      { paymentOptionKey: "mock:mock" },
-    );
+    await waitForSaleStartCapability((path) => daemonGet(handoff, path), {
+      paymentOptionKey: "mock:mock",
+    });
 
     session = (await control(guestInput, "/v1/serial-sessions/start", {
       runId,
@@ -227,7 +228,11 @@ export async function runSkuRaceGuest(options: {
       { method: "POST", headers: { "content-type": "application/json" } },
     );
     const liveSale = await waitForCommand(handoff, sale);
-    await control(guestInput, `/v1/serial-sessions/${sessionId}/bind-sale`, liveSale);
+    await control(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/bind-sale`,
+      liveSale,
+    );
     await control(guestInput, `/v1/serial-sessions/${sessionId}/wait-frame`, {
       parsedOpcode: "VEND",
       timeoutMs: 30_000,
@@ -238,15 +243,6 @@ export async function runSkuRaceGuest(options: {
     });
 
     const newPlanogramVersion = `PLAN-SKU-RACE-${Date.now()}`;
-    const slotList = (await adminRequest(
-      guestInput,
-      token,
-      "GET",
-      `/machines/${machineId}/slots`,
-    )) as { items?: unknown[] };
-    const targetSlot = (slotList.items as JsonRecord[]).find(
-      (slot) => slot.id === targetSlotId,
-    );
     const payloadSlots = (oldSaleView.items as JsonRecord[]).map((item) => ({
       slotId: item.slotId,
       rowNo: item.rowNo,
@@ -254,9 +250,12 @@ export async function runSkuRaceGuest(options: {
       capacity: item.capacity,
       parLevel: item.parLevel,
       inventoryId: item.inventoryId,
-      variantId: item.slotId === targetSlotId ? replacementVariant.id : item.variantId,
+      variantId:
+        item.slotId === targetSlotId ? replacementVariant.id : item.variantId,
       productId:
-        item.slotId === targetSlotId ? replacementVariant.productId : item.productId,
+        item.slotId === targetSlotId
+          ? replacementVariant.productId
+          : item.productId,
       productName:
         item.slotId === targetSlotId
           ? String(replacementProduct?.name ?? item.productName)
@@ -290,17 +289,16 @@ export async function runSkuRaceGuest(options: {
       productSortOrder: item.productSortOrder,
       targetGender:
         item.slotId === targetSlotId
-          ? replacementVariant.target_gender ?? null
+          ? (replacementVariant.target_gender ?? null)
           : item.targetGender,
     }));
-    (report.evidence as JsonRecord).publishedDuringSale =
-      await adminRequest(
-        guestInput,
-        token,
-        "POST",
-        `/machines/${machineId}/planogram-versions`,
-        { planogramVersion: newPlanogramVersion, slots: payloadSlots },
-      );
+    (report.evidence as JsonRecord).publishedDuringSale = await adminRequest(
+      guestInput,
+      token,
+      "POST",
+      `/machines/${machineId}/planogram-versions`,
+      { planogramVersion: newPlanogramVersion, slots: payloadSlots },
+    );
 
     const fenceDeadline = Date.now() + 8_000;
     do {
@@ -318,9 +316,11 @@ export async function runSkuRaceGuest(options: {
       parsedOpcode: "F2",
       timeoutMs: 30_000,
     });
-    (report.evidence as JsonRecord).ui = await readUi(client).catch((error) => ({
-      error: String(error),
-    }));
+    (report.evidence as JsonRecord).ui = await readUi(client).catch(
+      (error) => ({
+        error: String(error),
+      }),
+    );
     (report.evidence as JsonRecord).serial = await control(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
@@ -332,10 +332,7 @@ export async function runSkuRaceGuest(options: {
     const adoptDeadline = Date.now() + 90_000;
     let saleViewAfter: JsonRecord | null = null;
     do {
-      saleViewAfter = (await daemonGet(
-        handoff,
-        "/v1/sale-view",
-      )) as JsonRecord;
+      saleViewAfter = (await daemonGet(handoff, "/v1/sale-view")) as JsonRecord;
       if (saleViewAfter.planogramVersion === newPlanogramVersion) break;
       await sleep(1_000);
     } while (Date.now() < adoptDeadline);

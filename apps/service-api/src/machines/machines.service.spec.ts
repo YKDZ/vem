@@ -2816,7 +2816,9 @@ describe("MachinesService planogram lifecycle", () => {
           from: () => ({ where: () => ({ limit: async () => [] }) }),
         })
         .mockReturnValueOnce({
-          from: () => ({ innerJoin: () => ({ where: async () => [mismatch] }) }),
+          from: () => ({
+            innerJoin: () => ({ where: async () => [mismatch] }),
+          }),
         }),
       update: vi
         .fn()
