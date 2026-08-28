@@ -742,6 +742,7 @@ async function waitForB3Sequence(
     evidence = (await controlRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
+      { rawFrameLimit: 1024 },
     )) as JsonRecord;
     const frames = b3FramesSince(evidence, beforeFrameCount);
     if (
@@ -1363,6 +1364,7 @@ export async function runPresenceAndAudioGuestFull(
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       activeGuestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
+      { rawFrameLimit: 1024 },
     );
     const ventFrameCursor = serialEvidenceCursor(
       ventEvidenceBefore as JsonRecord | null,
@@ -1434,6 +1436,7 @@ export async function runPresenceAndAudioGuestFull(
     const duplicateB3 = await dependencies.controlPlaneRequest(
       activeGuestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
+      { rawFrameLimit: 1024 },
     );
     const duplicateB3Record = duplicateB3 as JsonRecord | null;
     const afterAdminB3Record = afterAdminB3 as JsonRecord;
