@@ -709,6 +709,13 @@ export async function runFaultRecoveryGuest(options: {
     throw error;
   } finally {
     await cleanup();
+    if (guestInput && handoff) {
+      await daemonPost(
+        handoff,
+        "/v1/hardware/fault-reset",
+        { operatorNote: "testbed fault recovery cleanup" },
+      ).catch(() => undefined);
+    }
     writeJson(options.outPath, report);
     await client?.close().catch(() => undefined);
   }
