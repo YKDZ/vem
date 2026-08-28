@@ -257,7 +257,7 @@ function assertPresenceVentEvidence(
     operatorSetting.commandNo.trim() === "" ||
     operatorSetting?.requestedSpeed !== 2 ||
     operatorSetting?.resultStatus !== "succeeded" ||
-    duplicateSameEdge?.actionId !== expected[0][0] ||
+    !String(duplicateSameEdge?.actionId ?? "").endsWith(`:${expected[0][0]}`) ||
     duplicateSameEdge?.outcome !== "deduplicated" ||
     operatorFrame?.parsedOpcode !== "B3" ||
     b3Speed(operatorFrame) !== 2 ||

@@ -1044,7 +1044,7 @@ async function submitTemporaryVentStop(
 
 async function submitDuplicateStablePresenceAction(
   handoff: HandoffRecord,
-  edgeId: string,
+  actionId: string,
   dependencies: PresenceAudioDependencies,
 ): Promise<unknown> {
   const daemon = handoff?.daemon as JsonRecord | undefined;
@@ -1067,20 +1067,43 @@ async function submitDuplicateStablePresenceAction(
         action: { type: "restore_base_vent_speed" },
       }),
     });
-  const actionId = `presence-and-audio-test-${dependencies.randomUUID()}:${edgeId}`;
-  const first = (await submit(actionId)) as JsonRecord;
-  if (first?.outcome !== "accepted") {
+  const response = (await submit(actionId)) as JsonRecord;
+  if (response?.outcome !== "deduplicated") {
     throw new Error(
-      `stable-presence action was not accepted: ${JSON.stringify(first)}`,
+      `duplicate stable-presence action was not deduplicated: ${JSON.stringify(response)}`,
     );
   }
-  const second = (await submit(actionId)) as JsonRecord;
-  if (second?.outcome !== "deduplicated") {
-    throw new Error(
-      `duplicate stable-presence action was not deduplicated: ${JSON.stringify(second)}`,
-    );
+  return { ...response, actionId, outcome: response?.outcome };
+}
+
+async function readStablePresenceActionId(
+  handoff: HandoffRecord,
+  dependencies: PresenceAudioDependencies,
+): Promise<string> {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
+  const snapshot = (await (
+    dependencies.fetchJson as (
+      url: string,
+      options: JsonRecord,
+    ) => Promise<unknown>
+  )(`${daemonBaseUrl(handoff)}/v1/environment-control`, {
+    headers: {
+      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
+    },
+  })) as JsonRecord;
+  const lastAction = snapshot?.lastAction as JsonRecord | undefined;
+  if (
+    lastAction?.source === "stable_presence" &&
+    lastAction?.action === "restore_base_vent_speed" &&
+    typeof lastAction.actionId === "string" &&
+    lastAction.actionId.trim() !== ""
+  ) {
+    return String(lastAction.actionId);
   }
-  return { first, second, actionId, outcome: second?.outcome };
+  throw new Error(
+    `stable presence action id is not available: ${JSON.stringify(snapshot)}`,
+  );
 }
 
 function defaultDependencies(): PresenceAudioDependencies {
@@ -1390,6 +1413,10 @@ export async function runPresenceAndAudioGuestFull(
       [3],
       dependencies,
     );
+    const stablePresenceActionId = await readStablePresenceActionId(
+      activeHandoff,
+      dependencies,
+    );
     await dependencies.sleep(5_100);
     const adminOverride = await dependencies.issueAdminVentOverride(
       activeGuestInput,
@@ -1411,7 +1438,7 @@ export async function runPresenceAndAudioGuestFull(
     const duplicateSameEdge =
       await dependencies.submitDuplicateStablePresenceAction(
         activeHandoff,
-        stableEdgeId(initialWelcome.transitionId),
+        stablePresenceActionId,
         dependencies,
       );
     const duplicateFenceTraceId = traceId(await readTrace());
