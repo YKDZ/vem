@@ -281,6 +281,41 @@ export const daemonIpcDeviceBindingActivationSchema = z
   })
   .strict();
 
+export const daemonIpcLowerControllerResetStatusSchema = z.enum([
+  "succeeded",
+  "rejected_not_faulted",
+  "mechanical_fault",
+  "pickup_platform_blocked",
+  "failed",
+  "unsupported",
+]);
+
+export const daemonIpcLowerControllerResetResultSchema = z
+  .object({
+    adapter: z.string(),
+    status: daemonIpcLowerControllerResetStatusSchema,
+    message: z.string(),
+    reportedAt: z.string(),
+    portPath: z.string().nullable().optional(),
+    lowerControllerFault: z
+      .enum(["shared_mechanical", "pickup_platform_blocked"])
+      .nullable()
+      .optional(),
+  })
+  .strict();
+
+export const daemonIpcFaultResetResponseSchema = z
+  .object({
+    reset: daemonIpcLowerControllerResetResultSchema,
+    wholeMachineLockCleared: z.boolean(),
+    message: z.string(),
+  })
+  .strict();
+
+export type DaemonIpcFaultResetResponse = z.infer<
+  typeof daemonIpcFaultResetResponseSchema
+>;
+
 const daemonIpcAudioCueSettingsSchema = z
   .object({
     enabled: z.boolean(),

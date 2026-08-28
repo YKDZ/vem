@@ -5,7 +5,7 @@ use std::{
 
 use vending_core::{
     hardware::DispenseCommandPayload, hardware::DispenseProgressObserver,
-    hardware::HardwareAdapter, serial::EnvironmentSample,
+    hardware::HardwareAdapter, hardware::LowerControllerResetResult, serial::EnvironmentSample,
 };
 
 #[derive(Clone)]
@@ -104,6 +104,12 @@ impl HardwareSupervisor {
         adapter.self_check().await
     }
 
+    pub async fn reset_from_fault(&self) -> LowerControllerResetResult {
+        let _operation = self.lower_controller.lock().await;
+        let adapter = self.adapter.read().expect("hardware adapter lock").clone();
+        adapter.reset_from_fault().await
+    }
+
     pub async fn dispense(
         &self,
         command: DispenseCommandPayload,
@@ -173,6 +179,17 @@ impl HardwareAdapter for UnavailableHardwareAdapter {
             resolution_source: Some("stable_device_binding".to_string()),
             bound_usb_identity: None,
             candidates: vec![],
+            lower_controller_fault: None,
+        }
+    }
+
+    async fn reset_from_fault(&self) -> LowerControllerResetResult {
+        LowerControllerResetResult {
+            adapter: "serial".to_string(),
+            status: vending_core::hardware::LowerControllerResetStatus::Failed,
+            message: self.message.clone(),
+            reported_at: crate::state::store::now_iso(),
+            port_path: None,
             lower_controller_fault: None,
         }
     }

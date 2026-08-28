@@ -206,8 +206,7 @@ const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
     !wholeMachineMaintenanceLock.value ||
-    !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
-    wholeMachineLockMaintenance.operatorNote.trim().length === 0,
+    !wholeMachineLockMaintenance.selfCheckEvidence?.online,
 );
 const hasAcceptedProvisioningProfile = computed(() => {
   const configuration = machineStore.effectiveRuntimeConfiguration;
@@ -792,6 +791,7 @@ async function retryCurrentEnvironmentControl(): Promise<void> {
 
 const wholeMachineLockMaintenance = reactive({
   loading: false,
+  resetLoading: false,
   message: null as string | null,
   operatorNote: "",
   selfCheckEvidence: null as null | {
@@ -1085,6 +1085,29 @@ async function clearWholeMachineLock(): Promise<void> {
   }
 }
 
+async function resetLowerControllerFault(): Promise<void> {
+  wholeMachineLockMaintenance.resetLoading = true;
+  wholeMachineLockMaintenance.message = null;
+  try {
+    const result = await daemonClient.resetLowerControllerFault(
+      wholeMachineLockMaintenance.operatorNote,
+    );
+    wholeMachineLockMaintenance.message = result.message;
+    if (result.wholeMachineLockCleared) {
+      wholeMachineLockMaintenance.operatorNote = "";
+    }
+    await runHardwareCheck();
+    await refreshDiagnostics();
+  } catch (error) {
+    wholeMachineLockMaintenance.message = operatorErrorMessage(
+      "下位机复位未完成，请检查下位机后重试。",
+      error,
+    );
+  } finally {
+    wholeMachineLockMaintenance.resetLoading = false;
+  }
+}
+
 function saleCriticalBlockerLabel(code: string): string {
   const labels: Record<string, string> = {
     LOWER_CONTROLLER_UNAVAILABLE: "下位机未在线",
@@ -1106,7 +1129,7 @@ function saleCriticalBlockerAction(code: string): string {
     LOWER_CONTROLLER_UNAVAILABLE:
       "检查下位机供电、串口线和 COM 口后运行硬件自检。",
     [WHOLE_MACHINE_LOCKED_BLOCKER_CODE]:
-      "处理卡货或机械故障，运行下位机自检，通过后填写处理记录解除整机锁。",
+      "处理卡货或机械故障，点击「下位机故障复位」；复位成功后自动解除整机锁。",
     PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING:
       "核对生产硬件配置和验收资料，确认真实下位机路径。",
     PRODUCTION_DISPENSE_PATH_MOCK: "切换到生产下位机适配器后再恢复销售。",
@@ -2085,6 +2108,21 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   · {{ wholeMachineLockMaintenance.selfCheckEvidence.portPath }}
                 </span>
               </div>
+              <button
+                class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
+                type="button"
+                :disabled="
+                  wholeMachineLockMaintenance.resetLoading ||
+                  !wholeMachineMaintenanceLock
+                "
+                @click="resetLowerControllerFault"
+              >
+                {{
+                  wholeMachineLockMaintenance.resetLoading
+                    ? "下位机复位中…"
+                    : "下位机故障复位"
+                }}
+              </button>
               <label
                 class="grid gap-2 text-left text-sm font-semibold text-rose-50"
               >
@@ -2092,7 +2130,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 <textarea
                   v-model="wholeMachineLockMaintenance.operatorNote"
                   class="min-h-24 rounded-xl border border-rose-100/30 bg-slate-950/45 p-3 font-normal text-white outline-none"
-                  placeholder="填写现场处理、复位和自检结果"
+                  placeholder="可选：填写现场处理、复位和自检结果"
                 />
               </label>
               <button
@@ -2101,7 +2139,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :disabled="clearWholeMachineLockDisabled"
                 @click="clearWholeMachineLock"
               >
-                确认解除整机锁
+                自检通过后解除整机锁
               </button>
             </div>
           </div>

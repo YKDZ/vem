@@ -1,6 +1,7 @@
 import {
   type ClearHardwareBindingRequest,
   type ConfirmHardwareBindingRequest,
+  type DaemonIpcFaultResetResponse,
   type EffectiveMachineRuntimeConfiguration,
   type EnvironmentControlAction,
   type EnvironmentControlAdmission,
@@ -9,6 +10,7 @@ import {
   type SetScannerProtocolParametersRequest,
   clearHardwareBindingRequestSchema,
   confirmHardwareBindingRequestSchema,
+  daemonIpcFaultResetResponseSchema,
   effectiveMachineRuntimeConfigurationSchema,
   environmentControlActionSchema,
   environmentControlAdmissionSchema,
@@ -557,6 +559,17 @@ export class DaemonApiClient {
       method: "POST",
       body: { operatorNote },
     });
+  }
+
+  async resetLowerControllerFault(
+    operatorNote: string,
+  ): Promise<DaemonIpcFaultResetResponse> {
+    return daemonIpcFaultResetResponseSchema.parse(
+      await this.request("/v1/hardware/fault-reset", {
+        method: "POST",
+        body: { operatorNote },
+      }),
+    );
   }
 
   async getSaleStartCapability(): Promise<SaleStartCapabilitySnapshot> {

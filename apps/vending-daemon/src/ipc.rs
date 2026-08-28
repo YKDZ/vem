@@ -113,7 +113,23 @@ struct DeviceBindingTestResponse {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClearWholeMachineMaintenanceLockRequest {
+    #[serde(default)]
     operator_note: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FaultResetRequest {
+    #[serde(default)]
+    operator_note: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FaultResetResponse {
+    reset: vending_core::hardware::LowerControllerResetResult,
+    whole_machine_lock_cleared: bool,
+    message: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -487,6 +503,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
             post(manual_dispense_diagnostic),
         )
         .route("/v1/hardware/self-check", post(hardware_self_check))
+        .route("/v1/hardware/fault-reset", post(fault_reset))
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route("/v1/hardware-bindings/:role/test", post(test_binding))
         .route("/v1/sync/status", get(sync_status))
@@ -2362,6 +2379,123 @@ async fn hardware_self_check(
     Json(status).into_response()
 }
 
+async fn fault_reset(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<FaultResetRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    let previous_lock = match ctx.state.whole_machine_maintenance_lock().await {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "whole_machine_lock_read_failed",
+                error,
+            );
+        }
+    };
+
+    let reset = ctx.hardware.reset_from_fault().await;
+    let mut cleared = false;
+    let mut message = String::new();
+
+    if reset.status == vending_core::hardware::LowerControllerResetStatus::Succeeded {
+        let production_dispense_path_ready = reset.adapter == "serial"
+            && reset
+                .port_path
+                .as_deref()
+                .is_some_and(|path| !path.trim_start().starts_with("tcp://"));
+        let evidence = crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+            adapter: reset.adapter.clone(),
+            online: true,
+            message: reset.message.clone(),
+            port_path: reset.port_path.clone(),
+            checked_at: reset.reported_at.clone(),
+            production_dispense_path_ready,
+            production_dispense_path_code: if production_dispense_path_ready {
+                "PRODUCTION_DISPENSE_PATH_READY".to_string()
+            } else {
+                "PRODUCTION_DISPENSE_PATH_REQUIRED".to_string()
+            },
+            production_dispense_path_message: if production_dispense_path_ready {
+                "lower-controller fault reset confirmed a production serial path".to_string()
+            } else {
+                "lower-controller fault reset did not confirm a production serial path".to_string()
+            },
+        };
+        if let Err(error) = ctx
+            .state
+            .record_whole_machine_lock_recovery_evidence(&evidence)
+            .await
+        {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "whole_machine_lock_evidence_write_failed",
+                error,
+            );
+        }
+
+        if let Some(previous) = previous_lock {
+            match ctx.state.whole_machine_maintenance_lock().await {
+                Ok(Some(current)) if current == previous => {
+                    let audit = crate::state::store::WholeMachineMaintenanceLockClearAudit {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        operator_note: input.operator_note.trim().to_string(),
+                        cleared_at: crate::state::store::now_iso(),
+                        previous,
+                        recovery_evidence: evidence,
+                    };
+                    if let Err(error) = ctx
+                        .state
+                        .clear_whole_machine_maintenance_lock_with_audit(&audit)
+                        .await
+                    {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "whole_machine_lock_clear_failed",
+                            error,
+                        );
+                    }
+                    cleared = true;
+                    message =
+                        "lower controller fault reset completed and whole-machine lock cleared"
+                            .to_string();
+                }
+                Ok(_) => {
+                    message = "lower controller fault reset completed, but a newer whole-machine lock appeared; lock kept"
+                        .to_string();
+                }
+                Err(error) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "whole_machine_lock_read_failed",
+                        error,
+                    );
+                }
+            }
+        } else {
+            message = "lower controller fault reset completed without an active whole-machine lock"
+                .to_string();
+        }
+    } else {
+        message = format!(
+            "lower controller fault reset did not complete: {}",
+            reset.message
+        );
+    }
+
+    invalidate_sale_start_capability(&ctx).await;
+    Json(FaultResetResponse {
+        reset,
+        whole_machine_lock_cleared: cleared,
+        message,
+    })
+    .into_response()
+}
+
 async fn clear_whole_machine_maintenance_lock(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -2371,13 +2505,6 @@ async fn clear_whole_machine_maintenance_lock(
         return error.into_response();
     }
     let operator_note = input.operator_note.trim();
-    if operator_note.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "operator_note_required",
-            "operator note is required to clear whole-machine lock",
-        );
-    }
     let previous = match ctx.state.whole_machine_maintenance_lock().await {
         Ok(value) => value,
         Err(error) => {

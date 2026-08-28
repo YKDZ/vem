@@ -37,6 +37,7 @@ const client = vi.hoisted(() => ({
   setScannerProtocolParameters: vi.fn(),
   setAudioPreferences: vi.fn(),
   clearWholeMachineMaintenanceLock: vi.fn(),
+  resetLowerControllerFault: vi.fn(),
   submitStockMaintenanceBatch: vi.fn(),
   runHardwareSelfCheck: vi.fn(),
   runManualDispenseDiagnostic: vi.fn(),
@@ -376,6 +377,18 @@ beforeEach(() => {
     return currentConfiguration;
   });
   client.clearWholeMachineMaintenanceLock.mockResolvedValue({ cleared: true });
+  client.resetLowerControllerFault.mockResolvedValue({
+    reset: {
+      adapter: "serial",
+      status: "succeeded",
+      message: "reset completed",
+      reportedAt: "2026-08-28T00:00:00.000Z",
+      portPath: "COM1",
+      lowerControllerFault: null,
+    },
+    wholeMachineLockCleared: true,
+    message: "lower controller fault reset completed and whole-machine lock cleared",
+  });
   client.submitStockMaintenanceBatch.mockImplementation(async (request) => ({
     task: {
       taskId: request.taskId,
@@ -668,7 +681,28 @@ describe("Local Operations", () => {
 
     expect(host.textContent).toContain("整机维护锁");
     expect(host.textContent).toContain("lower controller recovery is required");
-    expect(button(host, "确认解除整机锁")).toBeTruthy();
+    expect(button(host, "下位机故障复位")).toBeTruthy();
+    expect(button(host, "自检通过后解除整机锁")).toBeTruthy();
+  });
+
+  it("runs the lower-controller fault reset and reflects an auto-cleared lock", async () => {
+    const host = await render();
+    useSaleCapabilityStore().acceptSnapshot(
+      saleCapabilitySnapshot({
+        canStartSale: false,
+        blockerCode: WHOLE_MACHINE_LOCKED_BLOCKER_CODE,
+        blockerMessage: "lower controller recovery is required",
+      }),
+    );
+    await nextTick();
+
+    button(host, "下位机故障复位").click();
+    await flush();
+
+    expect(client.resetLowerControllerFault).toHaveBeenCalledWith("");
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("whole-machine lock cleared");
+    });
   });
 
   it.each([
