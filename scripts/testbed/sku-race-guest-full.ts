@@ -138,12 +138,26 @@ export async function runSkuRaceGuest(options: {
       fixture?.slotId,
       `${options.fixtureKey} slotId`,
     );
-    const variants = rows(baselineReport, "product_variants") as JsonRecord[];
-    const products = rows(baselineReport, "products") as JsonRecord[];
-    const categories = rows(
-      baselineReport,
-      "product_categories",
-    ) as JsonRecord[];
+    const productsEnvelope = (await adminRequest(
+      guestInput,
+      token,
+      "GET",
+      "/products?page=1&pageSize=100",
+    )) as JsonRecord;
+    const variantsEnvelope = (await adminRequest(
+      guestInput,
+      token,
+      "GET",
+      "/product-variants?page=1&pageSize=200",
+    )) as JsonRecord;
+    const products =
+      ((productsEnvelope.data as JsonRecord | undefined)?.items as
+        | JsonRecord[]
+        | undefined) ?? [];
+    const variants =
+      ((variantsEnvelope.data as JsonRecord | undefined)?.items as
+        | JsonRecord[]
+        | undefined) ?? [];
     const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
     const targetInventory = inventoriesRows.find(
       (inventory) => inventory.slotId === targetSlotId,
@@ -160,9 +174,13 @@ export async function runSkuRaceGuest(options: {
     const replacementProduct = products.find(
       (product) => product.id === replacementVariant.productId,
     ) as JsonRecord | undefined;
-    const replacementCategory = categories.find(
-      (category) => category.id === replacementProduct?.categoryId,
-    ) as JsonRecord | undefined;
+    const categoryNameFor = (productName: string): string => {
+      if (productName.includes("T恤") || productName.includes("T·"))
+        return "T恤";
+      if (productName.includes("袜")) return "袜子";
+      if (productName.includes("内裤")) return "内裤";
+      return "其他";
+    };
     const oldSaleView = (await daemonGet(
       handoff,
       "/v1/sale-view",
@@ -273,13 +291,10 @@ export async function runSkuRaceGuest(options: {
           : item.productName,
       productDescription: item.productDescription,
       coverImageUrl: item.coverImageUrl,
-      categoryId:
-        item.slotId === targetSlotId
-          ? String(replacementCategory?.id ?? item.categoryId)
-          : item.categoryId,
+      categoryId: item.slotId === targetSlotId ? null : item.categoryId,
       categoryName:
         item.slotId === targetSlotId
-          ? String(replacementCategory?.name ?? item.categoryName)
+          ? categoryNameFor(String(replacementProduct?.name ?? ""))
           : item.categoryName,
       sku:
         item.slotId === targetSlotId

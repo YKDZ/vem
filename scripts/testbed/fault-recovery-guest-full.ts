@@ -701,6 +701,15 @@ export async function runFaultRecoveryGuest(options: {
       handoff,
       "/v1/transactions/current",
     ).catch(() => null);
+    const transactionClearDeadline = Date.now() + 30_000;
+    do {
+      const tx = (await daemonGet(
+        handoff,
+        "/v1/transactions/current",
+      ).catch(() => null)) as JsonRecord | null;
+      if (!tx?.orderId) break;
+      await sleep(500);
+    } while (Date.now() < transactionClearDeadline);
     const capabilityBefore = (await daemonGet(
       handoff,
       "/v1/sale-start-capability",

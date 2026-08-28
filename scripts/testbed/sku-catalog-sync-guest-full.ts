@@ -148,12 +148,33 @@ export async function runSkuCatalogSyncGuest(options: {
     )) as JsonRecord;
     (report.evidence as JsonRecord).baselineSaleView = baselineSaleView;
 
-    const variants = rows(baselineReport, "product_variants") as JsonRecord[];
-    const products = rows(baselineReport, "products") as JsonRecord[];
-    const categories = rows(
-      baselineReport,
-      "product_categories",
-    ) as JsonRecord[];
+    const productsEnvelope = (await adminRequest(
+      guestInput,
+      token,
+      "GET",
+      "/products?page=1&pageSize=100",
+    )) as JsonRecord;
+    const variantsEnvelope = (await adminRequest(
+      guestInput,
+      token,
+      "GET",
+      "/product-variants?page=1&pageSize=200",
+    )) as JsonRecord;
+    const products =
+      ((productsEnvelope.data as JsonRecord | undefined)?.items as
+        | JsonRecord[]
+        | undefined) ?? [];
+    const variants =
+      ((variantsEnvelope.data as JsonRecord | undefined)?.items as
+        | JsonRecord[]
+        | undefined) ?? [];
+    const categoryNameFor = (productName: string): string => {
+      if (productName.includes("T恤") || productName.includes("T·"))
+        return "T恤";
+      if (productName.includes("袜")) return "袜子";
+      if (productName.includes("内裤")) return "内裤";
+      return "其他";
+    };
     const inventoriesRows = rows(baselineReport, "inventories") as JsonRecord[];
     if (variants.length === 0 || products.length === 0) {
       throw new Error("fixture platform report has no products or variants");
@@ -207,10 +228,6 @@ export async function runSkuCatalogSyncGuest(options: {
     const productById = new Map(
       products.map((product) => [String(product.id), product]),
     );
-    const categoryById = new Map(
-      categories.map((category) => [String(category.id), category]),
-    );
-
     let variantIndex = 0;
     for (const slot of allSlots) {
       const slotId = String(slot.id);
@@ -260,7 +277,6 @@ export async function runSkuCatalogSyncGuest(options: {
         ? targetVariant
         : (variantById.get(String(inventory.variantId)) as JsonRecord);
       const product = productById.get(String(variant.productId)) as JsonRecord;
-      const category = categoryById.get(String(product.categoryId ?? ""));
       return {
         slotId,
         rowNo: Number(slot.rowNo),
@@ -273,8 +289,8 @@ export async function runSkuCatalogSyncGuest(options: {
         productName: String(product.name),
         productDescription: String(product.description ?? ""),
         coverImageUrl: null,
-        categoryId: String(category?.id ?? ""),
-        categoryName: String(category?.name ?? ""),
+        categoryId: null,
+        categoryName: categoryNameFor(String(product.name)),
         sku: String(variant.sku),
         size: String(variant.size ?? ""),
         color: String(variant.color ?? ""),
