@@ -123,7 +123,7 @@ describe("runtime business-check registry", () => {
       BUSINESS_CHECK_REGISTRY.find(
         (descriptor) => descriptor.name === "faultRecovery",
       )?.restoreFixtureStock,
-      true,
+      undefined,
     );
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(

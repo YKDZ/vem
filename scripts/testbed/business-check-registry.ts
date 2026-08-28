@@ -177,7 +177,6 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     name: "faultRecovery",
     core: true,
     fixtureKey: "fulfillmentRecovery",
-    restoreFixtureStock: true,
     runner: {
       kind: "node",
       script: "scripts/testbed/fault-recovery-guest-full.ts",
