@@ -195,9 +195,7 @@ export async function runSkuStockSyncGuest(options: {
       (machinesEnvelope.data as JsonRecord | undefined)?.items as
         | JsonRecord[]
         | undefined
-    )?.find(
-      (candidate) => candidate.code === machineCode,
-    );
+    )?.find((candidate) => candidate.code === machineCode);
     (report.evidence as JsonRecord).restore =
       await restoreBaselinePlanogramAndStock({
         guestInput,
