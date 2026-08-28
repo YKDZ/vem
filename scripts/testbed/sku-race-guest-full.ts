@@ -106,17 +106,21 @@ export async function runSkuRaceGuest(options: {
   let session: JsonRecord | null = null;
   let cleaned = false;
   let guestInput: JsonRecord | null = null;
+  let handoff: HandoffRecord | null = null;
+  let token = "";
+  let machineId = "";
+  let oldSaleView: JsonRecord | null = null;
   try {
     guestInput = readLocalJson(options.guestInputPath);
-    const handoff = readLocalJson(options.handoffPath) as HandoffRecord;
+    handoff = readLocalJson(options.handoffPath) as HandoffRecord;
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
-    const token = await adminToken(guestInput);
+    token = await adminToken(guestInput);
     const machines = await adminListAll(guestInput, token, "/machines");
     const machine = machines.find(
       (candidate) => candidate.code === machineCode,
     );
-    const machineId = required(machine?.id, "machine id");
+    machineId = required(machine?.id, "machine id");
     const fixture = (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
       options.fixtureKey
     ] as JsonRecord | undefined;
@@ -149,10 +153,7 @@ export async function runSkuRaceGuest(options: {
       if (productName.includes("内裤")) return "内裤";
       return "其他";
     };
-    const oldSaleView = (await daemonGet(
-      handoff,
-      "/v1/sale-view",
-    )) as JsonRecord;
+    oldSaleView = (await daemonGet(handoff, "/v1/sale-view")) as JsonRecord;
     const oldPlanogramVersion = required(
       oldSaleView.planogramVersion,
       "baseline planogramVersion",
@@ -172,9 +173,12 @@ export async function runSkuRaceGuest(options: {
     await client.connect();
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    await waitForSaleStartCapability((path) => daemonGet(handoff, path), {
-      paymentOptionKey: "mock:mock",
-    });
+    await waitForSaleStartCapability(
+      (path) => daemonGet(handoff as HandoffRecord, path),
+      {
+        paymentOptionKey: "mock:mock",
+      },
+    );
 
     session = (await control(guestInput, "/v1/serial-sessions/start", {
       runId,
@@ -384,6 +388,24 @@ export async function runSkuRaceGuest(options: {
           {},
         ).catch(() => undefined);
       }
+    }
+    if (
+      !report.ok &&
+      guestInput &&
+      handoff &&
+      oldSaleView &&
+      machineId &&
+      token
+    ) {
+      await restoreBaselinePlanogramAndStock({
+        guestInput,
+        handoff,
+        token,
+        machineId,
+        baselineSaleView: oldSaleView,
+        fixtures:
+          (guestInput.fixtureAllocation as JsonRecord | undefined) ?? {},
+      }).catch(() => undefined);
     }
     await client?.close().catch(() => undefined);
     writeJson(options.outPath, report);

@@ -114,18 +114,23 @@ export async function runSkuCatalogSyncGuest(options: {
     evidence: {},
   };
   let client: InstanceType<typeof CdpClient> | null = null;
+  let guestInput: JsonRecord | null = null;
+  let handoff: HandoffRecord | null = null;
+  let token = "";
+  let machineId = "";
+  let baselineSaleView: JsonRecord | null = null;
   try {
-    const guestInput = readLocalJson(options.guestInputPath);
-    const handoff = readLocalJson(options.handoffPath) as HandoffRecord;
+    guestInput = readLocalJson(options.guestInputPath);
+    handoff = readLocalJson(options.handoffPath) as HandoffRecord;
     const machineCode = required(guestInput.machineCode, "machineCode");
-    const token = await adminToken(guestInput);
+    token = await adminToken(guestInput);
     const machines = await adminListAll(guestInput, token, "/machines");
     const machine = machines.find(
       (candidate) => candidate.code === machineCode,
     );
-    const machineId = required(machine?.id, "machine id");
+    machineId = required(machine?.id, "machine id");
     report.machineId = machineId;
-    const baselineSaleView = (await daemonGet(
+    baselineSaleView = (await daemonGet(
       handoff,
       "/v1/sale-view",
     )) as JsonRecord;
@@ -375,6 +380,24 @@ export async function runSkuCatalogSyncGuest(options: {
     report.error = error instanceof Error ? error.message : String(error);
     throw error;
   } finally {
+    if (
+      !report.ok &&
+      guestInput &&
+      handoff &&
+      baselineSaleView &&
+      machineId &&
+      token
+    ) {
+      await restoreBaselinePlanogramAndStock({
+        guestInput,
+        handoff,
+        token,
+        machineId,
+        baselineSaleView,
+        fixtures:
+          (guestInput.fixtureAllocation as JsonRecord | undefined) ?? {},
+      }).catch(() => undefined);
+    }
     await client?.close().catch(() => undefined);
     writeJson(options.outPath, report);
   }
