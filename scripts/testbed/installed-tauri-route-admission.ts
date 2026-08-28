@@ -129,23 +129,47 @@ export async function admitInstalledTauriCatalog(
           })
         ).route;
       } catch (directRouteError) {
-        const dismissedOrderNo = await evaluate(
-          client,
-          `(() => {
-            const orderNo = document.querySelector("[data-test='result-page']")?.dataset.orderNo || "";
-            if (!orderNo) return null;
-            const storageKey = ${JSON.stringify(DISMISSED_TERMINAL_ORDER_STORAGE_KEY)};
-            const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
-            const next = Array.isArray(existing)
-              ? existing.filter((value) => value !== orderNo)
-              : [];
-            next.push(orderNo);
-            localStorage.setItem(storageKey, JSON.stringify(next.slice(-50)));
-            location.hash = "#/catalog";
-            location.reload();
-            return orderNo;
-          })()`,
-        );
+        let dismissedOrderNo: unknown = null;
+        const dismissDeadline = now() + 5_000;
+        do {
+          dismissedOrderNo = await evaluate(
+            client,
+            `(() => {
+              const remember = (orderNo) => {
+                const storageKey = ${JSON.stringify(
+                  DISMISSED_TERMINAL_ORDER_STORAGE_KEY,
+                )};
+                const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+                const next = Array.isArray(existing)
+                  ? existing.filter((value) => value !== orderNo)
+                  : [];
+                next.push(orderNo);
+                localStorage.setItem(storageKey, JSON.stringify(next.slice(-50)));
+                location.hash = "#/catalog";
+                location.reload();
+                return orderNo;
+              };
+              const page = document.querySelector("[data-test='result-page']");
+              const domOrderNo = page?.dataset.orderNo || "";
+              if (domOrderNo) return remember(domOrderNo);
+              const trace = window.__VEM_MACHINE_RUNTIME_TRACE__ || [];
+              const surface = [...trace].reverse().find(
+                (entry) =>
+                  entry?.type === "transaction_surface" &&
+                  typeof entry.orderNo === "string" &&
+                  entry.orderNo !== "",
+              );
+              return surface?.orderNo ? remember(surface.orderNo) : null;
+            })()`,
+          );
+          if (typeof dismissedOrderNo === "string" && dismissedOrderNo !== "")
+            break;
+          if (now() < dismissDeadline) {
+            await sleepFor(
+              Math.min(pollMs, Math.max(0, dismissDeadline - now())),
+            );
+          }
+        } while (now() < dismissDeadline);
         if (typeof dismissedOrderNo !== "string" || dismissedOrderNo === "") {
           throw directRouteError;
         }
