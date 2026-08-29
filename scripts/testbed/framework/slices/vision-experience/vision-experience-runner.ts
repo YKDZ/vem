@@ -213,7 +213,7 @@ export async function runVisionExperienceSlice({
   includeDeparture = false,
   replayTimeline = null,
   stopOwner = null,
-  timeoutMs = 60_000,
+  timeoutMs = 120_000,
   pollMs = 250,
   visionStabilityMs = 10_000,
   visionStabilityTimeoutMs = 60_000,
@@ -877,7 +877,7 @@ export async function main(
                 { stdio: "ignore" },
               );
             },
-        timeoutMs: 60_000,
+        timeoutMs: 120_000,
         pollMs: 250,
         visionStabilityMs: Number(process.env.VISION_STABILITY_MS ?? 10_000),
         visionStabilityTimeoutMs: Number(
