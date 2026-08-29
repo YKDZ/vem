@@ -351,7 +351,7 @@ $selectState = New-FixtureSwitchHarnessState
 Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $selectState.dependencies -ReadyStabilityMs 0 | Out-Null
 $selectedConfig = $selectState.state.files[$selectState.sitePath] | ConvertFrom-Json
 Assert-True ($selectedConfig.cameras.top.role -eq 'presence' -and $selectedConfig.cameras.top.video_path -eq "$($selectState.recordedRoot)\field-recommendation-near-top.mp4" -and $selectedConfig.cameras.top.loop -eq $true) 'select near did not write the field near top capture'
-Assert-True ($selectedConfig.cameras.front.role -eq 'profile_try_on' -and $selectedConfig.cameras.front.video_path -eq "$($selectState.recordedRoot)\geometry-near.mp4" -and $selectedConfig.cameras.front.loop -eq $true) 'select near did not write the geometry near front capture'
+Assert-True ($selectedConfig.cameras.front.role -eq 'profile_try_on' -and $selectedConfig.cameras.front.video_path -eq "$($selectState.recordedRoot)\field-recommendation-near-front.mp4" -and $selectedConfig.cameras.front.loop -eq $true) 'select near did not write the field near front capture'
 Assert-True ($selectState.oldMainPid -ne $selectState.newMainPid) 'harness did not model a replacement canonical owner PID'
 Assert-True (($selectState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'select mid did not atomically write before restarting the canonical owner'
 
@@ -554,10 +554,10 @@ Assert-ThrowsExactMessage {
 Assert-True (($detachedOwner.state.events -join '|') -eq 'write-site|stop-owner|stop-process:1102') 'main 残留时错误地启动了替换 owner'
 
 $missingNear = New-FixtureSwitchHarnessState
-$missingNear.state.files.Remove("$($missingNear.recordedRoot)\geometry-near.mp4")
+$missingNear.state.files.Remove("$($missingNear.recordedRoot)\field-recommendation-near-front.mp4")
 Assert-ThrowsMessage {
   Invoke-VemRecordedFixtureSwitch -Mode select -Segment near -Dependencies $missingNear.dependencies -ReadyStabilityMs 0
-} '安装录播文件缺失或不是本地绝对路径: geometryNear' 'select accepted a missing geometry near front clip'
+} '安装录播文件缺失或不是本地绝对路径: fieldRecommendationNearFront' 'select accepted a missing field near front clip'
 Assert-True ($missingNear.state.writeCount -eq 0 -and $missingNear.state.ownerCallCount -eq 0) 'missing near geometry clip wrote configuration or restarted owner'
 
 $driftedExpectedResults = New-FixtureSwitchHarnessState

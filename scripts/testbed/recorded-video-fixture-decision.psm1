@@ -420,22 +420,12 @@ function Invoke-VemRecordedFixtureSwitch {
     if ($Segment -eq 'mid') {
       throw '现场近远录播只支持 near 或 far'
     }
-    if ($Mode -eq 'select') {
-      # 几何验收使用经过生产观测器验证的合成近远前摄片段；现场真实照片只用于推荐链路。
-      $entryBySegment = @{
-        near = [pscustomobject]@{ top = 'fieldRecommendationNearTop'; front = 'geometryNear' }
-        far = [pscustomobject]@{ top = 'fieldRecommendationFarTop'; front = 'geometryFar' }
-      }
-      $entry = $entryBySegment[$Segment]
-      $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $entry.top $true $entry.front $true $true
-    } else {
-      $fieldEntryBySegment = @{
-        near = [pscustomobject]@{ top = 'fieldRecommendationNearTop'; front = 'fieldRecommendationNearFront' }
-        far = [pscustomobject]@{ top = 'fieldRecommendationFarTop'; front = 'fieldRecommendationFarFront' }
-      }
-      $field = $fieldEntryBySegment[$Segment]
-      $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $field.top $true $field.front $true $false
+    $fieldEntryBySegment = @{
+      near = [pscustomobject]@{ top = 'fieldRecommendationNearTop'; front = 'fieldRecommendationNearFront' }
+      far = [pscustomobject]@{ top = 'fieldRecommendationFarTop'; front = 'fieldRecommendationFarFront' }
     }
+    $field = $fieldEntryBySegment[$Segment]
+    $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults $field.top $true $field.front $true $false
   } elseif ($Mode -eq 'departure') {
     $decision = Resolve-VemRecordedFixtureCameraDecision $expectedResults 'top' $false 'frontVerticalUnstable' $true $false
   } else {
