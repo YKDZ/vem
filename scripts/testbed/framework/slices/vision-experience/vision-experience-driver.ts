@@ -34,6 +34,7 @@ export interface TryOnState {
   variantId?: string | null;
   state?: string | null;
   attemptId?: string | null;
+  failureReason?: string | null;
   visionOrigin?: string | null;
   preview?: { naturalWidth: number; naturalHeight: number };
   resultUrl?: string | null;

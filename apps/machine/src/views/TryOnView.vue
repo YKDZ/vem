@@ -421,6 +421,7 @@ function scaleGarment(delta: number): void {
       :data-catalog-key="context?.catalogKey ?? ''"
       :data-variant-id="context?.variantId ?? ''"
       :data-attempt-id="tryOn.attemptId ?? ''"
+      :data-failure-reason="tryOn.failureReason ?? ''"
       :data-state="presentationPhase"
     >
       <p class="try-on-subtitle">{{ title }}</p>

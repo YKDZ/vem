@@ -738,6 +738,7 @@ const STATE_EXPRESSION = `(() => {
     variantId: detail?.dataset?.variantId ?? null,
     state: view?.dataset?.state ?? null,
     attemptId: view?.dataset?.attemptId ?? null,
+    failureReason: view?.dataset?.failureReason ?? null,
     preview: {
       naturalWidth: Number(preview?.naturalWidth ?? 0),
       naturalHeight: Number(preview?.naturalHeight ?? 0),
