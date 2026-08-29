@@ -1608,6 +1608,7 @@ export class CdpTestAdapter implements TestAdapter {
       route: state?.route ?? null,
       state: state?.state ?? null,
       attemptId,
+      failureReason: state?.failureReason ?? null,
       countdownText: state?.countdownText ?? null,
       holdRemainingMs: validDomCountdownHoldRemainingMs(state),
       latestProtocolHoldRemainingMs:
