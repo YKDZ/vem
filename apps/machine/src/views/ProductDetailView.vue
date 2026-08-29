@@ -9,6 +9,7 @@ import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
+import { topCategoryForItem } from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import ImplicitRecommendationBanner from "@/components/recommendation/ImplicitRecommendationBanner.vue";
@@ -20,6 +21,7 @@ import {
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useImplicitRecommendationStore } from "@/stores/implicit-recommendation";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useTryOnStore } from "@/stores/try-on";
@@ -36,6 +38,7 @@ type VariantOption = {
 const route = useRoute();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
+const customerJourneyStore = useCustomerJourneyStore();
 const visionStore = useVisionStore();
 const recommendationStore = useImplicitRecommendationStore();
 const tryOnStore = useTryOnStore();
@@ -315,6 +318,20 @@ async function purchase(): Promise<void> {
   });
 }
 
+function returnToCatalog(): void {
+  if (item.value) {
+    const category = topCategoryForItem(item.value);
+    customerJourneyStore.enterCategory({
+      categoryKey: category?.key ?? "other",
+      category: category?.label ?? "其他商品",
+    });
+  }
+  submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: { name: "catalog" },
+  });
+}
+
 async function startTryOn(): Promise<void> {
   const concreteItem = selectedConcreteItem.value;
   if (!concreteItem || !canTryOn.value) return;
@@ -369,12 +386,7 @@ async function startTryOn(): Promise<void> {
         type="button"
         aria-label="返回商品列表"
         data-test="product-detail-return-catalog"
-        @click="
-          submitMachineNavigationIntent({
-            type: 'customer.navigate',
-            target: { name: 'catalog' },
-          })
-        "
+        @click="returnToCatalog"
       >
         <span aria-hidden="true">&lt;</span>
         返回

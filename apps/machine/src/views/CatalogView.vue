@@ -353,6 +353,11 @@ async function openProductDetail(product: DisplayProduct): Promise<void> {
 }
 
 onMounted(() => {
+  const entry = customerJourneyStore.categoryEntry;
+  if (entry && categoryHasProducts(entry.categoryKey as CatalogSelectionKey)) {
+    selectedTopCategoryKey.value = entry.categoryKey as CatalogSelectionKey;
+    activeGenderFilter.value = "all";
+  }
   startCarouselAutoAdvance();
 });
 
