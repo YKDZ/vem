@@ -497,6 +497,29 @@ async function primeCatalogTouchSession(
     pollMs: POLL_MS,
     forbiddenRoutes: [],
   });
+  // 商品详情“返回”现在回到所属大类列表（路由仍是 #/catalog，页面处于分类网格）。
+  // 此时盲点 catalog-page 中心可能命中商品卡片并把 UI 带进详情页；先经列表页的
+  // “返回首页”回到首页目录，确保后续触摸会话落在中性区域。
+  const backHomePresent = await evaluateExpression(
+    client,
+    `Boolean(document.querySelector(".catalog-back-button"))`,
+  );
+  if (backHomePresent === true) {
+    await activateVisibleSelector(client, ".catalog-back-button", {
+      kind: "touch",
+      timeoutMs: TIMEOUT_MS,
+      pollMs: POLL_MS,
+    });
+    await waitFor(
+      "home catalog after detail return",
+      () =>
+        evaluateExpression(
+          client,
+          `!document.querySelector(".catalog-back-button")`,
+        ),
+      (home) => home === true,
+    );
+  }
   const traceSnapshot = (await readMachineRuntimeTraceSnapshot(
     client,
   )) as JsonRecord | null;
