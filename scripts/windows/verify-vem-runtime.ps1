@@ -9,7 +9,9 @@ param(
   [switch]$VisionOnly,
   [switch]$RequireBackendOnline,
   [switch]$RequireMqttConnected,
+  [string]$OwnerManifestPath = "C:\ProgramData\VEM\runtime-owners\owner-manifest.json",
   [string]$VisionTaskName = "VEM\StartVisionServer",
+  [string]$VisionTaskPath = "\VEM\",
   [string]$VisionDirectory = "C:\VEM\vision",
   [string]$VisionAppDirectory = "C:\VEM\vision\app",
   [string]$VisionLauncher = "C:\VEM\bringup\start_vision.bat",
@@ -38,6 +40,18 @@ function Read-JsonFile([string]$Path) {
     $Path,
     [System.Text.Encoding]::UTF8
   ) | ConvertFrom-Json
+}
+
+function Resolve-VisionOwner([string]$ManifestPath) {
+  if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { return $null }
+  try {
+    $manifest = Read-JsonFile $ManifestPath
+    if ([string]$manifest.schemaVersion -cne "vem-runtime-owners/v1") { return $null }
+    if ($null -eq $manifest.owners -or $null -eq $manifest.owners.vision) { return $null }
+    return $manifest.owners.vision
+  } catch {
+    return $null
+  }
 }
 
 function Get-IpcBaseUrl($Ready) {
@@ -125,17 +139,28 @@ if ($ExpectSimulator) {
   }
 }
 
-$visionTask = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-$visionLauncherExists = Test-Path -LiteralPath $VisionLauncher
+# Vision ownership has two shapes: the field kit installs Vision as a delegated
+# owner task declared by the runtime owner manifest, while a standalone Vision
+# deployment records the legacy fixed task. Prefer the manifest so verification
+# follows whatever the install record actually names.
+$visionOwner = Resolve-VisionOwner $OwnerManifestPath
+$resolvedVisionTaskName = if ($null -ne $visionOwner) { [string]$visionOwner.name } else { [string]($VisionTaskName -split '\\')[-1] }
+$resolvedVisionTaskPath = if ($null -ne $visionOwner) { [string]$visionOwner.taskPath } else { $VisionTaskPath }
+$resolvedVisionLauncher = if ($null -ne $visionOwner) { [string]$visionOwner.launcherPath } else { $VisionLauncher }
+
+$visionTask = Get-ScheduledTask -TaskName $resolvedVisionTaskName -TaskPath $resolvedVisionTaskPath -ErrorAction SilentlyContinue
+$visionLauncherExists = Test-Path -LiteralPath $resolvedVisionLauncher
 $visionDirectoryExists = Test-Path -LiteralPath $VisionDirectory
 $visionAppExists = Test-Path -LiteralPath $VisionAppDirectory
 $visionSiteConfigurationExists = Test-Path -LiteralPath $VisionSiteConfiguration
 $visionInstallRecordExists = Test-Path -LiteralPath $VisionInstallRecord
 $checks.vision = [pscustomobject]@{
-  taskName = $VisionTaskName
+  ownerManifest = $OwnerManifestPath
+  ownerKind = if ($null -ne $visionOwner) { "delegated" } else { "direct" }
+  taskName = "$resolvedVisionTaskPath$resolvedVisionTaskName"
   taskReady = $null -ne $visionTask -and [string]$visionTask.State -ne "Disabled"
   taskState = if ($null -ne $visionTask) { [string]$visionTask.State } else { $null }
-  launcher = $VisionLauncher
+  launcher = $resolvedVisionLauncher
   launcherExists = $visionLauncherExists
   directory = $VisionDirectory
   directoryExists = $visionDirectoryExists
@@ -149,10 +174,10 @@ $checks.vision = [pscustomobject]@{
 }
 if ($RequireVisionOnline) {
   if ($null -eq $visionTask -or [string]$visionTask.State -eq "Disabled") {
-    Add-Failure $failures "vision task is not ready: $VisionTaskName"
+    Add-Failure $failures "vision task is not ready: $resolvedVisionTaskPath$resolvedVisionTaskName"
   }
   if (-not $visionLauncherExists) {
-    Add-Failure $failures "vision launcher not found: $VisionLauncher"
+    Add-Failure $failures "vision launcher not found: $resolvedVisionLauncher"
   }
   if (-not $visionDirectoryExists) {
     Add-Failure $failures "vision directory not found: $VisionDirectory"

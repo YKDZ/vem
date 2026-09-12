@@ -49,10 +49,12 @@ addCheck(
 addCheck(
   "verify-script-can-require-vision",
   verify.includes("[switch]$RequireVisionOnline") &&
-    verify.includes("VEM\\StartVisionServer") &&
     verify.includes("C:\\VEM\\vision") &&
-    verify.includes("vision task is not ready"),
-  `${verifyPath} should expose an optional production vision deployment check`,
+    verify.includes("vision task is not ready") &&
+    verify.includes("OwnerManifestPath") &&
+    verify.includes("Resolve-VisionOwner") &&
+    verify.includes("owners.vision"),
+  `${verifyPath} should expose an optional production vision deployment check that follows the runtime owner manifest`,
 );
 
 const failures = checks.filter((check) => !check.passed);
