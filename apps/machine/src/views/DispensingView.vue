@@ -24,6 +24,39 @@ const hasCustomerVisibleError = computed(
   () => dispensingView.value?.customerVisibleError !== null,
 );
 const dispenseError = computed(() => projectCustomerError("dispense"));
+const dispenseErrorKind = computed(
+  () => dispensingView.value?.customerVisibleError?.kind ?? null,
+);
+const dispenseErrorTitle = computed(() => {
+  switch (dispenseErrorKind.value) {
+    case "failed":
+      return "本次出货未完成";
+    case "timeout":
+    case "result_unknown":
+      return "出货结果待确认";
+    default:
+      return dispenseError.value.message;
+  }
+});
+const dispenseErrorSubtitle = computed(() => {
+  switch (dispenseErrorKind.value) {
+    case "failed":
+      return "系统将自动发起原路退款";
+    case "timeout":
+    case "result_unknown":
+      return "请在取货口确认是否有商品";
+    default:
+      return dispenseError.value.message;
+  }
+});
+const dispenseErrorNoticeTitle = computed(() =>
+  dispenseErrorKind.value === "failed" ? "退款说明" : "结果待确认",
+);
+const dispenseErrorNoticeCopy = computed(() =>
+  dispenseErrorKind.value === "failed"
+    ? "款项原路退回，到账时间以支付渠道为准；如长时间未到账请联系现场工作人员。"
+    : "如未取到商品，请凭订单凭证联系现场工作人员核对退款。",
+);
 const orderCredential = computed(() => checkoutView.value.orderCredential);
 const pickupEvidenceSurface = computed(() => {
   if (pickupReminder.value?.stage === "pickup_completed")
@@ -47,47 +80,63 @@ const productName = computed(() => {
 const titleText = computed(() =>
   hasCustomerVisibleError.value ? "出货异常" : "正在出货",
 );
-const pickupTitle = computed(() =>
-  hasCustomerVisibleError.value
-    ? dispenseError.value.message
-    : pickupReminder.value?.stage === "pickup_completed"
-      ? "正在复位"
-      : pickupReminder.value?.urgency === "urgent"
-        ? "请立即取走商品"
-        : pickupReminder.value?.urgency === "warning"
-          ? "请及时取走商品"
-          : "设备出货中",
-);
-const pickupSubtitle = computed(() => {
-  if (hasCustomerVisibleError.value) return dispenseError.value.message;
-  if (pickupReminder.value?.stage === "pickup_completed") {
-    return "已完成取货，设备正在复位";
+const DOOR_SAFETY_HINT = "请勿手动开门，避免夹手";
+const pickupTitle = computed(() => {
+  if (hasCustomerVisibleError.value) return dispenseErrorTitle.value;
+  const reminder = pickupReminder.value;
+  if (reminder?.stage === "pickup_completed") return "正在复位";
+  if (reminder?.stage === "outlet_opened") return "取货门正在打开";
+  if (reminder?.stage === "pickup_waiting") return "请取走商品";
+  if (reminder?.stage === "pickup_timeout_warning") {
+    return reminder.urgency === "urgent" ? "请立即取走商品" : "请及时取走商品";
   }
-  if (pickupReminder.value?.stage === "pickup_waiting") {
-    return "商品已到达取货口，请及时取走";
-  }
-  if (pickupReminder.value?.stage === "pickup_timeout_warning") {
-    return "取货倒计时进行中，请尽快取走商品";
-  }
-  return "请稍候，商品正在送往取货口";
+  return "商品正在送往取货口";
 });
-const pickupNoticeTitle = computed(() =>
-  pickupReminder.value?.stage === "pickup_completed"
-    ? "取货已完成"
-    : pickupReminder.value?.urgency === "urgent"
-      ? "取货口即将关闭"
-      : pickupReminder.value?.urgency === "warning"
-        ? "请尽快完成取货"
-        : "出货完成后请取货",
-);
-const pickupNoticeCopy = computed(() =>
-  pickupReminder.value?.stage === "pickup_completed"
-    ? "设备正在复位，请稍候。"
-    : pickupReminder.value?.urgency === "urgent"
-      ? "请立即取走商品，避免取货口超时关闭。"
-      : pickupReminder.value?.urgency === "warning"
-        ? "商品已在取货口等待，请及时取走。"
-        : "取货口打开后，请及时取走商品。",
+const pickupSubtitle = computed(() => {
+  if (hasCustomerVisibleError.value) return dispenseErrorSubtitle.value;
+  const reminder = pickupReminder.value;
+  if (reminder?.stage === "pickup_completed") {
+    return "已完成取货，请稍候";
+  }
+  if (reminder?.stage === "outlet_opened") {
+    return "商品已到达取货口，请稍候";
+  }
+  if (reminder?.stage === "pickup_waiting") {
+    return "商品已在取货口";
+  }
+  if (reminder?.stage === "pickup_timeout_warning") {
+    return reminder.urgency === "urgent"
+      ? "取货倒计时即将结束"
+      : "取货倒计时进行中";
+  }
+  return "请勿离开设备，取货口打开后请及时取走商品";
+});
+const pickupNoticeTitle = computed(() => {
+  if (hasCustomerVisibleError.value) {
+    return dispenseErrorNoticeTitle.value;
+  }
+  const reminder = pickupReminder.value;
+  if (reminder?.stage === "pickup_timeout_warning") {
+    return reminder.urgency === "urgent" ? "取货口即将关闭" : "取货超时提醒";
+  }
+  if (reminder?.stage === "pickup_waiting") return "取货超时提醒";
+  return DOOR_SAFETY_HINT;
+});
+const pickupNoticeCopy = computed(() => {
+  if (hasCustomerVisibleError.value) return dispenseErrorNoticeCopy.value;
+  const reminder = pickupReminder.value;
+  if (reminder?.stage === "pickup_timeout_warning") {
+    return reminder.urgency === "urgent"
+      ? "设备将在数秒后自动关闭取货口。"
+      : "超过 30 秒未取货，取货口将自动关闭。";
+  }
+  if (reminder?.stage === "pickup_waiting") {
+    return "超过 30 秒未取货，取货口将自动关闭。";
+  }
+  return "取货门由设备自动控制。";
+});
+const showPickupNotice = computed(
+  () => pickupReminder.value?.stage !== "pickup_completed",
 );
 const hasPickupRemainingSeconds = computed(
   () => pickupRemainingSeconds.value !== null,
@@ -222,10 +271,10 @@ onUnmounted(() => {
         <template v-if="hasPickupRemainingSeconds">
           <p class="pickup-time-label">剩余取货时间</p>
           <strong class="pickup-time">{{ pickupTimeText }}</strong>
-          <p class="pickup-time-copy">超时未取货，商品将返回柜内</p>
+          <p class="pickup-time-copy">请在此之前取走商品</p>
         </template>
 
-        <section class="pickup-notice">
+        <section v-if="showPickupNotice" class="pickup-notice">
           <span aria-hidden="true">
             <svg viewBox="0 0 24 24">
               <path

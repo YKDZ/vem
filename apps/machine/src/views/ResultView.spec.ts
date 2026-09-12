@@ -510,6 +510,8 @@ describe("ResultView", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("出货失败");
+    expect(host.textContent).toContain("如未收到商品，系统将自动发起原路退款");
+    expect(host.textContent).toContain("款项将原路退回");
     expect(host.textContent).toContain("订单凭证 ORD-FAILED-001");
     expect(host.textContent).toContain("返回首页");
 
@@ -762,6 +764,8 @@ describe("ResultView", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("退款处理中");
+    expect(host.textContent).toContain("退款已发起，款项将按原支付渠道退回");
+    expect(host.textContent).not.toContain("退款状态确认失败");
     expect(host.textContent).toContain("订单凭证 ORD-REFUND-001");
     expect(host.textContent).not.toContain("返回首页");
   });

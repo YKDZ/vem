@@ -165,6 +165,7 @@ describe("DispensingView", () => {
 
     expect(host.textContent).toContain("已完成取货");
     expect(host.textContent).toContain("正在复位");
+    expect(host.querySelector(".pickup-notice")).toBeNull();
     expect(host.textContent).not.toContain("出货成功");
     expect(host.textContent).not.toContain("出货完成");
   });
@@ -258,6 +259,72 @@ describe("DispensingView", () => {
     expect(routerReplaceMock).not.toHaveBeenCalled();
   });
 
+  it("warns against manual door opening while the outlet is still closed", async () => {
+    const transaction = dispensingTransaction();
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    useCheckoutStore().applyTransaction(transaction);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("请勿手动开门");
+    expect(host.textContent).toContain("请勿手动开门，避免夹手");
+    expect(host.textContent).not.toContain("取货门正在打开");
+  });
+
+  it("switches to the door-opening prompt on the outlet_opened stage", async () => {
+    const transaction = dispensingTransaction({
+      vending: {
+        commandId: null,
+        commandNo: "CMD-OUTLET-OPENED-001",
+        status: "acknowledged",
+        lastError: null,
+        pickupReminder: {
+          stage: "outlet_opened",
+          level: "info",
+          message: "raw F0",
+          warningNo: null,
+          reportedAt: "2026-06-29T09:00:01.000Z",
+        },
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    useCheckoutStore().applyTransaction(transaction);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("取货门正在打开");
+    expect(host.textContent).toContain("请勿手动开门，避免夹手");
+    expect(host.textContent).not.toContain("商品正在送往取货口");
+  });
+
+  it("prompts pickup once the outlet is fully open", async () => {
+    const transaction = dispensingTransaction({
+      vending: {
+        commandId: null,
+        commandNo: "CMD-PICKUP-WAITING-001",
+        status: "acknowledged",
+        lastError: null,
+        pickupReminder: {
+          stage: "pickup_waiting",
+          level: "info",
+          message: "raw AC heartbeat",
+          warningNo: null,
+          reportedAt: "2026-06-29T09:00:02.000Z",
+        },
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    useCheckoutStore().applyTransaction(transaction);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("请取走商品");
+    expect(host.textContent).toContain("商品已在取货口");
+    expect(host.textContent).toContain("超过 30 秒未取货，取货口将自动关闭。");
+    expect(host.textContent).not.toContain("商品正在送往取货口");
+    expect(host.textContent).not.toContain("出货完成后请取货");
+  });
+
   it("shows dispensing state from the customer checkout view without legacy order state", async () => {
     const transaction = dispensingTransaction();
     getCurrentTransactionMock.mockResolvedValue(transaction);
@@ -296,6 +363,7 @@ describe("DispensingView", () => {
 
     expect(host.textContent).toContain("请立即取走商品");
     expect(host.textContent).toContain("取货口即将关闭");
+    expect(host.textContent).toContain("设备将在数秒后自动关闭取货口。");
     await vi.waitFor(() => {
       expect(host.textContent).toContain("00:12");
     });
@@ -319,9 +387,36 @@ describe("DispensingView", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("出货异常");
-    expect(host.textContent).toContain("请联系工作人员处理");
+    expect(host.textContent).toContain("本次出货未完成");
+    expect(host.textContent).toContain("系统将自动发起原路退款");
+    expect(host.textContent).toContain("退款说明");
+    expect(host.textContent).toContain("如长时间未到账请联系现场工作人员");
+    expect(host.textContent).not.toContain("出货完成后请取货");
     expect(host.textContent).toContain("订单凭证 ORD-DISPENSING-CUE-001");
     expect(host.textContent).not.toContain("lower controller");
     expect(host.textContent).not.toContain("COM5");
+  });
+
+  it("does not promise a refund while the dispense result is still unknown", async () => {
+    const transaction = dispensingTransaction({
+      vending: {
+        commandId: null,
+        commandNo: "CMD-DISPENSE-UNKNOWN-001",
+        status: "result_unknown",
+        lastError: "dispense result unknown after daemon restart",
+        pickupReminder: null,
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    useCheckoutStore().applyTransaction(transaction);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("出货结果待确认");
+    expect(host.textContent).toContain("请在取货口确认是否有商品");
+    expect(host.textContent).toContain(
+      "如未取到商品，请凭订单凭证联系现场工作人员核对退款。",
+    );
+    expect(host.textContent).not.toContain("原路退款");
   });
 });

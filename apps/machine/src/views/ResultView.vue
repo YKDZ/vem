@@ -11,7 +11,6 @@ import type { CheckoutResultKind } from "@/types/checkout";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
-import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import {
   installedMachineRuntimeTrace,
@@ -53,13 +52,13 @@ const copyMap: Record<CustomerCheckoutResultDisplayIntent, ResultCopy> = {
   },
   dispense_failure: {
     title: "出货失败",
-    subtitle: "请联系工作人员处理，已支付款项会按订单状态处理。",
+    subtitle: "如未收到商品，系统将自动发起原路退款。",
     tone: "danger",
     icon: "!",
   },
   refund_pending: {
     title: "退款处理中",
-    subtitle: projectCustomerError("refund").message,
+    subtitle: "退款已发起，款项将按原支付渠道退回；到账时间以支付渠道为准。",
     tone: "warning",
     icon: "↺",
   },
@@ -83,7 +82,8 @@ const copyMap: Record<CustomerCheckoutResultDisplayIntent, ResultCopy> = {
   },
 };
 const detailCopyMap: Record<CustomerCheckoutResultDetailIntent, string> = {
-  dispense_failure: "请凭订单凭证联系工作人员处理出货异常。",
+  dispense_failure:
+    "款项将原路退回，到账时间以支付渠道为准；如未到账请联系工作人员。",
   dispense_result_unknown: "出货结果待确认，请凭订单凭证联系工作人员处理。",
   manual_handling: "订单已进入人工处理，请凭订单凭证联系工作人员。",
 };
@@ -348,7 +348,7 @@ onUnmounted(stopAutoReturn);
 
         <h2>商品未能正常出货</h2>
         <p class="failure-subtitle">
-          请勿离开设备，联系工作人员处理。已支付款项会按照订单状态继续处理。
+          请勿离开设备，联系工作人员处理。如未收到商品，系统将自动发起原路退款。
         </p>
         <p v-if="orderCredential" class="failure-order-credential">
           订单凭证 {{ orderCredential }}
