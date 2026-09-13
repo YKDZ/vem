@@ -419,4 +419,61 @@ describe("DispensingView", () => {
     );
     expect(host.textContent).not.toContain("原路退款");
   });
+
+  it("keeps the pickup surface while the projection already flipped to the terminal result", async () => {
+    const transaction = dispensingTransaction({
+      vending: {
+        commandId: null,
+        commandNo: "CMD-TERMINAL-GAP-001",
+        status: "succeeded",
+        lastError: null,
+        pickupReminder: {
+          stage: "pickup_completed",
+          level: "info",
+          message: "raw F1",
+          warningNo: null,
+          reportedAt: "2026-09-13T02:24:03.000Z",
+        },
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+
+    const host = await mountView();
+    expect(host.textContent).toContain("正在复位");
+
+    // The daemon commits the dispense result (F2) before the router leaves
+    // /dispensing, so the projection flips to the terminal result first.
+    checkoutStore.applyTransaction({
+      ...transaction,
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-TERMINAL-GAP-001",
+        status: "succeeded",
+        lastError: null,
+        pickupReminder: null,
+      },
+    });
+    await nextTick();
+
+    expect(checkoutStore.customerCheckoutView.stage).toBe("result");
+    expect(host.textContent).not.toContain("取货状态已失效");
+    expect(host.textContent).toContain("正在复位");
+  });
+
+  it("still expires the pickup surface when the transaction is gone", async () => {
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.invalidateCurrentTransaction = vi
+      .fn()
+      .mockResolvedValue(undefined) as never;
+
+    const host = await mountView();
+    await nextTick();
+
+    expect(checkoutStore.customerCheckoutView.stage).toBe("none");
+    expect(host.textContent).toContain("取货状态已失效");
+  });
 });

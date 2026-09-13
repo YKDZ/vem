@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+
+import type { CustomerCheckoutDispensingView } from "@/checkout/customer-checkout-view";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
@@ -16,16 +18,36 @@ const pickupRemainingSeconds = ref<number | null>(null);
 
 const checkoutView = computed(() => checkoutStore.customerCheckoutView);
 const dispensingView = computed(() => checkoutView.value.dispensing);
-const hasOrder = computed(() => checkoutView.value.stage === "dispensing");
+// The store projects the terminal result before the router leaves /dispensing.
+// Keep the last pickup surface on screen during that gap so the customer never
+// sees the "take-over state expired" fallback mid-hand-off.
+const lastDispensingView = ref<CustomerCheckoutDispensingView | null>(null);
+watch(
+  dispensingView,
+  (view) => {
+    if (view) lastDispensingView.value = view;
+  },
+  { immediate: true },
+);
+const renderedDispensing = computed(
+  () => dispensingView.value ?? lastDispensingView.value,
+);
+const hasOrder = computed(
+  () =>
+    renderedDispensing.value !== null && checkoutView.value.stage !== "none",
+);
 const pickupReminder = computed(
-  () => dispensingView.value?.pickupReminder ?? null,
+  () => renderedDispensing.value?.pickupReminder ?? null,
+);
+const customerVisibleError = computed(
+  () => renderedDispensing.value?.customerVisibleError ?? null,
 );
 const hasCustomerVisibleError = computed(
-  () => dispensingView.value?.customerVisibleError !== null,
+  () => customerVisibleError.value !== null,
 );
 const dispenseError = computed(() => projectCustomerError("dispense"));
 const dispenseErrorKind = computed(
-  () => dispensingView.value?.customerVisibleError?.kind ?? null,
+  () => customerVisibleError.value?.kind ?? null,
 );
 const dispenseErrorTitle = computed(() => {
   switch (dispenseErrorKind.value) {
