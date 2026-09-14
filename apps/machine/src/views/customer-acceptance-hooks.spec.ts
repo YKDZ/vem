@@ -317,13 +317,15 @@ describe("customer acceptance hooks", () => {
     });
 
     const host = await mountView(CatalogView);
-    expect(host.textContent).toContain("请一位顾客站到镜头前获取尺码建议");
+    // The multiple-customer state must stay silent on every customer surface:
+    // no banner, no prompt, nothing telling the customer to stand in front of a
+    // camera.
+    expect(host.textContent).not.toContain("站在");
+    expect(host.textContent).not.toContain("镜头前");
     expect(host.textContent).not.toContain("智能选码已开启");
     expect(
-      host
-        .querySelector('[data-test="implicit-recommendation-banner"]')
-        ?.getAttribute("data-recommendation-state"),
-    ).toBe("multiple");
+      host.querySelector('[data-test="implicit-recommendation-banner"]'),
+    ).toBeNull();
 
     useCatalogStore().applySnapshot({
       ...saleViewSnapshot([

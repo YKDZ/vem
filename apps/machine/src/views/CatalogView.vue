@@ -28,7 +28,6 @@ import {
 } from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
-import ImplicitRecommendationBanner from "@/components/recommendation/ImplicitRecommendationBanner.vue";
 import { useCustomerInteractionSession } from "@/composables/customer-interaction-session";
 import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
@@ -388,12 +387,6 @@ onUnmounted(() => {
 
       <KioskHeader class="relative z-10" />
 
-      <ImplicitRecommendationBanner
-        v-if="recommendationProjection.banner === 'multiple'"
-        class="home-recommendation-banner relative z-10"
-        state="multiple"
-      />
-
       <div
         class="home-carousel-shell relative z-10 mt-6 shrink-0 overflow-hidden rounded-[26px] border border-[#ded6c2] bg-[#f8f3e8] p-2 shadow-[0_16px_40px_rgba(101,94,71,0.12)]"
       >
@@ -625,12 +618,6 @@ onUnmounted(() => {
       <div class="home-mist home-mist-right"></div>
 
       <KioskHeader class="relative z-10" />
-
-      <ImplicitRecommendationBanner
-        v-if="recommendationProjection.banner === 'multiple'"
-        class="list-recommendation-banner relative z-10"
-        state="multiple"
-      />
 
       <div class="list-heading-row">
         <div class="list-title-group">

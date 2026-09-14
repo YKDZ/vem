@@ -12,7 +12,6 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import { topCategoryForItem } from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
-import ImplicitRecommendationBanner from "@/components/recommendation/ImplicitRecommendationBanner.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import {
   normalizeRecommendationSize,
@@ -374,12 +373,6 @@ async function startTryOn(): Promise<void> {
       <div class="detail-mist detail-mist-right"></div>
 
       <KioskHeader class="detail-header" />
-
-      <ImplicitRecommendationBanner
-        v-if="recommendationProjection.banner === 'multiple'"
-        class="detail-recommendation-banner"
-        state="multiple"
-      />
 
       <button
         class="detail-back-button kiosk-touch-target"
