@@ -26,6 +26,7 @@ const KIT_SCRIPTS = [
   "install-vision-main-artifact.ps1",
   "vision-main-artifacts.psm1",
   "install-vem-runtime-owners.ps1",
+  "watch-vem-runtime-owners.ps1",
   "install-field-kit.ps1",
   "probe-vem-runtime.ps1",
 ];

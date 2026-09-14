@@ -458,6 +458,46 @@ function Register-InteractiveOwnerTask(
     -Force | Out-Null
 }
 
+function Install-RuntimeWatchdog(
+  [string]$TaskName = "VEMRuntimeWatchdog"
+) {
+  # Installed owners are one-shot launchers: they start the canonical process and
+  # exit once it is ready. Without supervision, a process that dies later (camera
+  # fault, driver reset, external kill) stays down until the next logon and takes
+  # Vision-dependent surfaces such as the maintenance camera panel with it.
+  $watchdogSource = Join-Path $PSScriptRoot "watch-vem-runtime-owners.ps1"
+  Assert-OwnerPath $watchdogSource "runtime watchdog script"
+  $watchdogScript = Join-Path $RuntimeDirectory "watch-vem-runtime-owners.ps1"
+  Copy-Item -LiteralPath $watchdogSource -Destination $watchdogScript -Force
+
+  $action = New-ScheduledTaskAction `
+    -Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`"" `
+    -WorkingDirectory $RuntimeDirectory
+  # A boot trigger alone only repeats after the next startup, so pair it with a
+  # repeating time trigger to supervise the current session as well.
+  $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+  $repeatTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At ((Get-Date).AddMinutes(1)) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+  Register-ScheduledTask `
+    -TaskName $TaskName `
+    -Action $action `
+    -Trigger @($bootTrigger, $repeatTrigger) `
+    -Principal $principal `
+    -Settings $settings `
+    -Description "VEM runtime owner watchdog: restarts missing owner processes" `
+    -Force | Out-Null
+}
+
 function Assert-NoDuplicateRuntimeProcesses {
   foreach ($processName in @("vending-daemon.exe", "machine.exe", "vending-vision.exe")) {
     $instances = @(Get-CimInstance Win32_Process -Filter "Name = '$processName'" -ErrorAction SilentlyContinue)
@@ -626,6 +666,7 @@ Write-InteractiveLauncher `
 Assert-OwnerDirectoryLeases
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory
+Install-RuntimeWatchdog
 
 Assert-OwnerDirectoryLeases
 $ownerManifest = Write-OwnerManifest $daemonExecutable $machineExecutable $visionExecutable $machineLauncher $visionLauncher

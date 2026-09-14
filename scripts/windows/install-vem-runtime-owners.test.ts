@@ -199,25 +199,29 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
   assert.equal(output.manifest.acl.length, 5);
-  assert.equal(output.registeredTasks.length, 2);
+  assert.equal(output.registeredTasks.length, 3);
   assert.equal(output.missingPasswordRejected, true);
   assert.equal(output.aclCalls.length, 5);
+  const ownerTasks = output.registeredTasks.slice(0, 2);
   assert.deepEqual(
-    output.registeredTasks.map((task) => task.trigger.kind),
+    ownerTasks.map((task) => task.trigger.kind),
     ["AtLogon", "AtLogon"],
   );
   assert.deepEqual(
-    output.registeredTasks.map((task) => task.principal.UserId),
+    ownerTasks.map((task) => task.principal.UserId),
     ["VEMKiosk", "VEMKiosk"],
   );
   assert.deepEqual(
-    output.registeredTasks.map((task) => task.settings.MultipleInstances),
+    ownerTasks.map((task) => task.settings.MultipleInstances),
     ["IgnoreNew", "IgnoreNew"],
   );
   assert.deepEqual(
-    output.registeredTasks.map((task) => task.settings.StartWhenAvailable),
+    ownerTasks.map((task) => task.settings.StartWhenAvailable),
     [false, false],
   );
+  const watchdogTasks = output.registeredTasks.slice(2);
+  assert.equal(watchdogTasks.length, 1);
+  assert.equal(watchdogTasks[0].principal.UserId, "SYSTEM");
   assert.ok(
     output.scCalls.some(
       (call) =>

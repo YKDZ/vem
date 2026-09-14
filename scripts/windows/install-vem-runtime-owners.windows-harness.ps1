@@ -73,12 +73,38 @@ function global:sc.exe {
   $global:LASTEXITCODE = 0
 }
 function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument, [string]$WorkingDirectory) return [pscustomobject]@{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory } }
-function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User) return [pscustomobject]@{ kind = "AtLogon"; UserId = $User } }
+function global:New-ScheduledTaskTrigger {
+  param(
+    [switch]$AtLogOn,
+    [string]$User,
+    [switch]$AtStartup,
+    [switch]$Once,
+    [datetime]$At,
+    $RepetitionInterval,
+    $RepetitionDuration
+  )
+  if ($AtStartup) { return [pscustomobject]@{ kind = "AtStartup"; Repetition = $null } }
+  if ($Once) {
+    return [pscustomobject]@{
+      kind = "Once"
+      At = $At
+      Repetition = [pscustomobject]@{ Interval = $RepetitionInterval; Duration = $RepetitionDuration }
+    }
+  }
+  return [pscustomobject]@{ kind = "AtLogon"; UserId = $User; Repetition = $null }
+}
 function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) return [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType; RunLevel = $RunLevel } }
 function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$StartWhenAvailable, [string]$MultipleInstances, $ExecutionTimeLimit) return [pscustomobject]@{ StartWhenAvailable = [bool]$StartWhenAvailable; MultipleInstances = $MultipleInstances; ExecutionTimeLimit = $ExecutionTimeLimit } }
 function global:Register-ScheduledTask {
   param([string]$TaskName, $Action, $Trigger, $Principal, $Settings, [string]$Description, [switch]$Force)
-  $global:OwnerHarnessTasks.Add([pscustomobject]@{ name = $TaskName; action = $Action; trigger = $Trigger; principal = $Principal; settings = $Settings }) | Out-Null
+  $triggers = @($Trigger)
+  $global:OwnerHarnessTasks.Add([pscustomobject]@{
+      name = $TaskName
+      action = $Action
+      trigger = if ($triggers.Count -eq 1) { $triggers[0] } else { $triggers }
+      principal = $Principal
+      settings = $Settings
+    }) | Out-Null
   return [pscustomobject]@{ TaskName = $TaskName }
 }
 
@@ -109,17 +135,27 @@ try {
   Assert-True ($manifest.owners.machineUi.name -eq "VEMMachineUI") "Machine UI owner"
   Assert-True ($manifest.owners.vision.name -eq "VEMVisionRuntime") "Vision owner"
   Assert-True ($manifest.acl.Count -eq 5) "runtime owner manifest ACL count"
-  Assert-True ($global:OwnerHarnessTasks.Count -eq 2) "registered task count"
+  Assert-True ($global:OwnerHarnessTasks.Count -eq 3) "registered task count"
   Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "config" -and $_ -contains "obj=" -and $_ -contains "LocalSystem" -and $_ -contains "start=" -and $_ -contains "auto" }).Count -eq 1) "daemon service did not configure LocalSystem automatic startup"
   Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "failure" -and $_ -contains "actions=" }).Count -eq 1) "daemon crash recovery call was not captured"
   Assert-True (@($global:OwnerHarnessRegistryWrites | Where-Object { $_.name -eq "DefaultPassword" -and $_.value -eq "<redacted>" }).Count -eq 1) "DefaultPassword was not written"
-  foreach ($task in @($global:OwnerHarnessTasks)) {
+  foreach ($task in @($global:OwnerHarnessTasks | Where-Object { $_.trigger.kind -eq "AtLogon" })) {
     Assert-True ($task.action.Execute -eq "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe") "interactive owner action executable"
     Assert-True ($task.trigger.kind -eq "AtLogon") "interactive owner trigger"
     Assert-True ($task.principal.UserId -eq "VEMKiosk") "interactive owner principal"
     Assert-True (-not [bool]$task.settings.StartWhenAvailable) "interactive owner must not replay a missed logon"
     Assert-True ($task.settings.MultipleInstances -eq "IgnoreNew") "interactive owner multiple-instance policy"
   }
+  $watchdog = @($global:OwnerHarnessTasks | Where-Object { $_.name -eq "VEMRuntimeWatchdog" })
+  Assert-True ($watchdog.Count -eq 1) "runtime watchdog task registered"
+  $watchdogTriggers = @($watchdog[0].trigger)
+  Assert-True ($watchdogTriggers.Count -eq 2) "runtime watchdog trigger count"
+  Assert-True ($watchdogTriggers[0].kind -eq "AtStartup") "runtime watchdog must include a boot trigger"
+  Assert-True ($watchdogTriggers[1].kind -eq "Once") "runtime watchdog must include a repeating time trigger"
+  Assert-True ($watchdogTriggers[1].Repetition.Interval.TotalMinutes -eq 1) "runtime watchdog repetition interval"
+  Assert-True ($watchdog[0].principal.UserId -eq "SYSTEM") "runtime watchdog principal"
+  Assert-True ($watchdog[0].settings.MultipleInstances -eq "IgnoreNew") "runtime watchdog multiple-instance policy"
+  Assert-True (Test-Path -LiteralPath (Join-Path $runtime "watch-vem-runtime-owners.ps1")) "runtime watchdog script installed next to the launchers"
 
   $machineLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-machine-ui.ps1")
   $visionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
