@@ -34,6 +34,7 @@ function Test-ShouldWrite([string]$Action) {
 }
 
 $edgeUiKey = "HKLM\SOFTWARE\Policies\Microsoft\Windows\EdgeUI"
+$winlogonKey = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $holderPath = Join-Path $RuntimeDirectory $HolderScriptName
 
 $user = Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue
@@ -50,9 +51,18 @@ if ($Disable) {
   if (Test-ShouldWrite "reg.exe delete $edgeUiKey AllowEdgeSwipe") {
     Invoke-Reg @("delete", $edgeUiKey, "/v", "AllowEdgeSwipe", "/f") -IgnoreFailure
   }
+  if (Test-ShouldWrite "restore AutoRestartShell=1") {
+    Invoke-Reg @("add", $winlogonKey, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "1", "/f")
+  }
 } else {
   if (Test-ShouldWrite "reg.exe add $edgeUiKey AllowEdgeSwipe=0") {
     Invoke-Reg @("add", $edgeUiKey, "/v", "AllowEdgeSwipe", "/t", "REG_DWORD", "/d", "0", "/f")
+  }
+  # Explorer is still the machine-wide shell, so Windows would restart it every
+  # time the kiosk closes the maintenance desktop. Kiosk mode owns the desktop
+  # lifetime instead.
+  if (Test-ShouldWrite "disable AutoRestartShell") {
+    Invoke-Reg @("add", $winlogonKey, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "0", "/f")
   }
 }
 

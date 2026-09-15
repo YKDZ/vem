@@ -46,6 +46,11 @@ $flagDirectory = Split-Path -Parent $DesktopFlagPath
 if (-not (Test-Path -LiteralPath $flagDirectory)) {
   New-Item -ItemType Directory -Path $flagDirectory -Force | Out-Null
 }
+if ($env:OS -eq "Windows_NT" -and (Get-Command icacls.exe -ErrorAction SilentlyContinue)) {
+  # The kiosk shell holder runs as the kiosk user and must be able to delete the
+  # flag, otherwise an expired desktop stays open forever.
+  & icacls.exe $flagDirectory /grant:r "${KioskUser}:(OI)(CI)M" /T /C /Q | Out-Null
+}
 
 if ($Mode -eq "enable") {
   if (Test-ShouldWrite "create desktop mode flag $DesktopFlagPath") {
