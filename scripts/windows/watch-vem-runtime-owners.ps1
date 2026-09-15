@@ -254,4 +254,5 @@ if (Test-Path -LiteralPath $OwnerManifestPath) {
 }
 
 Invoke-KioskShellSelfHeal
+Ensure-TailscaleClient
 Invoke-TailnetOfflineEscape
