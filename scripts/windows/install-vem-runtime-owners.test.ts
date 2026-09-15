@@ -411,7 +411,7 @@ test("runtime watchdog decides the tailnet offline escape from a pure table", ()
   assert.deepEqual(
     output.cases.map((entry) => [entry.name, entry.actual]),
     [
-      ["not-installed", "not-applicable"],
+      ["unknown-or-not-installed", "not-applicable"],
       ["online", "online"],
       ["offline-arms", "arm"],
       ["offline-waits", "wait"],

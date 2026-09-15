@@ -11,7 +11,7 @@ if (-not $match.Success) { throw "Get-TailnetEscapeDecision not found in watchdo
 
 $now = [datetime]::UtcNow
 $cases = @(
-  [ordered]@{ name = "not-installed"; online = $null; since = $null; grace = 10; expected = "not-applicable" },
+  [ordered]@{ name = "unknown-or-not-installed"; online = $null; since = $null; grace = 10; expected = "not-applicable" },
   [ordered]@{ name = "online"; online = $true; since = $now.AddHours(-1); grace = 10; expected = "online" },
   [ordered]@{ name = "offline-arms"; online = $false; since = $null; grace = 10; expected = "arm" },
   [ordered]@{ name = "offline-waits"; online = $false; since = $now.AddMinutes(-3); grace = 10; expected = "wait" },

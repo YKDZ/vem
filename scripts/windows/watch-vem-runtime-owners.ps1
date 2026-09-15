@@ -62,12 +62,23 @@ function Get-TailnetOnlineState {
   if (-not (Test-Path -LiteralPath $tailscale)) { return $null }
   $service = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
   if ($null -ne $service -and $service.Status -ne "Running") { return $false }
+  # The CLI can refuse to answer for a non-daemon caller, so only a positive
+  # signal counts. A missing tailnet address is itself a confident offline sign.
+  $tailnetAddresses = @(
+    Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -like "100.*" }
+  )
+  if ($tailnetAddresses.Count -eq 0 -and $null -ne $service) { return $false }
   try {
     $json = & $tailscale status --json 2>$null | Out-String
-    if ([string]::IsNullOrWhiteSpace($json)) { return $false }
-    return [bool]($json | ConvertFrom-Json).Self.Online
+    if ([string]::IsNullOrWhiteSpace($json)) { return $null }
+    $status = $json | ConvertFrom-Json
+    $propertyNames = @($status.PSObject.Properties.Name)
+    if ($propertyNames -contains "Self") { return [bool]$status.Self.Online }
+    if ($propertyNames -contains "BackendState") { return ([string]$status.BackendState -eq "Running") }
+    return $null
   } catch {
-    return $false
+    return $null
   }
 }
 
