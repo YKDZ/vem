@@ -2,7 +2,8 @@
 param(
   [string]$DaemonDataDirectory = "C:\ProgramData\VEM\vending-daemon",
   [string]$OwnerManifestPath = "C:\ProgramData\VEM\runtime-owners\owner-manifest.json",
-  [switch]$RequireHealthy
+  [switch]$RequireHealthy,
+  [switch]$RequireKioskShell
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,6 +103,60 @@ function Get-VisionProcessTopology($VisionOwner, [object[]]$ObservedProcesses) {
     return [ordered]@{ mainProcesses = @(); workerProcesses = @(); issues = @($issues) }
   }
   return [ordered]@{ mainProcesses = $mainProcesses; workerProcesses = $workerProcesses; issues = @($issues) }
+}
+
+function Get-RegistryValueOrNull([string]$Path, [string]$Name) {
+  try {
+    $value = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name
+    if ($null -eq $value) { return $null }
+    return [string]$value
+  } catch {
+    return $null
+  }
+}
+
+function Get-KioskShellState([string]$KioskUser, [object]$Manifest) {
+  $state = [ordered]@{
+    expectedHolderPath = $null
+    userShellValue = $null
+    holderConfigured = $false
+    edgeUiAllowEdgeSwipe = $null
+    edgeSwipeDisabled = $false
+    explorerProcessCount = 0
+    explorerInKioskSession = $false
+  }
+  if ($null -ne $Manifest -and $null -ne $Manifest.kiosk -and $null -ne $Manifest.kiosk.shell) {
+    $state.expectedHolderPath = [string]$Manifest.kiosk.shell.holderPath
+  }
+
+  $state.edgeUiAllowEdgeSwipe = Get-RegistryValueOrNull "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EdgeUI" "AllowEdgeSwipe"
+  $state.edgeSwipeDisabled = "$($state.edgeUiAllowEdgeSwipe)" -eq "0"
+
+  $user = $null
+  if (Get-Command -Name Get-LocalUser -ErrorAction SilentlyContinue) {
+    $user = Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue
+  }
+  if ($null -ne $user) {
+    $sid = [string]$user.SID
+    if ($sid -match '^S-\d-\d+(-\d+)+$') {
+      $state.userShellValue = Get-RegistryValueOrNull "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" "Shell"
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$state.userShellValue)) {
+    $state.userShellValue = Get-RegistryValueOrNull "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" "Shell"
+  }
+  $state.holderConfigured = ($null -ne $state.userShellValue) -and ([string]$state.userShellValue -match 'kiosk-shell-holder\.ps1')
+
+  $kioskProcess = Get-Process -Name machine -ErrorAction SilentlyContinue |
+    Sort-Object StartTime -Descending |
+    Select-Object -First 1
+  $kioskSessionId = if ($null -ne $kioskProcess) { [int]$kioskProcess.SessionId } else { $null }
+  $explorerProcesses = @(Get-Process -Name explorer -ErrorAction SilentlyContinue)
+  $state.explorerProcessCount = $explorerProcesses.Count
+  if ($null -ne $kioskSessionId) {
+    $state.explorerInKioskSession = @($explorerProcesses | Where-Object { [int]$_.SessionId -eq $kioskSessionId }).Count -gt 0
+  }
+  return $state
 }
 
 function Test-KioskIdentity([string]$Identity, [string]$KioskUser) {
@@ -313,6 +368,7 @@ $result = [ordered]@{
     user = [string]$owners.kiosk.user
     autoAdminLogon = [string]$winlogon.AutoAdminLogon -eq "1" -and [string]$winlogon.DefaultUserName -ieq [string]$owners.kiosk.user -and [string]$winlogon.DefaultDomainName -eq "." -and -not [string]::IsNullOrWhiteSpace([string]$winlogon.DefaultPassword)
     passwordConfigured = -not [string]::IsNullOrWhiteSpace([string]$winlogon.DefaultPassword)
+    shell = Get-KioskShellState ([string]$owners.kiosk.user) $owners
   }
   service = [ordered]@{
     name = [string]$owners.owners.daemon.name
@@ -336,9 +392,18 @@ $result = [ordered]@{
 }
 
 $result | ConvertTo-Json -Depth 20
-if ($RequireHealthy) {
+if ($RequireHealthy -or $RequireKioskShell) {
   $failures = [System.Collections.Generic.List[string]]::new()
-  if (-not $result.kiosk.autoAdminLogon) { $failures.Add("VEMKiosk automatic logon prerequisites are incomplete") | Out-Null }
+  if ($RequireKioskShell) {
+    if (-not $result.kiosk.shell.holderConfigured) { $failures.Add("kiosk shell holder is not configured for $($result.kiosk.user)") | Out-Null }
+    if (-not $result.kiosk.shell.edgeSwipeDisabled) { $failures.Add("screen-edge swipe policy is not disabled") | Out-Null }
+    if ($result.kiosk.shell.explorerInKioskSession) { $failures.Add("explorer.exe is running in the kiosk session") | Out-Null }
+  }
+  if (-not $RequireHealthy) {
+    if ($failures.Count -gt 0) { throw ($failures -join "; ") }
+    return
+  }
+  if (-not $result.kiosk.autoAdminLogon) { $failures.Add("VEMkiosk automatic logon prerequisites are incomplete") | Out-Null }
   if (-not $result.service.present -or $result.service.state -ne "Running") { $failures.Add("daemon service is not running") | Out-Null }
   if ($result.service.definitionIssues.Count -gt 0) { $failures.Add("daemon owner definition is invalid: $($result.service.definitionIssues -join ', ')") | Out-Null }
   foreach ($task in @($result.tasks)) {

@@ -361,3 +361,42 @@ test("field probe rejects incomplete or competing installed owner definitions", 
     "invalid-vision-topology",
   ]);
 });
+
+test("kiosk shell hardening replaces the kiosk shell and disables edge swipe", () => {
+  const result = spawnSync(
+    "pwsh",
+    ["-NoProfile", "-File", "scripts/windows/kiosk-shell.windows-harness.ps1"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout) as {
+    schemaVersion: string;
+    install: {
+      edgeSwipeDisabled: boolean;
+      hiveLoaded: boolean;
+      hiveUnloaded: boolean;
+      shellUsesHolder: boolean;
+    };
+    disable: { edgePolicyRemoved: boolean; shellRestored: boolean };
+  };
+  assert.equal(output.schemaVersion, "vem-kiosk-shell-harness/v1");
+  assert.equal(output.install.edgeSwipeDisabled, true);
+  assert.equal(output.install.hiveLoaded, true);
+  assert.equal(output.install.hiveUnloaded, true);
+  assert.equal(output.install.shellUsesHolder, true);
+  assert.equal(output.disable.edgePolicyRemoved, true);
+  assert.equal(output.disable.shellRestored, true);
+});
+
+test("runtime owner installer wires kiosk shell hardening and the probe reports it", () => {
+  const installer = source(installerPath);
+  const probe = source("scripts/windows/probe-vem-runtime.ps1");
+
+  assert.match(installer, /Install-KioskShell/);
+  assert.match(installer, /kiosk-shell-holder\.ps1/);
+  assert.match(installer, /set-vem-kiosk-shell\.ps1/);
+  assert.match(installer, /holderPath = \$KioskShellHolder/);
+  assert.match(probe, /Get-KioskShellState/);
+  assert.match(probe, /AllowEdgeSwipe/);
+  assert.match(probe, /RequireKioskShell/);
+});

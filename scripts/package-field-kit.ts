@@ -27,6 +27,9 @@ const KIT_SCRIPTS = [
   "vision-main-artifacts.psm1",
   "install-vem-runtime-owners.ps1",
   "watch-vem-runtime-owners.ps1",
+  "kiosk-shell-holder.ps1",
+  "set-vem-kiosk-shell.ps1",
+  "set-vem-desktop-mode.ps1",
   "install-field-kit.ps1",
   "probe-vem-runtime.ps1",
 ];

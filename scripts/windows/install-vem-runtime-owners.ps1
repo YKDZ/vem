@@ -458,6 +458,25 @@ function Register-InteractiveOwnerTask(
     -Force | Out-Null
 }
 
+function Install-KioskShell([string]$SourceDirectory) {
+  # The interactive kiosk session must not run explorer.exe: its desktop,
+  # taskbar and screen-edge gestures let a customer swipe out of the kiosk
+  # application. Replace the kiosk user shell with the runtime holder and disable
+  # the EdgeUI edge-swipe policy as defence in depth.
+  $holderSource = Join-Path $SourceDirectory "kiosk-shell-holder.ps1"
+  $hardeningSource = Join-Path $SourceDirectory "set-vem-kiosk-shell.ps1"
+  Assert-OwnerPath $holderSource "kiosk shell holder script"
+  Assert-OwnerPath $hardeningSource "kiosk shell configuration script"
+  $holderPath = Join-Path $RuntimeDirectory "kiosk-shell-holder.ps1"
+  Copy-Item -LiteralPath $holderSource -Destination $holderPath -Force
+  if ($env:OS -eq "Windows_NT") {
+    & $hardeningSource -KioskUser $KioskUser -RuntimeDirectory $RuntimeDirectory | Out-Null
+  } else {
+    Write-Output "kiosk shell hardening skipped: non-Windows host"
+  }
+  return $holderPath
+}
+
 function Install-RuntimeWatchdog(
   [string]$TaskName = "VEMRuntimeWatchdog"
 ) {
@@ -512,7 +531,8 @@ function Write-OwnerManifest(
   [string]$MachineExecutable,
   [string]$VisionExecutable,
   [string]$MachineLauncher,
-  [string]$VisionLauncher
+  [string]$VisionLauncher,
+  [string]$KioskShellHolder
 ) {
   $visionOwner = [ordered]@{
     kind = "scheduledTask"
@@ -543,6 +563,11 @@ function Write-OwnerManifest(
         registryPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
         userName = $KioskUser
         domainName = "."
+      }
+      shell = [ordered]@{
+        kind = "kioskShellHolder"
+        holderPath = $KioskShellHolder
+        edgeUiPolicy = "HKLM\SOFTWARE\Policies\Microsoft\Windows\EdgeUI\AllowEdgeSwipe=0"
       }
     }
     owners = [ordered]@{
@@ -667,9 +692,10 @@ Assert-OwnerDirectoryLeases
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory
 Install-RuntimeWatchdog
+$kioskShellHolder = Install-KioskShell $PSScriptRoot
 
 Assert-OwnerDirectoryLeases
-$ownerManifest = Write-OwnerManifest $daemonExecutable $machineExecutable $visionExecutable $machineLauncher $visionLauncher
+$ownerManifest = Write-OwnerManifest $daemonExecutable $machineExecutable $visionExecutable $machineLauncher $visionLauncher $kioskShellHolder
 Assert-OwnerDirectoryLeases
 Close-OwnerDirectoryLeases
 $ownerManifest | ConvertTo-Json -Depth 12
