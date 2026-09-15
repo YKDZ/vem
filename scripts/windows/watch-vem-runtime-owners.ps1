@@ -12,6 +12,9 @@ param(
   [string]$KioskShellExpectationPath = "C:\ProgramData\VEM\kiosk\shell-expected.json",
   [string]$KioskShellScript = "C:\VEM\bringup\set-vem-kiosk-shell.ps1",
   [string]$DesktopModeScript = "C:\VEM\bringup\set-vem-desktop-mode.ps1",
+  [string]$TailscaleClientPath = "C:\Program Files\Tailscale\tailscale-ipn.exe",
+  [string]$KioskSessionTaskName = "VEMKioskSessionOnce",
+  [string]$DesktopFlagPath = "C:\ProgramData\VEM\kiosk\desktop-mode.flag",
   [string]$TailnetOfflineSincePath = "C:\ProgramData\VEM\kiosk\tailnet-offline-since.txt",
   [int]$TailnetOfflineGraceMinutes = 10,
   [switch]$DryRun,
@@ -90,6 +93,24 @@ function Get-TailnetEscapeDecision([object]$Online, [object]$OfflineSince, [int]
   return "escape"
 }
 
+function Ensure-TailscaleClient {
+  if (-not (Test-Path -LiteralPath $TailscaleClientPath)) { return }
+  if (Get-Process -Name "tailscale-ipn" -ErrorAction SilentlyContinue) { return }
+  if (-not (Test-ShouldWrite "start the Tailscale client in the kiosk session")) { return }
+  try {
+    $action = New-ScheduledTaskAction -Execute $TailscaleClientPath
+    $principal = New-ScheduledTaskPrincipal -UserId $KioskUser -LogonType Interactive -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $KioskSessionTaskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskName $KioskSessionTaskName
+    Start-Sleep -Seconds 3
+    Unregister-ScheduledTask -TaskName $KioskSessionTaskName -Confirm:$false
+    Write-WatchdogLog "tailscale-client-started"
+  } catch {
+    Write-WatchdogLog "tailscale-client-start-failed error=$($_.Exception.Message)"
+  }
+}
+
 function Invoke-KioskShellSelfHeal {
   if (-not (Test-Path -LiteralPath $KioskShellExpectationPath)) { return }
   if (-not (Test-Path -LiteralPath $KioskShellScript)) {
@@ -148,9 +169,16 @@ function Invoke-TailnetOfflineEscape {
         Write-WatchdogLog "tailnet-offline-desktop-script-missing path=$DesktopModeScript"
         return
       }
-      if (-not (Test-ShouldWrite "enable local desktop because the tailnet is offline")) { return }
+      Ensure-TailscaleClient
+      $desktopAlreadyOpen = Test-Path -LiteralPath $DesktopFlagPath
+      if (-not (Test-ShouldWrite "keep local desktop open while the tailnet is offline")) { return }
       & $DesktopModeScript -Mode enable -ExpiresInMinutes (2 * $TailnetOfflineGraceMinutes) | Out-Null
-      Write-WatchdogLog "tailnet-offline-local-desktop minutes=$([int]((Get-Date).ToUniversalTime() - ([datetime]$offlineSince).ToUniversalTime()).TotalMinutes)"
+      $offlineMinutes = [int]((Get-Date).ToUniversalTime() - ([datetime]$offlineSince).ToUniversalTime()).TotalMinutes
+      if ($desktopAlreadyOpen) {
+        Write-WatchdogLog "tailnet-offline-local-desktop-renewed minutes=$offlineMinutes"
+      } else {
+        Write-WatchdogLog "tailnet-offline-local-desktop minutes=$offlineMinutes"
+      }
     }
     default { return }
   }
