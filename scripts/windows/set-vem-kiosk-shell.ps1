@@ -98,12 +98,11 @@ if ($Disable) {
 # a profile reset or an accidental revert, and lets it stay quiet when an
 # operator intentionally disabled kiosk mode.
 $expectationDirectory = Split-Path -Parent $ExpectationPath
-if (-not (Test-Path -LiteralPath $expectationDirectory)) {
-  New-Item -ItemType Directory -Path $expectationDirectory -Force | Out-Null
-}
 if ($Disable) {
   if (Test-Path -LiteralPath $ExpectationPath) {
-    Remove-Item -LiteralPath $ExpectationPath -Force -ErrorAction SilentlyContinue
+    if (Test-ShouldWrite "remove kiosk shell expectation $ExpectationPath") {
+      Remove-Item -LiteralPath $ExpectationPath -Force -ErrorAction SilentlyContinue
+    }
   }
 } else {
   $expectation = [ordered]@{
@@ -113,5 +112,10 @@ if ($Disable) {
     edgeSwipePolicy = "$edgeUiKey AllowEdgeSwipe=0"
     recordedAt = [DateTime]::UtcNow.ToString("o")
   }
-  [IO.File]::WriteAllText($ExpectationPath, ($expectation | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+  if (Test-ShouldWrite "record kiosk shell expectation $ExpectationPath") {
+    if (-not (Test-Path -LiteralPath $expectationDirectory)) {
+      New-Item -ItemType Directory -Path $expectationDirectory -Force | Out-Null
+    }
+    [IO.File]::WriteAllText($ExpectationPath, ($expectation | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+  }
 }
