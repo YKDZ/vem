@@ -29,15 +29,19 @@ function global:Test-Path {
 
 $scriptPath = Join-Path $PSScriptRoot "set-vem-kiosk-shell.ps1"
 
-$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot *>&1
+$expectationPath = Join-Path $root "kiosk\shell-expected.json"
+
+$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -ExpectationPath $expectationPath *>&1
 $installCalls = @($global:RegCalls)
+$expectation = if (Test-Path -LiteralPath $expectationPath) { Get-Content -LiteralPath $expectationPath -Raw | ConvertFrom-Json } else { $null }
 
 $global:RegCalls.Clear()
-$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -Disable *>&1
+$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -Disable -ExpectationPath $expectationPath *>&1
 $disableCalls = @($global:RegCalls)
+$expectationRemoved = -not (Test-Path -LiteralPath $expectationPath)
 
 $global:RegCalls.Clear()
-$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -DryRun *>&1
+$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -DryRun -ExpectationPath (Join-Path $root "kiosk\dry-run.json") *>&1
 $whatIfCalls = @($global:RegCalls)
 
 $result = [ordered]@{
@@ -47,11 +51,13 @@ $result = [ordered]@{
     hiveLoaded = @($installCalls | Where-Object { $_ -match "^load " }).Count -ge 1
     hiveUnloaded = @($installCalls | Where-Object { $_ -match "^unload " }).Count -ge 1
     shellUsesHolder = @($installCalls | Where-Object { $_ -match "Winlogon" -and $_ -match "kiosk-shell-holder\.ps1" }).Count -ge 1
+    expectationWritten = ($null -ne $expectation) -and ([string]$expectation.holderPath -match "kiosk-shell-holder\.ps1")
     calls = $installCalls
   }
   disable = [ordered]@{
     edgePolicyRemoved = @($disableCalls | Where-Object { $_ -match "^delete " -and $_ -match "AllowEdgeSwipe" }).Count -ge 1
     shellRestored = @($disableCalls | Where-Object { $_ -match "Winlogon" -and $_ -match "explorer\.exe" }).Count -ge 1
+    expectationRemoved = $expectationRemoved
     calls = $disableCalls
   }
   whatIf = [ordered]@{

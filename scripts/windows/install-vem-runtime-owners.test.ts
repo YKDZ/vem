@@ -384,8 +384,40 @@ test("kiosk shell hardening replaces the kiosk shell and disables edge swipe", (
   assert.equal(output.install.hiveLoaded, true);
   assert.equal(output.install.hiveUnloaded, true);
   assert.equal(output.install.shellUsesHolder, true);
+  assert.equal(output.install.expectationWritten, true);
   assert.equal(output.disable.edgePolicyRemoved, true);
   assert.equal(output.disable.shellRestored, true);
+  assert.equal(output.disable.expectationRemoved, true);
+});
+
+test("runtime watchdog decides the tailnet offline escape from a pure table", () => {
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-File",
+      "scripts/windows/watchdog-decision.windows-harness.ps1",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout) as {
+    schemaVersion: string;
+    allMatched: boolean;
+    cases: Array<{ name: string; actual: string; expected: string }>;
+  };
+  assert.equal(output.schemaVersion, "vem-watchdog-decision-harness/v1");
+  assert.equal(output.allMatched, true);
+  assert.deepEqual(
+    output.cases.map((entry) => [entry.name, entry.actual]),
+    [
+      ["not-installed", "not-applicable"],
+      ["online", "online"],
+      ["offline-arms", "arm"],
+      ["offline-waits", "wait"],
+      ["offline-escapes", "escape"],
+    ],
+  );
 });
 
 test("runtime owner installer wires kiosk shell hardening and the probe reports it", () => {

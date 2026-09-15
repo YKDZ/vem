@@ -4,6 +4,7 @@ param(
   [string]$RuntimeDirectory = "C:\VEM\bringup",
   [string]$HolderScriptName = "kiosk-shell-holder.ps1",
   [string]$ProfileRoot = "C:\Users",
+  [string]$ExpectationPath = "C:\ProgramData\VEM\kiosk\shell-expected.json",
   [switch]$Disable,
   [switch]$DryRun
 )
@@ -91,4 +92,26 @@ if ($Disable) {
   Write-Output "kiosk shell disabled: $KioskUser runs explorer.exe, edge swipe policy removed"
 } else {
   Write-Output "kiosk shell installed: $KioskUser shell -> $holderPath, AllowEdgeSwipe=0"
+}
+
+# The expectation record lets the runtime watchdog re-apply the kiosk shell after
+# a profile reset or an accidental revert, and lets it stay quiet when an
+# operator intentionally disabled kiosk mode.
+$expectationDirectory = Split-Path -Parent $ExpectationPath
+if (-not (Test-Path -LiteralPath $expectationDirectory)) {
+  New-Item -ItemType Directory -Path $expectationDirectory -Force | Out-Null
+}
+if ($Disable) {
+  if (Test-Path -LiteralPath $ExpectationPath) {
+    Remove-Item -LiteralPath $ExpectationPath -Force -ErrorAction SilentlyContinue
+  }
+} else {
+  $expectation = [ordered]@{
+    schemaVersion = "vem-kiosk-shell-expectation/v1"
+    kioskUser = $KioskUser
+    holderPath = $holderPath
+    edgeSwipePolicy = "$edgeUiKey AllowEdgeSwipe=0"
+    recordedAt = [DateTime]::UtcNow.ToString("o")
+  }
+  [IO.File]::WriteAllText($ExpectationPath, ($expectation | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 }

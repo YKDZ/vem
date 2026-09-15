@@ -21,9 +21,29 @@ $explorerPath = Join-Path $env:windir "explorer.exe"
 while ($true) {
   try {
     if (Test-Path -LiteralPath $DesktopFlagPath) {
-      $explorer = Get-Process -Name explorer -ErrorAction SilentlyContinue
-      if ($null -eq $explorer) {
-        Start-Process -FilePath $explorerPath
+      $expired = $false
+      $expiryLine = Get-Content -LiteralPath $DesktopFlagPath -ErrorAction SilentlyContinue |
+        Where-Object { $_ -like "expires=*" } |
+        Select-Object -First 1
+      if ($expiryLine) {
+        $expiryText = $expiryLine.Substring("expires=".Length).Trim()
+        $expiry = [DateTime]::MinValue
+        if ([DateTime]::TryParse($expiryText, [ref]$expiry)) {
+          $expired = [DateTime]::UtcNow -gt $expiry.ToUniversalTime()
+        }
+      }
+      if ($expired) {
+        # A forgotten operator flag must not leave the kiosk open forever.
+        Remove-Item -LiteralPath $DesktopFlagPath -Force -ErrorAction SilentlyContinue
+        $sessionId = (Get-Process -Id $PID -ErrorAction SilentlyContinue).SessionId
+        Get-Process -Name explorer -ErrorAction SilentlyContinue |
+          Where-Object { $null -eq $sessionId -or [int]$_.SessionId -eq [int]$sessionId } |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      } else {
+        $explorer = Get-Process -Name explorer -ErrorAction SilentlyContinue
+        if ($null -eq $explorer) {
+          Start-Process -FilePath $explorerPath
+        }
       }
     }
   } catch {

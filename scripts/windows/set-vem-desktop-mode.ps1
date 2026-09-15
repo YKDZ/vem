@@ -4,6 +4,7 @@ param(
   [string]$KioskUser = "VEMKiosk",
   [string]$DesktopFlagPath = "C:\ProgramData\VEM\kiosk\desktop-mode.flag",
   [string]$TaskName = "VEMDesktopModeOnce",
+  [int]$ExpiresInMinutes = 0,
   [switch]$DryRun
 )
 
@@ -49,6 +50,10 @@ if (-not (Test-Path -LiteralPath $flagDirectory)) {
 if ($Mode -eq "enable") {
   if (Test-ShouldWrite "create desktop mode flag $DesktopFlagPath") {
     Set-Content -LiteralPath $DesktopFlagPath -Value "enabled $(Get-Date -Format o)" -Encoding ASCII
+    if ($ExpiresInMinutes -gt 0) {
+      $expiry = (Get-Date).ToUniversalTime().AddMinutes($ExpiresInMinutes).ToString("o")
+      Add-Content -LiteralPath $DesktopFlagPath -Value "expires=$expiry" -Encoding ASCII
+    }
   }
 
   $action = New-ScheduledTaskAction -Execute (Join-Path $env:windir "explorer.exe")

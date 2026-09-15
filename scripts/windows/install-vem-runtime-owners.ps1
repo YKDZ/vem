@@ -469,6 +469,12 @@ function Install-KioskShell([string]$SourceDirectory) {
   Assert-OwnerPath $hardeningSource "kiosk shell configuration script"
   $holderPath = Join-Path $RuntimeDirectory "kiosk-shell-holder.ps1"
   Copy-Item -LiteralPath $holderSource -Destination $holderPath -Force
+  foreach ($operatorScript in @("set-vem-kiosk-shell.ps1", "set-vem-desktop-mode.ps1")) {
+    $operatorSource = Join-Path $SourceDirectory $operatorScript
+    if (Test-Path -LiteralPath $operatorSource -PathType Leaf) {
+      Copy-Item -LiteralPath $operatorSource -Destination (Join-Path $RuntimeDirectory $operatorScript) -Force
+    }
+  }
   if ($env:OS -eq "Windows_NT") {
     & $hardeningSource -KioskUser $KioskUser -RuntimeDirectory $RuntimeDirectory | Out-Null
   } else {
