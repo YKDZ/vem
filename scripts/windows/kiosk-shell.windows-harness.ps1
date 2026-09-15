@@ -29,12 +29,16 @@ function global:Test-Path {
 
 $scriptPath = Join-Path $PSScriptRoot "set-vem-kiosk-shell.ps1"
 
-& $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot | Out-Null
+$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot *>&1
 $installCalls = @($global:RegCalls)
 
 $global:RegCalls.Clear()
-& $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -Disable | Out-Null
+$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -Disable *>&1
 $disableCalls = @($global:RegCalls)
+
+$global:RegCalls.Clear()
+$null = & $scriptPath -KioskUser "VEMKiosk" -RuntimeDirectory $runtime -ProfileRoot $profileRoot -DryRun *>&1
+$whatIfCalls = @($global:RegCalls)
 
 $result = [ordered]@{
   schemaVersion = "vem-kiosk-shell-harness/v1"
@@ -49,6 +53,10 @@ $result = [ordered]@{
     edgePolicyRemoved = @($disableCalls | Where-Object { $_ -match "^delete " -and $_ -match "AllowEdgeSwipe" }).Count -ge 1
     shellRestored = @($disableCalls | Where-Object { $_ -match "Winlogon" -and $_ -match "explorer\.exe" }).Count -ge 1
     calls = $disableCalls
+  }
+  whatIf = [ordered]@{
+    performedNoWrites = $whatIfCalls.Count -eq 0
+    calls = $whatIfCalls
   }
 }
 

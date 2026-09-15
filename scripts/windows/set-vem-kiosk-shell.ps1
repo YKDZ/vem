@@ -4,7 +4,8 @@ param(
   [string]$RuntimeDirectory = "C:\VEM\bringup",
   [string]$HolderScriptName = "kiosk-shell-holder.ps1",
   [string]$ProfileRoot = "C:\Users",
-  [switch]$Disable
+  [switch]$Disable,
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +24,14 @@ function Invoke-Reg {
   }
 }
 
+function Test-ShouldWrite([string]$Action) {
+  if ($DryRun) {
+    Write-Host ("what-if: " + $Action)
+    return $false
+  }
+  return $true
+}
+
 $edgeUiKey = "HKLM\SOFTWARE\Policies\Microsoft\Windows\EdgeUI"
 $holderPath = Join-Path $RuntimeDirectory $HolderScriptName
 
@@ -37,32 +46,44 @@ $hivePath = Join-Path (Join-Path $ProfileRoot $KioskUser) "NTUSER.DAT"
 $hiveLoaded = $false
 
 if ($Disable) {
-  Invoke-Reg @("delete", $edgeUiKey, "/v", "AllowEdgeSwipe", "/f") -IgnoreFailure
+  if (Test-ShouldWrite "reg.exe delete $edgeUiKey AllowEdgeSwipe") {
+    Invoke-Reg @("delete", $edgeUiKey, "/v", "AllowEdgeSwipe", "/f") -IgnoreFailure
+  }
 } else {
-  Invoke-Reg @("add", $edgeUiKey, "/v", "AllowEdgeSwipe", "/t", "REG_DWORD", "/d", "0", "/f")
+  if (Test-ShouldWrite "reg.exe add $edgeUiKey AllowEdgeSwipe=0") {
+    Invoke-Reg @("add", $edgeUiKey, "/v", "AllowEdgeSwipe", "/t", "REG_DWORD", "/d", "0", "/f")
+  }
 }
 
 if (-not (Test-Path -LiteralPath "Registry::$userHive")) {
   if (-not (Test-Path -LiteralPath $hivePath -PathType Leaf)) {
     throw "kiosk user hive is not loaded and cannot be found: $hivePath"
   }
-  Invoke-Reg @("load", $userHive, $hivePath)
-  $hiveLoaded = $true
+  if (Test-ShouldWrite "load kiosk user hive $userHive from $hivePath") {
+    Invoke-Reg @("load", $userHive, $hivePath)
+    $hiveLoaded = $true
+  }
 }
 
 try {
   if ($Disable) {
-    Invoke-Reg @("add", $userWinlogonKey, "/v", "Shell", "/t", "REG_SZ", "/d", "explorer.exe", "/f")
+    if (Test-ShouldWrite "restore $KioskUser shell to explorer.exe") {
+      Invoke-Reg @("add", $userWinlogonKey, "/v", "Shell", "/t", "REG_SZ", "/d", "explorer.exe", "/f")
+    }
   } else {
     if (-not (Test-Path -LiteralPath $holderPath -PathType Leaf)) {
       throw "kiosk shell holder is missing: $holderPath"
     }
     $shellValue = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$holderPath`""
-    Invoke-Reg @("add", $userWinlogonKey, "/v", "Shell", "/t", "REG_SZ", "/d", $shellValue, "/f")
+    if (Test-ShouldWrite "set $KioskUser shell to $holderPath") {
+      Invoke-Reg @("add", $userWinlogonKey, "/v", "Shell", "/t", "REG_SZ", "/d", $shellValue, "/f")
+    }
   }
 } finally {
   if ($hiveLoaded) {
-    Invoke-Reg @("unload", $userHive) -IgnoreFailure
+    if (Test-ShouldWrite "unload kiosk user hive $userHive") {
+      Invoke-Reg @("unload", $userHive) -IgnoreFailure
+    }
   }
 }
 
